@@ -26,7 +26,7 @@ pub mod error;
 pub mod scheduler;
 pub mod shaders;
 
-pub use compiled::{CompiledModel, ModelMetadata, Operation, OpType, TensorRegistry};
+pub use compiled::{CompiledModel, ModelMetadata, Operation, OpParams, OpType, ShaderHandle, TensorRegistry};
 pub use error::{CodegenError, Result};
 pub use shaders::{ShaderDefValue, ShaderDefs};
 

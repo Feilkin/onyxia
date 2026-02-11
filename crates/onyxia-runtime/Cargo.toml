@@ -6,8 +6,14 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-naga_oil = "0.16"
+bytemuck = "1.25.0"
+futures = "0.3.31"
+naga = { version = "28", features = ["wgsl-out"] }
+naga_oil = "0.21"
 onyxia-codegen.workspace = true
-wgpu = "27.0.1"
+onyxia-onnx = { version = "0.1.0", path = "../onyxia-onnx" }
+pollster = { version = "0.4.0", features = ["macro"] }
+thiserror = "2.0.18"
+wgpu = "28"
 
 [dev-dependencies]
