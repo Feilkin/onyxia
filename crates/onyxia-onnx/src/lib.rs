@@ -1,7 +1,26 @@
 //! ONNX model parser for Onyxia.
 //!
-//! This crate parses ONNX protobuf models and converts them into an internal
-//! intermediate representation (IR) that can be consumed by `onyxia-codegen`.
+//! This crate parses ONNX protobuf models and provides a structured graph
+//! representation independent of the underlying protobuf schema.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use onyxia_onnx::{load_model, parse_model};
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! // Load raw protobuf
+//! let model = load_model("model.onnx")?;
+//!
+//! // Parse into structured graph
+//! let graph = parse_model(&model)?;
+//!
+//! println!("Model: {}", graph.metadata.name);
+//! println!("Nodes: {}", graph.nodes.len());
+//! println!("Tensors: {}", graph.tensor_info.len());
+//! # Ok(())
+//! # }
+//! ```
 
 use prost::Message;
 use std::fs;
@@ -13,7 +32,15 @@ pub mod onnx {
     include!(concat!(env!("OUT_DIR"), "/onnx.rs"));
 }
 
+pub mod graph;
+pub mod parser;
+
+pub use graph::{
+    AttributeValue, DataType, Dimension, Graph, GraphMetadata, Node, NodeId, TensorId, TensorInfo,
+    TensorKind, TensorShape,
+};
 pub use onnx::ModelProto;
+pub use parser::parse_model;
 
 /// Simplification level for DOT graph generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +64,21 @@ pub enum OnnxError {
 
     #[error("Invalid ONNX model: {0}")]
     InvalidModel(String),
+
+    #[error("Invalid graph structure: {0}")]
+    InvalidGraph(String),
+
+    #[error("Missing tensor: {0}")]
+    MissingTensor(String),
+
+    #[error("Missing attribute: {0}")]
+    MissingAttribute(String),
+
+    #[error("Type mismatch: expected {expected}, got {actual}")]
+    TypeMismatch { expected: String, actual: String },
+
+    #[error("Unsupported data type: {0}")]
+    UnsupportedDataType(String),
 }
 
 /// Result type for ONNX operations.

@@ -1205,7 +1205,10 @@ dependencies = [
 name = "onyxia-codegen"
 version = "0.1.0"
 dependencies = [
+ "half",
  "onyxia-onnx",
+ "petgraph",
+ "thiserror 2.0.18",
  "wgcore",
 ]
 
@@ -1279,6 +1282,7 @@ dependencies = [
  "fixedbitset",
  "hashbrown 0.15.5",
  "indexmap",
+ "serde",
 ]
 
 [[package]]
