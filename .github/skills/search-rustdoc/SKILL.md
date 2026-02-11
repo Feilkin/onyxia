@@ -1,6 +1,6 @@
 ---
 name: search-rustdoc
-description: Search dependency documentation by building rustdoc locally and grepping HTML files. Use when you need to find functions, types, method signatures, or usage patterns from Rust dependencies like wgpu, prost, wgcore, or any crate in the project.
+description: Search dependency documentation by building rustdoc locally and grepping HTML files. Use when you need to find functions, types, method signatures, or usage patterns from Rust dependencies like wgpu, prost, naga_oil, or any crate in the project.
 ---
 
 # Search Rust Dependency Documentation

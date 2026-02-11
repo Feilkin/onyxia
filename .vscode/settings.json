@@ -1,6 +1,7 @@
 {
     "chat.tools.terminal.autoApprove": {
         "cargo build": true,
-        "cargo nextest": true
+        "cargo nextest": true,
+        "cargo doc": true
     }
 }

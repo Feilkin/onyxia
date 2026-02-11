@@ -20,13 +20,14 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
 
 ## Features
 
-- ✅ Pure GPU execution via wgpu (cross-platform)
-- ✅ WGSL compute shaders (readable, debuggable, native to wgpu)
-- ✅ Quantized model support (4-bit, 8-bit via `MatMulNBits`)
-- ✅ KV cache management for efficient LLM generation
-- ✅ Composable operations (built with wgcore)
-- 🚧 Operator coverage (see Phase roadmap in ARCHITECTURE.md)
-- 🚧 Performance optimizations (fusion, tiling, memory pooling)
+- ✅ ONNX parsing with stable Graph API
+- ✅ DOT graph visualization (full, layers, summary views)
+- ✅ Codegen foundation (scheduling, compiled model structure)
+- 🚧 WGSL compute shader generation (Phase 2 in progress)
+- 🚧 GPU execution via wgpu (cross-platform: DX12/Vulkan/Metal)
+- 🔜 Quantized model support (4-bit, 8-bit via `MatMulNBits`)
+- 🔜 KV cache management for efficient LLM generation
+- 🔜 Performance optimizations (fusion, tiling, memory pooling)
 
 ## Prerequisites
 
@@ -97,13 +98,15 @@ The `models/` directory contains sample ONNX models for testing:
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full development plan. Current status:
 
-- ✅ Phase 1: ONNX parsing and DOT visualization
-- 🚧 Phase 2: Codegen IR and basic shaders (in progress)
-- 🔜 Phase 3: Runtime execution
-- 🔜 Phase 4: Quantization support
-- 🔜 Phase 5: Attention and KV cache
+- ✅ Phase 1: Graph and Codegen Foundation (COMPLETED)
+  - Graph data structures, ONNX parser, scheduler, compiled model
+- 🚧 Phase 2: Core Operator Shaders (CURRENT)
+  - WGSL shader generation for elementwise ops, LayerNorm, MatMul
+- 🔜 Phase 3: Runtime Execution
+- 🔜 Phase 4: Quantization Support
+- 🔜 Phase 5: Attention and KV Cache
 - 🔜 Phase 6: Optimizations
-- 🔜 Phase 7: Polish and documentation
+- 🔜 Phase 7: Polish and Advanced Features
 
 ## License
 

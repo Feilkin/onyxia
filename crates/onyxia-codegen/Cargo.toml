@@ -7,9 +7,9 @@ license.workspace = true
 
 [dependencies]
 half = "2.7"
+naga_oil = "0.16"
 onyxia-onnx.workspace = true
 petgraph = "0.8"
 thiserror = "2.0"
-wgcore = "0.2.2"
 
 [dev-dependencies]

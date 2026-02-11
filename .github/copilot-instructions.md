@@ -29,7 +29,7 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in Rust 2024 e
 ### Key Technology Choices
 
 - **`wgpu`** — GPU hardware abstraction layer (cross-platform)
-- **`wgcore`** — WGSL shader authoring utilities ([wgmath/wgcore](https://github.com/wgmath/wgmath/tree/main/crates/wgcore))
+- **`naga_oil`** — WGSL shader preprocessing and composition
 - **WGSL** — Shader language (middle ground between SPIR-V and rust-gpu)
 - **`prost`/`prost-build`** — Protobuf parsing for ONNX models (generate Rust types from .proto)
 - **`clap`** — CLI argument parsing
@@ -77,7 +77,7 @@ pub mod onnx {
 - Write idiomatic Rust: iterators, pattern matching, ownership
 - Include doc comments (`///`) for all public APIs
 - Add unit tests in `#[cfg(test)]` modules; use `nextest` to run them
-- For GPU code, follow `wgcore` patterns for shader generation
+- For GPU code, write WGSL in separate `.wgsl` files and use `naga_oil` for runtime compilation
 
 ### Cross-Crate Communication
 - `onyxia-onnx` exports an IR that `onyxia-codegen` consumes

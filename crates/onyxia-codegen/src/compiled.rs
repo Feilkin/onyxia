@@ -25,15 +25,6 @@ pub struct CompiledModel {
     pub metadata: ModelMetadata,
 }
 
-impl CompiledModel {
-    /// Get the shader code for an operation.
-    pub fn get_shader_code(&self, _handle: &ShaderHandle) -> Option<&ShaderCode> {
-        // TODO: Store shader code in the model
-        // For now, return None - shaders will be generated on demand
-        None
-    }
-}
-
 /// Metadata about the compiled model.
 #[derive(Debug, Clone, Default)]
 pub struct ModelMetadata {
@@ -197,60 +188,6 @@ pub enum OpParams {
     
     /// No parameters.
     None,
-}
-
-/// WGSL shader code.
-#[derive(Debug, Clone)]
-pub struct ShaderCode {
-    /// WGSL source code.
-    pub wgsl: String,
-    
-    /// Entry point function name.
-    pub entry_point: String,
-    
-    /// Bind group layout information.
-    pub bind_group_layout: BindGroupLayout,
-}
-
-/// Bind group layout for a shader.
-#[derive(Debug, Clone)]
-pub struct BindGroupLayout {
-    /// Bindings in order.
-    pub bindings: Vec<Binding>,
-}
-
-/// A single binding in a bind group.
-#[derive(Debug, Clone)]
-pub struct Binding {
-    /// Binding index.
-    pub index: u32,
-    
-    /// Binding type.
-    pub binding_type: BindingType,
-    
-    /// Visibility (compute shader).
-    pub visibility: ShaderStage,
-}
-
-/// Type of a binding.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BindingType {
-    /// Storage buffer (read-only).
-    StorageRead,
-    
-    /// Storage buffer (read-write).
-    StorageReadWrite,
-    
-    /// Uniform buffer.
-    Uniform,
-}
-
-/// Shader stage visibility.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShaderStage {
-    Compute,
-    Vertex,
-    Fragment,
 }
 
 #[cfg(test)]
