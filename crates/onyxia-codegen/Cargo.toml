@@ -1,0 +1,12 @@
+[package]
+name = "onyxia-codegen"
+description = "WGSL shader compiler and execution graph builder for Onyxia"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+onyxia-onnx.workspace = true
+wgcore = "0.2.2"
+
+[dev-dependencies]

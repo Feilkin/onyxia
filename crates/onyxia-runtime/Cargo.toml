@@ -1,0 +1,12 @@
+[package]
+name = "onyxia-runtime"
+description = "GPU executor for compiled Onyxia graphs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+onyxia-codegen.workspace = true
+wgpu = "27.0.1"
+
+[dev-dependencies]
