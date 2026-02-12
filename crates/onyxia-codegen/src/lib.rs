@@ -23,11 +23,16 @@
 
 pub mod compiled;
 pub mod error;
+pub mod plan;
 pub mod scheduler;
 pub mod shaders;
 
 pub use compiled::{CompiledModel, ModelMetadata, Operation, OpParams, OpType, ShaderHandle, TensorRegistry};
 pub use error::{CodegenError, Result};
+pub use plan::{
+    BindingDesc, BufferRef, CompiledShader, ExecutionPlan, PlannedOp, ScratchBufferDesc,
+    ShaderIndex, Step,
+};
 pub use shaders::{ShaderDefValue, ShaderDefs};
 
 use onyxia_onnx::{parse_model as parse_onnx, Graph, ModelProto};

@@ -828,6 +828,7 @@ name = "onyxia-codegen"
 version = "0.1.0"
 dependencies = [
  "half",
+ "naga",
  "naga_oil",
  "onyxia-onnx",
  "petgraph",

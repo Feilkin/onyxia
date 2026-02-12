@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 half = "2.7"
+naga = "28"
 naga_oil = "0.21"
 onyxia-onnx.workspace = true
 petgraph = "0.8"
