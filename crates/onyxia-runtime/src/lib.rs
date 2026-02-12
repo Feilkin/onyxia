@@ -43,7 +43,6 @@
 //! }
 //! ```
 
-mod buffer;
 mod error;
 mod plan_executor;
 mod runtime;

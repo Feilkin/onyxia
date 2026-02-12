@@ -237,7 +237,7 @@ impl PlanExecutor {
                     Ok(0)
                 }
             }
-            TypeInner::Array { base, size, stride } => {
+            TypeInner::Array { base: _, size, stride } => {
                 let count = match size {
                     naga::ArraySize::Constant(c) => c.get(),
                     naga::ArraySize::Dynamic => {
