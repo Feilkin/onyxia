@@ -3,6 +3,7 @@
         "cargo build": true,
         "cargo nextest": true,
         "cargo doc": true,
-        "cargo check": true
+        "cargo check": true,
+        "cargo clippy": true
     }
 }

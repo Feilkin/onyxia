@@ -316,6 +316,10 @@ impl KernelRegistry {
         registry.register("Shape", Box::new(crate::kernels::ShapeKernel));
         registry.register("Reshape", Box::new(crate::kernels::ReshapeKernel));
         registry.register("ReduceSum", Box::new(crate::kernels::ReduceSumKernel));
+        registry.register(
+            "RotaryEmbedding",
+            Box::new(crate::kernels::RotaryEmbeddingKernel),
+        );
         registry.register("Transpose", Box::new(crate::kernels::TransposeKernel));
         registry.register("Unsqueeze", Box::new(crate::kernels::UnsqueezeKernel));
         registry
