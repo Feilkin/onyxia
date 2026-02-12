@@ -1222,3 +1222,143 @@ async fn test_gather_embedding_e2e() {
     println!("  Token IDs: [2, 3] = [[0, 2, 4], [1, 3, 5]]");
     println!("  Output embeddings shape: [2, 3, 4]");
 }
+
+/// Helper function to create a simple Transpose graph programmatically.
+///
+/// Graph structure:
+/// - Input: input:[f32;2,3]
+/// - Operation: Transpose(input) -> output
+/// - Output: output:[f32;3,2]
+fn make_transpose_graph() -> Graph {
+    let mut graph = Graph::new();
+
+    // Add input tensor [2, 3]
+    graph.add_tensor(TensorInfo {
+        name: "input".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![2, 3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add output tensor [3, 2]
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3, 2]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Transpose node with perm=[1, 0]
+    let mut node = Node::new("Transpose");
+    node.name = "transpose_node".to_string();
+    node.inputs = vec!["input".to_string()];
+    node.outputs = vec!["output".to_string()];
+    node.attributes.insert(
+        "perm".to_string(),
+        onyxia_onnx::AttributeValue::Ints(vec![1i64, 0i64]),
+    );
+    graph.add_node(node);
+
+    // Set graph inputs and outputs
+    graph.inputs = vec!["input".to_string()];
+    graph.outputs = vec!["output".to_string()];
+
+    // Set metadata
+    graph.metadata.name = "test_transpose_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph
+}
+
+/// End-to-end test: Transpose a 2D matrix on GPU and verify correct output.
+///
+/// This test verifies:
+/// 1. Graph construction with Transpose operation
+/// 2. Compilation to ExecutionPlan
+/// 3. GPU execution
+/// 4. Correct transpose result: [[1,2,3],[4,5,6]] → [[1,4],[2,5],[3,6]]
+#[pollster::test]
+#[ignore] // Requires GPU - ignore in CI or environments without GPU
+async fn test_transpose_2d_e2e() {
+    // Step 1: Build graph programmatically
+    let graph = make_transpose_graph();
+
+    // Validate graph structure
+    graph.validate().expect("Graph validation should succeed");
+    assert_eq!(graph.inputs.len(), 1);
+    assert_eq!(graph.outputs.len(), 1);
+    assert_eq!(graph.nodes.len(), 1);
+
+    // Step 2: Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let dynamic_dimensions = HashMap::new();
+
+    let plan = compile(&graph, &registry, &dynamic_dimensions).expect("Compilation should succeed");
+
+    // Verify plan structure
+    assert_eq!(
+        plan.operations.len(),
+        1,
+        "Should have exactly 1 operation (Transpose)"
+    );
+    assert_eq!(plan.shaders.len(), 1, "Should have exactly 1 shader");
+    assert_eq!(plan.inputs.len(), 1, "Should have 1 input");
+    assert_eq!(plan.outputs.len(), 1, "Should have 1 output");
+
+    // Verify operation details
+    let op = &plan.operations[0];
+    assert_eq!(op.op_type, "Transpose");
+    assert_eq!(op.inputs.len(), 1);
+    assert_eq!(op.outputs.len(), 1);
+    assert_eq!(op.steps.len(), 1, "Transpose should have 1 dispatch step");
+
+    // Step 3: Initialize runtime and load plan
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    println!(
+        "GPU: {} ({:?})",
+        runtime.adapter_info().name,
+        runtime.adapter_info().backend
+    );
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Step 4: Run with concrete input
+    // Input: [[1, 2, 3],
+    //         [4, 5, 6]]
+    let input = Tensor::from_vec(
+        vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0],
+        &[2, 3],
+    );
+
+    let outputs = executor
+        .run(&[("input", input)])
+        .expect("Execution should succeed");
+
+    // Step 5: Verify output
+    assert!(outputs.contains_key("output"), "Output should exist");
+
+    let output = outputs["output"].to_vec::<f32>().expect("Should convert to f32");
+
+    assert_eq!(output.len(), 6, "Output should have 6 elements");
+    
+    // Expected: [[1, 4],
+    //            [2, 5],
+    //            [3, 6]]
+    // In row-major order: [1, 4, 2, 5, 3, 6]
+    assert_eq!(output, vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0], "Transpose result incorrect");
+
+    println!("✓ End-to-end Transpose test passed!");
+    println!("  Input: [[1, 2, 3], [4, 5, 6]] (shape [2, 3])");
+    println!("  Output: [[1, 4], [2, 5], [3, 6]] (shape [3, 2])");
+    println!("  Result: {:?}", output);
+}

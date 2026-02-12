@@ -11,6 +11,7 @@ pub mod reshape;
 pub mod rmsnorm;
 pub mod shape;
 pub mod sub;
+pub mod transpose;
 pub mod unsqueeze;
 
 pub use add::AddKernel;
@@ -24,4 +25,5 @@ pub use reshape::ReshapeKernel;
 pub use rmsnorm::RmsNormKernel;
 pub use shape::ShapeKernel;
 pub use sub::SubKernel;
+pub use transpose::TransposeKernel;
 pub use unsqueeze::UnsqueezeKernel;

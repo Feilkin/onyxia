@@ -313,6 +313,7 @@ impl KernelRegistry {
         registry.register("Constant", Box::new(crate::kernels::ConstantKernel));
         registry.register("Shape", Box::new(crate::kernels::ShapeKernel));
         registry.register("Reshape", Box::new(crate::kernels::ReshapeKernel));
+        registry.register("Transpose", Box::new(crate::kernels::TransposeKernel));
         registry.register("Unsqueeze", Box::new(crate::kernels::UnsqueezeKernel));
         registry
     }
