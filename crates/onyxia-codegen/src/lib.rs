@@ -24,6 +24,7 @@
 pub mod compiled;
 pub mod error;
 pub mod kernel;
+pub mod kernels;
 pub mod plan;
 pub mod scheduler;
 pub mod shaders;

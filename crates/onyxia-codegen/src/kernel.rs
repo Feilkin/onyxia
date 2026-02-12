@@ -90,7 +90,7 @@ impl<'a> PlanContext<'a> {
             dynamic_dimensions,
             scratch_buffers: Vec::new(),
             shaders,
-            composer: Composer::default(),
+            composer: Composer::default().with_capabilities(naga::valid::Capabilities::all()),
         }
     }
 
@@ -273,10 +273,11 @@ impl KernelRegistry {
 
     /// Create a registry pre-loaded with all built-in kernels.
     ///
-    /// Currently returns an empty registry as a placeholder.
-    /// Will be populated with default kernels as they are implemented.
+    /// Registers all implemented kernels (Add, etc.)
     pub fn with_defaults() -> Self {
-        Self::new()
+        let mut registry = Self::new();
+        registry.register("Add", Box::new(crate::kernels::AddKernel));
+        registry
     }
 
     /// Register a kernel for an op_type string.
@@ -538,8 +539,10 @@ mod tests {
     #[test]
     fn test_with_defaults() {
         let registry = KernelRegistry::with_defaults();
-        // Currently returns empty registry - will be populated later
-        assert!(registry.get("Add").is_none());
+        // Verify AddKernel is registered
+        assert!(registry.get("Add").is_some());
+        let add_kernel = registry.get("Add").unwrap();
+        assert_eq!(add_kernel.name(), "Add");
     }
 
     #[test]
