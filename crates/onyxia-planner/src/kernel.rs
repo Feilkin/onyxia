@@ -307,6 +307,10 @@ impl KernelRegistry {
         registry.register("Gather", Box::new(crate::kernels::GatherKernel));
         registry.register("Gelu", Box::new(crate::kernels::GeluKernel));
         registry.register(
+            "GroupQueryAttention",
+            Box::new(crate::kernels::GroupQueryAttentionKernel),
+        );
+        registry.register(
             "SimplifiedLayerNormalization",
             Box::new(crate::kernels::RmsNormKernel),
         );
