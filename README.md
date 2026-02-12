@@ -1,88 +1,132 @@
 # Onyxia
 
-**GPU compute shader runtime for ONNX models.** Compiles ONNX operator graphs into WGSL compute shaders and executes them on GPU via `wgpu`.
+**GPU compute shader runtime for ONNX models.** Compiles ONNX operator graphs into GPU compute shaders and executes them via `wgpu`.
 
 ## Architecture
 
-Onyxia is built in three stages:
-
 ```
-ONNX Model → onyxia-onnx → onyxia-codegen → onyxia-runtime → GPU Execution
-  (.onnx)    (parse → Graph)  (WGSL shaders)   (wgpu exec)     (results)
+ONNX Model → onyxia-onnx → onyxia-planner → onyxia-runtime → GPU Execution
+  (.onnx)    (parse → Graph)  (naga::Module    (wgpu pipelines   (results)
+                               shaders)         + dispatch)
 ```
 
-- **onyxia-onnx**: Parse ONNX protobuf and provide stable Graph API
-- **onyxia-codegen**: Generate WGSL compute shaders and execution plans
-- **onyxia-runtime**: Execute compiled models on GPU hardware
+- **onyxia-onnx**: Parse ONNX protobuf into a stable Graph API
+- **onyxia-planner**: Compile graphs into execution plans with pre-compiled shaders
+- **onyxia-runtime**: Execute plans on GPU hardware via wgpu
 - **onyxia-cli**: Command-line tools for testing and debugging
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
 
-## Features
-
-- ✅ **ONNX parsing** with stable Graph API (onyxia-onnx)
-- ✅ **Shape inference** for 18+ ONNX operations (~51% coverage on real models)
-- ✅ **DOT graph visualization** (full, layers, summary views)
-- ✅ **Codegen foundation** (scheduling, compiled model structure, shader files)
-- ✅ **Runtime infrastructure** (device init, buffer management, deferred device creation)
-- ✅ **WGSL shaders** written (Add, Mul, Gelu, RMSNorm, MatMul-f32)
-- 🚨 **CRITICAL GAP**: Codegen doesn't generate operations - pipeline broken at codegen stage
-- ⏸️  **Blocked**: GPU execution waiting for codegen operation generation
-- 🔜 Quantized model support (4-bit, 8-bit via `MatMulNBits`)
-- 🔜 KV cache management for efficient LLM generation
-- 🔜 Performance optimizations (fusion, tiling, memory pooling)
-
 ## Current Status
 
-**The pipeline is ~90% complete but has a critical gap at the codegen stage:**
+**The end-to-end pipeline is working** — from ONNX parsing through GPU execution:
 
 ```
-✅ ONNX Model → Parser → Graph (works perfectly)
-✅ Graph → Scheduler → Ordered nodes (works)
-❌ Graph → Codegen → Operations (returns empty list - BLOCKER)
-✅ Operations → Runtime → GPU execution (infrastructure ready, nothing to execute)
+✅ ONNX Model → Parser → Graph
+✅ Graph → Planner → ExecutionPlan
+✅ ExecutionPlan → Runtime → GPU execution
+✅ GPU outputs → CPU tensors
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#-critical-blocker-planner--runtime-gap) for details on the blocker and what's needed to unblock end-to-end execution.
+### What Works
 
-## What You Can Do Today
+- ✅ **ONNX parsing** with stable Graph API
+- ✅ **Shape inference** for 18+ ONNX operations (~51% coverage on real models)
+- ✅ **DOT graph visualization** (full, layers, summary views)
+- ✅ **Extensible kernel system** — users add operations via `OpKernel` trait
+- ✅ **Shader compilation** — WGSL → `naga::Module` via naga_oil at plan time
+- ✅ **Dynamic dimension resolution** at plan time
+- ✅ **GPU execution** with buffer management and compute dispatch
+- ✅ **End-to-end pipeline** verified
+- ✅ **53 tests passing**, 8 GPU tests skipped in CI
 
-**Working Features:**
-- ✅ **Inspect ONNX models**: Parse any ONNX file and examine structure
-- ✅ **Visualize graphs**: Generate DOT graphs (full/layers/summary views)
-- ✅ **Check shapes**: Run shape inference to see tensor shapes (~51% coverage)
-- ✅ **Test parsing**: Validate ONNX model compatibility
+### Built-in Kernels
 
-**Not Yet Working:**
-- ❌ **Run models**: Cannot execute on GPU yet (steps list empty from planner)
-- ❌ **Inference**: No forward pass implementation
-- ❌ **Benchmarking**: Can't measure performance
+| Kernel | ONNX Op | Category |
+|--------|---------|----------|
+| `AddKernel` | Add | Elementwise |
+| `MulKernel` | Mul | Elementwise |
+| `GeluKernel` | Gelu | Activation |
+| `RmsNormKernel` | RmsNorm | Normalization |
+| `MatMulF32Kernel` | MatMul | Matrix multiplication |
 
-**Example - Inspect a model:**
+### What's Next
+
+- 🔜 More kernels for broader ONNX operation coverage
+- 🔜 Quantized model support — 4-bit, 8-bit via `MatMulNBits`
+- 🔜 KV cache management for efficient LLM generation
+- 🔜 Performance optimizations (fusion, tiling, memory pooling)
+- 🔜 Numerical validation against ONNX Runtime
+
+## Usage
+
+### Adding Custom Operations
+
+```rust
+use onyxia_planner::{OpKernel, PlanContext, Step, KernelRegistry, compile};
+
+struct MyCustomKernel;
+
+impl OpKernel for MyCustomKernel {
+    fn name(&self) -> &str { "MyCustomOp" }
+    fn plan(&self, ctx: &mut PlanContext<'_>) -> onyxia_planner::Result<Vec<Step>> {
+        // Compile shader, set up bindings, return steps
+        todo!()
+    }
+}
+
+// Register and compile
+let mut registry = KernelRegistry::with_defaults();
+registry.register("MyCustomOp", Box::new(MyCustomKernel));
+let plan = compile(&graph, &registry, &dynamic_dimensions)?;
+```
+
+### Running a Model
+
+```rust
+use onyxia_onnx::load_model;
+use onyxia_planner::{compile, KernelRegistry};
+use onyxia_runtime::{Runtime, Tensor};
+use std::collections::HashMap;
+
+#[pollster::main]
+async fn main() -> anyhow::Result<()> {
+    // Parse ONNX model
+    let graph = load_model("model.onnx")?;
+
+    // Compile to execution plan
+    let registry = KernelRegistry::with_defaults();
+    let dynamic_dimensions = HashMap::from([
+        ("batch".to_string(), 1),
+        ("sequence".to_string(), 512),
+    ]);
+    let plan = compile(&graph, &registry, &dynamic_dimensions)?;
+
+    // Execute on GPU
+    let runtime = Runtime::new().await?;
+    let mut executor = runtime.load_model(plan).await?;
+
+    let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[1, 4]);
+    let outputs = executor.run(&[("input", input)])?;
+
+    println!("Output: {:?}", outputs["output"].to_vec::<f32>()?);
+    Ok(())
+}
+```
+
+### Inspecting Models (CLI)
+
 ```bash
 # Parse and analyze model structure
 cargo run --bin onyxia -- inspect models/gemma-3-270m-it-ONNX/onnx/model_q4.onnx
 
-# Generate visualization
+# Generate DOT visualization
 cargo run --bin onyxia -- dot models/gemma-3-270m-it-ONNX/onnx/model_q4.onnx \
   -o model.dot -s summary
+
+# Convert to PNG (requires Graphviz)
 dot -Tpng model.dot -o model.png
 ```
-
-## For Contributors
-
-**High-Priority Work Needed:**
-
-1. **Unblock planner** (2-3 days) - Implement step generation in `crates/onyxia-planner/src/lib.rs`
-   - Map ONNX nodes → Operation instances
-   - Connect op_type strings to ShaderHandle  
-   - Extract parameters from attributes
-   
-2. **Test end-to-end** (1 day) - Once operations generate, validate pipeline works
-3. **Add more shaders** (ongoing) - Cover more ONNX operations
-4. **Shape inference improvements** (1-2 days) - Implement constant evaluation for remaining 49%
-
-See [ARCHITECTURE.md Development Phases](ARCHITECTURE.md#development-phases) for detailed roadmap.
 
 ## Prerequisites
 
@@ -112,34 +156,20 @@ We use [nextest](https://nexte.st/) as our test runner:
 cargo nextest run
 ```
 
-## CLI Usage
-
-### Generate DOT Graphs
-
-Visualize ONNX model structure:
+GPU-dependent tests are marked `#[ignore]` and can be run with:
 
 ```bash
-# Full graph (all nodes and edges)
-cargo run -p onyxia-cli -- dot model.onnx -o model.dot
-
-# Layer-grouped view (faster for large models)
-cargo run -p onyxia-cli -- dot model.onnx -o model.dot -s layers
-
-# High-level summary
-cargo run -p onyxia-cli -- dot model.onnx -o model.dot -s summary
-
-# Convert to PNG (requires Graphviz)
-dot -Tpng model.dot -o model.png
+cargo nextest run --run-ignored all
 ```
 
 ## Crates
 
-| Crate | Description | Documentation |
-|-------|-------------|---------------|
-| `onyxia-onnx` | ONNX protobuf parser | [crates/onyxia-onnx](crates/onyxia-onnx) |
-| `onyxia-planner` | Execution plan compiler | [crates/onyxia-planner/DESIGN.md](crates/onyxia-planner/DESIGN.md) |
-| `onyxia-runtime` | GPU executor via wgpu | [crates/onyxia-runtime/DESIGN.md](crates/onyxia-runtime/DESIGN.md) |
-| `onyxia-cli` | CLI testing tools | [crates/onyxia-cli](crates/onyxia-cli) |
+| Crate | Description |
+|-------|-------------|
+| `onyxia-onnx` | ONNX protobuf parser, Graph API, shape inference |
+| `onyxia-planner` | Execution plan compiler with extensible kernel system |
+| `onyxia-runtime` | GPU executor via wgpu |
+| `onyxia-cli` | CLI tools for model inspection and DOT export |
 
 ## Example Models
 
@@ -151,13 +181,11 @@ The `models/` directory contains sample ONNX models for testing:
 
 ## Development Roadmap
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full development plan. Current status:
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full development plan:
 
-- ✅ Phase 1: Graph and Planner Foundation (COMPLETED)
-  - Graph data structures, ONNX parser, scheduler, compiled model
-- 🚧 Phase 2: Core Operator Shaders (CURRENT)
-  - WGSL shader generation for elementwise ops, LayerNorm, MatMul
-- 🔜 Phase 3: Runtime Execution
+- ✅ Phase 1: Graph and Parser Foundation
+- ✅ Phase 2: Planner and Kernel System
+- ✅ Phase 3: Runtime Execution
 - 🔜 Phase 4: Quantization Support
 - 🔜 Phase 5: Attention and KV Cache
 - 🔜 Phase 6: Optimizations
