@@ -307,6 +307,8 @@ impl KernelRegistry {
             Box::new(crate::kernels::RmsNormKernel),
         );
         registry.register("MatMul", Box::new(crate::kernels::MatMulF32Kernel));
+        registry.register("Constant", Box::new(crate::kernels::ConstantKernel));
+        registry.register("Shape", Box::new(crate::kernels::ShapeKernel));
         registry
     }
 

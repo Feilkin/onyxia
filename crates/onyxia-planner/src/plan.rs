@@ -33,24 +33,24 @@ impl TensorRegistry {
             tensors: Vec::new(),
         }
     }
-    
+
     /// Add a tensor to the registry.
     pub fn add(&mut self, info: TensorInfo) -> TensorId {
         let id = self.tensors.len();
         self.tensors.push(info);
         id
     }
-    
+
     /// Get tensor info by ID.
     pub fn get(&self, id: TensorId) -> Option<&TensorInfo> {
         self.tensors.get(id)
     }
-    
+
     /// Get all tensors.
     pub fn all(&self) -> &[TensorInfo] {
         &self.tensors
     }
-    
+
     /// Find tensor by name.
     pub fn find_by_name(&self, name: &str) -> Option<(TensorId, &TensorInfo)> {
         self.tensors

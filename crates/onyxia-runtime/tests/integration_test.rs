@@ -1,7 +1,7 @@
 //! Integration tests for runtime execution.
 
-use onyxia_planner::{compile, KernelRegistry};
 use onyxia_onnx::{load_model, parser::parse_model};
+use onyxia_planner::{KernelRegistry, compile};
 use onyxia_runtime::Runtime;
 use std::collections::HashMap;
 
@@ -101,7 +101,9 @@ async fn test_runtime_load_gemma_model() {
             // Unknown shape errors are expected - need shape inference
             if err_msg.contains("unknown shape") {
                 println!("✓ Dynamic device creation working!");
-                println!("  Model loading stopped at shape inference (intermediate tensors need inference).");
+                println!(
+                    "  Model loading stopped at shape inference (intermediate tensors need inference)."
+                );
                 println!("  This validates buffer size calculation and device creation.");
                 return;
             }
@@ -201,7 +203,9 @@ async fn test_runtime_load_gemma_full_precision() {
             // Unknown shape errors are expected - need shape inference
             if err_msg.contains("unknown shape") {
                 println!("✓ Dynamic device creation working!");
-                println!("  Model loading stopped at shape inference (intermediate tensors need inference).");
+                println!(
+                    "  Model loading stopped at shape inference (intermediate tensors need inference)."
+                );
                 println!("  This validates buffer size calculation and device creation.");
                 return;
             }

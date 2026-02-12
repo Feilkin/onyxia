@@ -2,8 +2,8 @@
 //!
 //! These tests verify the complete pipeline from Graph → ExecutionPlan → GPU execution.
 
-use onyxia_planner::{KernelRegistry, compile};
 use onyxia_onnx::{DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
+use onyxia_planner::{KernelRegistry, compile};
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 
@@ -88,8 +88,7 @@ async fn test_add_e2e() {
     let registry = KernelRegistry::with_defaults();
     let dynamic_dimensions = HashMap::new();
 
-    let plan = compile(&graph, &registry, &dynamic_dimensions)
-        .expect("Compilation should succeed");
+    let plan = compile(&graph, &registry, &dynamic_dimensions).expect("Compilation should succeed");
 
     // Verify plan structure
     assert_eq!(
@@ -254,8 +253,7 @@ async fn test_multiple_operations() {
 
     // Compile and execute
     let registry = KernelRegistry::with_defaults();
-    let plan =
-        compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     assert_eq!(plan.operations.len(), 2, "Should have 2 operations");
 
@@ -322,8 +320,7 @@ async fn test_mul_e2e() {
 
     // Compile and execute
     let registry = KernelRegistry::with_defaults();
-    let plan =
-        compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
     let mut executor = runtime
@@ -387,8 +384,7 @@ async fn test_gelu_e2e() {
 
     // Compile and execute
     let registry = KernelRegistry::with_defaults();
-    let plan =
-        compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
     let mut executor = runtime
@@ -476,8 +472,7 @@ async fn test_rmsnorm_e2e() {
 
     // Compile and execute
     let registry = KernelRegistry::with_defaults();
-    let plan =
-        compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
     let mut executor = runtime
@@ -564,8 +559,7 @@ async fn test_matmul_e2e() {
 
     // Compile and execute
     let registry = KernelRegistry::with_defaults();
-    let plan =
-        compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
     let mut executor = runtime

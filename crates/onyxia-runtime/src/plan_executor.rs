@@ -5,8 +5,8 @@
 
 use crate::error::{Result, RuntimeError};
 use crate::tensor::Tensor;
-use onyxia_planner::plan::{BindingDesc, BufferRef, ExecutionPlan, PlannedOp, Step};
 use onyxia_onnx::{TensorId, TensorShape};
+use onyxia_planner::plan::{BindingDesc, BufferRef, ExecutionPlan, PlannedOp, Step};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -173,7 +173,7 @@ impl PlanExecutor {
     }
 
     /// Calculate the immediate data size required by a shader.
-    /// 
+    ///
     /// Inspects the naga module for var<immediate> declarations and calculates
     /// the total size of immediate data required by the shader.
     fn calculate_immediate_size(&self, module: &naga::Module) -> Result<u32> {
@@ -200,7 +200,7 @@ impl PlanExecutor {
         type_inner: &naga::TypeInner,
     ) -> Result<u32> {
         use naga::TypeInner;
-        
+
         match type_inner {
             TypeInner::Scalar(scalar) => Ok(scalar.width as u32),
             TypeInner::Vector { scalar, size } => {
@@ -212,7 +212,11 @@ impl PlanExecutor {
                 };
                 Ok(element_size * count)
             }
-            TypeInner::Matrix { scalar, columns, rows } => {
+            TypeInner::Matrix {
+                scalar,
+                columns,
+                rows,
+            } => {
                 let element_size = scalar.width as u32;
                 let col_count = match columns {
                     naga::VectorSize::Bi => 2,
@@ -237,18 +241,22 @@ impl PlanExecutor {
                     Ok(0)
                 }
             }
-            TypeInner::Array { base: _, size, stride } => {
+            TypeInner::Array {
+                base: _,
+                size,
+                stride,
+            } => {
                 let count = match size {
                     naga::ArraySize::Constant(c) => c.get(),
                     naga::ArraySize::Dynamic => {
                         return Err(RuntimeError::ShaderError(
                             "Dynamic arrays not supported in immediate data".to_string(),
-                        ))
+                        ));
                     }
                     naga::ArraySize::Pending(_) => {
                         return Err(RuntimeError::ShaderError(
                             "Pending array size not supported in immediate data".to_string(),
-                        ))
+                        ));
                     }
                 };
                 Ok(stride * count)
@@ -482,12 +490,12 @@ impl PlanExecutor {
 
         compute_pass.set_pipeline(pipeline);
         compute_pass.set_bind_group(0, &bind_group, &[]);
-        
+
         // Set immediate data if provided
         if let Some(data) = immediates {
             compute_pass.set_immediates(0, data);
         }
-        
+
         compute_pass.dispatch_workgroups(workgroups[0], workgroups[1], workgroups[2]);
 
         Ok(())
