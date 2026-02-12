@@ -141,13 +141,15 @@ impl Runtime {
         let mut limits = wgpu::Limits::default();
         // Clamp to u32::MAX since wgpu uses u32 for buffer sizes
         limits.max_storage_buffer_binding_size = required_buffer_size.min(u32::MAX as u64) as u32;
+        // Request immediate data support (push constants) - 128 bytes is a common minimum
+        limits.max_immediate_size = 128;
 
         // Create device with calculated limits
         let (device, queue) = self
             .adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("Onyxia Device"),
-                required_features: wgpu::Features::empty(),
+                required_features: wgpu::Features::IMMEDIATES,
                 required_limits: limits,
                 memory_hints: wgpu::MemoryHints::default(),
                 ..Default::default()
@@ -233,13 +235,15 @@ impl Runtime {
         let mut limits = wgpu::Limits::default();
         // Clamp to u32::MAX since wgpu uses u32 for buffer sizes
         limits.max_storage_buffer_binding_size = required_buffer_size.min(u32::MAX as u64) as u32;
+        // Request immediate data support (push constants) - 128 bytes is a common minimum
+        limits.max_immediate_size = 128;
 
         // Create device with calculated limits
         let (device, queue) = self
             .adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("Onyxia Device (Plan)"),
-                required_features: wgpu::Features::empty(),
+                required_features: wgpu::Features::IMMEDIATES,
                 required_limits: limits,
                 memory_hints: wgpu::MemoryHints::default(),
                 ..Default::default()

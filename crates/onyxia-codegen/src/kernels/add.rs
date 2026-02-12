@@ -41,7 +41,22 @@ impl OpKernel for AddKernel {
             shader_defs,
         )?;
 
-        // Create dispatch step with bindings
+        // Get input shapes for immediate data
+        let input_a_info = ctx.input_info(0)?;
+        let input_a_shape = ctx.resolve_shape(&input_a_info.shape)?;
+        let a_size: u32 = input_a_shape.iter().product::<usize>() as u32;
+
+        let input_b_info = ctx.input_info(1)?;
+        let input_b_shape = ctx.resolve_shape(&input_b_info.shape)?;
+        let b_size: u32 = input_b_shape.iter().product::<usize>() as u32;
+
+        // Encode immediate data (must match ImmediateConstants struct in shader)
+        let mut immediates_data = Vec::new();
+        immediates_data.extend_from_slice(&(num_elements as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&a_size.to_le_bytes());
+        immediates_data.extend_from_slice(&b_size.to_le_bytes());
+
+        // Create dispatch step with bindings and immediates
         Ok(vec![Step::Dispatch {
             shader_index,
             bindings: vec![
@@ -59,6 +74,7 @@ impl OpKernel for AddKernel {
                 },
             ],
             workgroups: [num_workgroups, 1, 1],
+            immediates: Some(immediates_data),
         }])
     }
 }
@@ -136,6 +152,7 @@ mod tests {
                 shader_index,
                 bindings,
                 workgroups,
+                ..
             } => {
                 // Verify shader was compiled
                 assert_eq!(*shader_index, 0);

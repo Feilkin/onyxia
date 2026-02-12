@@ -24,6 +24,8 @@ pub enum Step {
         bindings: Vec<BindingDesc>,
         /// Workgroup dimensions [x, y, z].
         workgroups: [u32; 3],
+        /// Optional immediate data to pass to the shader (for var<immediate>).
+        immediates: Option<Vec<u8>>,
     },
     /// Copy data between buffers.
     CopyBuffer {
@@ -174,6 +176,7 @@ mod tests {
                 },
             ],
             workgroups: [1, 1, 1],
+            immediates: None,
         };
 
         // Create operation
@@ -218,6 +221,7 @@ mod tests {
                 shader_index,
                 bindings,
                 workgroups,
+                ..
             } => {
                 assert_eq!(*shader_index, 0);
                 assert_eq!(bindings.len(), 2);
@@ -244,6 +248,7 @@ mod tests {
             shader_index: 0,
             bindings: vec![],
             workgroups: [64, 1, 1],
+            immediates: None,
         };
         match dispatch {
             Step::Dispatch { shader_index, .. } => assert_eq!(shader_index, 0),

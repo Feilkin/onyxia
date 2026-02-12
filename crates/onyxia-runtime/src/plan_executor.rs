@@ -78,13 +78,16 @@ impl PlanExecutor {
             let bind_group_layout =
                 self.create_bind_group_layout_for_shader(index, compiled_shader)?;
 
+            // Calculate immediate size from shader module
+            let immediate_size = self.calculate_immediate_size(&compiled_shader.module)?;
+
             // Create pipeline layout
             let pipeline_layout =
                 self.device
                     .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                         label: Some(&format!("Pipeline Layout: {}", compiled_shader.label)),
                         bind_group_layouts: &[&bind_group_layout],
-                        immediate_size: 0,
+                        immediate_size,
                     });
 
             // Create compute pipeline
@@ -135,13 +138,20 @@ impl PlanExecutor {
                 );
 
                 if is_used || true {
-                    // For now, assume all storage buffers
-                    // TODO: Determine read-only vs read-write from usage
+                    // Determine read-only vs read-write from the storage access flags
+                    let read_only = match var.space {
+                        naga::AddressSpace::Storage { access } => {
+                            // If STORE flag is not present, it's read-only
+                            !access.contains(naga::StorageAccess::STORE)
+                        }
+                        _ => false, // Non-storage buffers default to read-write
+                    };
+
                     entries.push(wgpu::BindGroupLayoutEntry {
                         binding: binding.binding,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            ty: wgpu::BufferBindingType::Storage { read_only },
                             has_dynamic_offset: false,
                             min_binding_size: None,
                         },
@@ -160,6 +170,94 @@ impl PlanExecutor {
                 label: Some(&format!("Bind Group Layout: {}", compiled_shader.label)),
                 entries: &entries,
             }))
+    }
+
+    /// Calculate the immediate data size required by a shader.
+    /// 
+    /// Inspects the naga module for var<immediate> declarations and calculates
+    /// the total size of immediate data required by the shader.
+    fn calculate_immediate_size(&self, module: &naga::Module) -> Result<u32> {
+        let mut max_size = 0u32;
+
+        // Iterate through global variables looking for immediate address space
+        for (_handle, global_var) in module.global_variables.iter() {
+            if matches!(global_var.space, naga::AddressSpace::Immediate) {
+                // Get the type info for this variable using handle indexing
+                let type_info = &module.types[global_var.ty];
+                // Calculate the size in bytes
+                let size = self.calculate_type_size(&module.types, &type_info.inner)?;
+                max_size = max_size.max(size);
+            }
+        }
+
+        Ok(max_size)
+    }
+
+    /// Calculate the size of a naga type in bytes.
+    fn calculate_type_size(
+        &self,
+        types: &naga::UniqueArena<naga::Type>,
+        type_inner: &naga::TypeInner,
+    ) -> Result<u32> {
+        use naga::TypeInner;
+        
+        match type_inner {
+            TypeInner::Scalar(scalar) => Ok(scalar.width as u32),
+            TypeInner::Vector { scalar, size } => {
+                let element_size = scalar.width as u32;
+                let count = match size {
+                    naga::VectorSize::Bi => 2,
+                    naga::VectorSize::Tri => 3,
+                    naga::VectorSize::Quad => 4,
+                };
+                Ok(element_size * count)
+            }
+            TypeInner::Matrix { scalar, columns, rows } => {
+                let element_size = scalar.width as u32;
+                let col_count = match columns {
+                    naga::VectorSize::Bi => 2,
+                    naga::VectorSize::Tri => 3,
+                    naga::VectorSize::Quad => 4,
+                };
+                let row_count = match rows {
+                    naga::VectorSize::Bi => 2,
+                    naga::VectorSize::Tri => 3,
+                    naga::VectorSize::Quad => 4,
+                };
+                Ok(element_size * col_count * row_count)
+            }
+            TypeInner::Struct { members, .. } => {
+                // For structs, we need to account for alignment and padding
+                // Use the offset + size of the last member
+                if let Some(last_member) = members.last() {
+                    let last_type = &types[last_member.ty];
+                    let last_size = self.calculate_type_size(types, &last_type.inner)?;
+                    Ok(last_member.offset + last_size)
+                } else {
+                    Ok(0)
+                }
+            }
+            TypeInner::Array { base, size, stride } => {
+                let count = match size {
+                    naga::ArraySize::Constant(c) => c.get(),
+                    naga::ArraySize::Dynamic => {
+                        return Err(RuntimeError::ShaderError(
+                            "Dynamic arrays not supported in immediate data".to_string(),
+                        ))
+                    }
+                    naga::ArraySize::Pending(_) => {
+                        return Err(RuntimeError::ShaderError(
+                            "Pending array size not supported in immediate data".to_string(),
+                        ))
+                    }
+                };
+                Ok(stride * count)
+            }
+            _ => Err(RuntimeError::ShaderError(format!(
+                "Unsupported type in immediate data: {:?}",
+                type_inner
+            ))),
+        }
     }
 
     /// Allocate GPU buffers for all model tensors.
@@ -267,6 +365,14 @@ impl PlanExecutor {
             self.execute_operation(op_index, operation)?;
         }
 
+        // Ensure all GPU operations complete before downloading results
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|e| RuntimeError::ExecutionError(format!("GPU poll failed: {:?}", e)))?;
+
         // Download outputs from GPU
         let mut outputs = HashMap::new();
         for output_id in &self.plan.outputs {
@@ -309,6 +415,7 @@ impl PlanExecutor {
                     shader_index,
                     bindings,
                     workgroups,
+                    immediates,
                 } => {
                     self.execute_dispatch(
                         &mut encoder,
@@ -316,6 +423,7 @@ impl PlanExecutor {
                         *shader_index,
                         bindings,
                         *workgroups,
+                        immediates.as_deref(),
                     )?;
                 }
                 Step::CopyBuffer { src, dst, size } => {
@@ -340,6 +448,7 @@ impl PlanExecutor {
         shader_index: usize,
         bindings: &[BindingDesc],
         workgroups: [u32; 3],
+        immediates: Option<&[u8]>,
     ) -> Result<()> {
         let pipeline = self.pipelines.get(shader_index).ok_or_else(|| {
             RuntimeError::ShaderError(format!("Pipeline {} not found", shader_index))
@@ -373,6 +482,12 @@ impl PlanExecutor {
 
         compute_pass.set_pipeline(pipeline);
         compute_pass.set_bind_group(0, &bind_group, &[]);
+        
+        // Set immediate data if provided
+        if let Some(data) = immediates {
+            compute_pass.set_immediates(0, data);
+        }
+        
         compute_pass.dispatch_workgroups(workgroups[0], workgroups[1], workgroups[2]);
 
         Ok(())
@@ -458,6 +573,16 @@ impl PlanExecutor {
 
         self.queue.submit(Some(encoder.finish()));
 
+        // Poll the device to ensure the copy completes before mapping
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|e| {
+                RuntimeError::ExecutionError(format!("GPU poll failed during download: {:?}", e))
+            })?;
+
         // Map staging buffer and read data
         let buffer_slice = staging_buffer.slice(..);
         let (tx, rx) = futures::channel::oneshot::channel();
@@ -465,6 +590,16 @@ impl PlanExecutor {
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             tx.send(result).unwrap();
         });
+
+        // Poll the device to trigger the map callback
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|e| {
+                RuntimeError::ExecutionError(format!("GPU poll failed during mapping: {:?}", e))
+            })?;
 
         // Wait for the GPU to finish (receiver.await will handle this)
         pollster::block_on(rx)

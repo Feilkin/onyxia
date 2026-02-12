@@ -351,6 +351,7 @@ mod tests {
                     },
                 ],
                 workgroups: [1, 1, 1],
+                immediates: None,
             };
 
             Ok(vec![step])
@@ -381,6 +382,7 @@ mod tests {
                     },
                 ],
                 workgroups: [2, 1, 1],
+                immediates: None,
             };
 
             Ok(vec![step])
@@ -450,6 +452,7 @@ mod tests {
                 shader_index,
                 bindings,
                 workgroups,
+                ..
             } => {
                 assert_eq!(*shader_index, 0);
                 assert_eq!(bindings.len(), 2);
