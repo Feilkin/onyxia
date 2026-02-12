@@ -4,6 +4,7 @@ use crate::error::Result;
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
+use onyxia_onnx::TensorShape;
 use std::collections::HashMap;
 
 /// Kernel for elementwise addition (ONNX Add operator).
@@ -15,6 +16,22 @@ pub struct AddKernel;
 impl OpKernel for AddKernel {
     fn name(&self) -> &str {
         "Add"
+    }
+
+    fn infer_output_shapes(
+        &self,
+        _node: &onyxia_onnx::Node,
+        input_shapes: &[TensorShape],
+        _dynamic_dimensions: &HashMap<String, usize>,
+    ) -> Result<Vec<TensorShape>> {
+        // For elementwise addition, output shape is the broadcast result
+        // For now, assume same shapes (broadcasting handled by shader)
+        if input_shapes.is_empty() {
+            return Err(crate::error::CodegenError::InvalidShape(
+                "Add requires at least one input".to_string(),
+            ));
+        }
+        Ok(vec![input_shapes[0].clone()])
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {

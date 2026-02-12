@@ -29,13 +29,15 @@ pub mod kernel;
 pub mod kernels;
 pub mod plan;
 pub mod scheduler;
+pub mod shape_inference;
 
 pub use error::{CodegenError, Result};
 pub use kernel::{KernelRegistry, OpKernel, PlanContext};
 pub use plan::{
-    BindingDesc, BufferRef, CompiledShader, ExecutionPlan, ModelMetadata, PlannedOp, 
+    BindingDesc, BufferRef, CompiledShader, ExecutionPlan, ModelMetadata, PlannedOp,
     ScratchBufferDesc, ShaderIndex, Step, TensorRegistry,
 };
+pub use shape_inference::infer_shapes;
 
 use onyxia_onnx::{Graph, OnnxError};
 use scheduler::Scheduler;
@@ -85,6 +87,10 @@ pub fn compile(
 ) -> Result<ExecutionPlan> {
     use onyxia_onnx::{Dimension, TensorShape};
 
+    // Step 0: Infer shapes using kernel-defined shape rules with dynamic dimensions
+    let mut graph = graph.clone();
+    shape_inference::infer_shapes(&mut graph, registry, dynamic_dimensions)?;
+
     // Step 1: Run scheduler to get topologically ordered node IDs
     let scheduler = Scheduler::new(graph.clone());
     let ordered_nodes = scheduler.schedule()?;
@@ -117,9 +123,13 @@ pub fn compile(
                 }
                 TensorShape::Static(resolved_dims)
             }
+            TensorShape::Absent => {
+                // Optional input not provided - skip this tensor, it doesn't actually exist
+                continue;
+            }
             TensorShape::Unknown => {
                 return Err(CodegenError::InvalidShape(format!(
-                    "Tensor '{}' has unknown shape, cannot compile",
+                    "Tensor '{}' has unknown shape - shape inference failed for this operation",
                     info.name
                 )));
             }
@@ -179,7 +189,7 @@ pub fn compile(
         // Construct PlanContext
         let mut ctx = PlanContext::new(
             node,
-            graph,
+            &graph,
             &input_ids,
             &output_ids,
             dynamic_dimensions,

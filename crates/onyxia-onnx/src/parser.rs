@@ -47,7 +47,7 @@ pub fn parse_model(model: &ModelProto) -> Result<Graph> {
     }
 
     // Parse initializers as weight tensors
-    for (_name, init) in &initializers {
+    for init in initializers.values() {
         let tensor_info = parse_initializer(init, TensorKind::Weight)?;
         graph.add_tensor(tensor_info);
     }
@@ -59,19 +59,17 @@ pub fn parse_model(model: &ModelProto) -> Result<Graph> {
         // Register intermediate tensors (outputs that aren't already registered)
         for output in &node.outputs {
             if !graph.tensors.contains_key(output) {
-                // Special handling for Constant nodes - extract shape from tensor attribute
-                let shape = if node.op_type == "Constant" {
-                    extract_constant_shape(node_proto)?
+                // Special handling for Constant nodes - extract shape and data from tensor attribute
+                let tensor_info = if node.op_type == "Constant" {
+                    extract_constant_tensor_info(node_proto, output)?
                 } else {
-                    TensorShape::Unknown
-                };
-
-                let tensor_info = TensorInfo {
-                    name: output.clone(),
-                    dtype: DataType::F32, // Default, may be inferred later
-                    shape,
-                    kind: TensorKind::Intermediate,
-                    initializer: None,
+                    TensorInfo {
+                        name: output.clone(),
+                        dtype: DataType::F32, // Default, may be inferred later
+                        shape: TensorShape::Unknown,
+                        kind: TensorKind::Intermediate,
+                        initializer: None,
+                    }
                 };
                 graph.add_tensor(tensor_info);
             }
@@ -82,9 +80,6 @@ pub fn parse_model(model: &ModelProto) -> Result<Graph> {
 
     // Validate the graph
     graph.validate()?;
-
-    // Infer shapes for intermediate tensors
-    crate::shape_inference::infer_shapes(&mut graph)?;
 
     Ok(graph)
 }
@@ -152,19 +147,125 @@ fn parse_initializer(tensor: &TensorProto, kind: TensorKind) -> Result<TensorInf
     })
 }
 
-/// Extract shape from a Constant node's tensor attribute.
+/// Extract TensorInfo from a Constant node's tensor attribute, including shape and data.
+fn extract_constant_tensor_info(node: &NodeProto, name: &str) -> Result<TensorInfo> {
+    // Find the "value" attribute which contains the TensorProto
+    for attr in &node.attribute {
+        if attr.name == "value"
+            && let Some(ref tensor) = attr.t
+        {
+            let shape = if tensor.dims.is_empty() {
+                TensorShape::Static(vec![]) // Scalar
+            } else {
+                TensorShape::Static(tensor.dims.iter().map(|&d| d as usize).collect())
+            };
+
+            let dtype = tensor_data_type_to_dtype(tensor.data_type);
+
+            // Extract raw data from tensor
+            // Data can be in `raw_data` or in typed arrays like `int64_data`, `int32_data`, etc.
+            let initializer = extract_tensor_raw_data(tensor);
+
+            return Ok(TensorInfo {
+                name: name.to_string(),
+                dtype,
+                shape,
+                kind: TensorKind::Intermediate,
+                initializer,
+            });
+        }
+    }
+
+    // No tensor attribute found - shouldn't happen for valid Constant nodes
+    Ok(TensorInfo {
+        name: name.to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Unknown,
+        kind: TensorKind::Intermediate,
+        initializer: None,
+    })
+}
+
+/// Extract raw data from a TensorProto, handling both raw_data and typed arrays.
+fn extract_tensor_raw_data(tensor: &TensorProto) -> Option<Vec<u8>> {
+    // If raw_data is present, use it directly
+    if !tensor.raw_data.is_empty() {
+        return Some(tensor.raw_data.clone());
+    }
+
+    // Otherwise, try typed arrays
+    // Handle int64_data
+    if !tensor.int64_data.is_empty() {
+        let bytes: Vec<u8> = tensor
+            .int64_data
+            .iter()
+            .flat_map(|&v| v.to_le_bytes())
+            .collect();
+        return Some(bytes);
+    }
+
+    // Handle int32_data
+    if !tensor.int32_data.is_empty() {
+        let bytes: Vec<u8> = tensor
+            .int32_data
+            .iter()
+            .flat_map(|&v| v.to_le_bytes())
+            .collect();
+        return Some(bytes);
+    }
+
+    // Handle float_data
+    if !tensor.float_data.is_empty() {
+        let bytes: Vec<u8> = tensor
+            .float_data
+            .iter()
+            .flat_map(|&v| v.to_le_bytes())
+            .collect();
+        return Some(bytes);
+    }
+
+    // Handle double_data
+    if !tensor.double_data.is_empty() {
+        let bytes: Vec<u8> = tensor
+            .double_data
+            .iter()
+            .flat_map(|&v| v.to_le_bytes())
+            .collect();
+        return Some(bytes);
+    }
+
+    None
+}
+
+/// Convert ONNX TensorProto data type to internal DataType.
+fn tensor_data_type_to_dtype(data_type: i32) -> DataType {
+    use crate::onnx::tensor_proto::DataType as OnnxDataType;
+    match OnnxDataType::try_from(data_type) {
+        Ok(OnnxDataType::Float) => DataType::F32,
+        Ok(OnnxDataType::Float16) => DataType::F16,
+        Ok(OnnxDataType::Int32) => DataType::I32,
+        Ok(OnnxDataType::Int64) => DataType::I64,
+        Ok(OnnxDataType::Uint8) => DataType::U8,
+        Ok(OnnxDataType::Uint32) => DataType::U32,
+        Ok(OnnxDataType::Bool) => DataType::Bool,
+        _ => DataType::F32, // Default
+    }
+}
+
+/// Extract shape from a Constant node's tensor attribute (for backwards compatibility).
+#[allow(dead_code)]
 fn extract_constant_shape(node: &NodeProto) -> Result<TensorShape> {
     // Find the "value" attribute which contains the TensorProto
     for attr in &node.attribute {
-        if attr.name == "value" {
-            if let Some(ref tensor) = attr.t {
-                let shape = if tensor.dims.is_empty() {
-                    TensorShape::Static(vec![]) // Scalar
-                } else {
-                    TensorShape::Static(tensor.dims.iter().map(|&d| d as usize).collect())
-                };
-                return Ok(shape);
-            }
+        if attr.name == "value"
+            && let Some(ref tensor) = attr.t
+        {
+            let shape = if tensor.dims.is_empty() {
+                TensorShape::Static(vec![]) // Scalar
+            } else {
+                TensorShape::Static(tensor.dims.iter().map(|&d| d as usize).collect())
+            };
+            return Ok(shape);
         }
     }
     // No tensor attribute found - shouldn't happen for valid Constant nodes

@@ -270,7 +270,7 @@ impl PlanExecutor {
                     let element_size = info.dtype.size();
                     (element_count * element_size) as u64
                 }
-                TensorShape::Dynamic(_) | TensorShape::Unknown => {
+                TensorShape::Dynamic(_) | TensorShape::Unknown | TensorShape::Absent => {
                     return Err(RuntimeError::TensorError(format!(
                         "Tensor '{}' has non-static shape in execution plan. \
                          All shapes should be resolved at plan time.",

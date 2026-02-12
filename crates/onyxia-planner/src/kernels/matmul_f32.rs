@@ -4,6 +4,7 @@ use crate::error::Result;
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
+use onyxia_onnx::{Dimension, TensorShape};
 use std::collections::HashMap;
 
 /// Kernel for f32 matrix multiplication (ONNX MatMul operator).
@@ -19,6 +20,60 @@ pub struct MatMulF32Kernel;
 impl OpKernel for MatMulF32Kernel {
     fn name(&self) -> &str {
         "MatMulF32"
+    }
+
+    fn infer_output_shapes(
+        &self,
+        _node: &onyxia_onnx::Node,
+        input_shapes: &[TensorShape],
+        _dynamic_dimensions: &HashMap<String, usize>,
+    ) -> Result<Vec<TensorShape>> {
+        // MatMul: [M, K] × [K, N] -> [M, N]
+        if input_shapes.len() < 2 {
+            return Err(crate::error::CodegenError::InvalidShape(
+                "MatMul requires two inputs".to_string(),
+            ));
+        }
+
+        let a_shape = &input_shapes[0];
+        let b_shape = &input_shapes[1];
+
+        // Extract dimensions from shapes
+        let a_dims = match a_shape {
+            TensorShape::Static(dims) => dims.clone(),
+            TensorShape::Dynamic(dims) => dims
+                .iter()
+                .map(|d| match d {
+                    Dimension::Static(s) => *s,
+                    Dimension::Named(_) => 0, // Will be resolved later
+                })
+                .collect(),
+            TensorShape::Unknown | TensorShape::Absent => return Ok(vec![TensorShape::Unknown]),
+        };
+
+        let b_dims = match b_shape {
+            TensorShape::Static(dims) => dims.clone(),
+            TensorShape::Dynamic(dims) => dims
+                .iter()
+                .map(|d| match d {
+                    Dimension::Static(s) => *s,
+                    Dimension::Named(_) => 0,
+                })
+                .collect(),
+            TensorShape::Unknown | TensorShape::Absent => return Ok(vec![TensorShape::Unknown]),
+        };
+
+        if a_dims.len() < 2 || b_dims.len() < 2 {
+            return Err(crate::error::CodegenError::InvalidShape(format!(
+                "MatMul requires at least 2D tensors, got A: {:?}, B: {:?}",
+                a_dims, b_dims
+            )));
+        }
+
+        // Output shape: [M, N]
+        let m = a_dims[a_dims.len() - 2];
+        let n = b_dims[b_dims.len() - 1];
+        Ok(vec![TensorShape::Static(vec![m, n])])
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
@@ -168,7 +223,9 @@ mod tests {
             &mut shaders,
         );
 
-        let steps = MatMulF32Kernel.plan(&mut ctx).expect("Planning should succeed");
+        let steps = MatMulF32Kernel
+            .plan(&mut ctx)
+            .expect("Planning should succeed");
 
         // Verify we got exactly one dispatch step
         assert_eq!(steps.len(), 1);
@@ -243,7 +300,9 @@ mod tests {
             &mut shaders,
         );
 
-        let steps = MatMulF32Kernel.plan(&mut ctx).expect("Planning should succeed");
+        let steps = MatMulF32Kernel
+            .plan(&mut ctx)
+            .expect("Planning should succeed");
 
         match &steps[0] {
             Step::Dispatch {
@@ -347,7 +406,9 @@ mod tests {
             &mut shaders,
         );
 
-        let steps = MatMulF32Kernel.plan(&mut ctx).expect("Planning should succeed");
+        let steps = MatMulF32Kernel
+            .plan(&mut ctx)
+            .expect("Planning should succeed");
 
         match &steps[0] {
             Step::Dispatch { workgroups, .. } => {

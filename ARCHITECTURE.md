@@ -25,22 +25,22 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in 3 main stag
 
 **Responsibilities:**
 - Parse ONNX protobuf into `Graph` — a stable API independent of the protobuf schema
-- Validate graph integrity and infer tensor shapes
+- Validate graph integrity
 - DOT graph export for visualization
 
-No computation or optimization — pure data parsing.
 
 **Key Types:**
 - `Graph`: Nodes, tensor metadata, input/output mappings
 - `Node`: Operator type, inputs, outputs, attributes
 - `TensorInfo`: Name, shape, data type, kind
-- `TensorShape`: Static, Dynamic, or Unknown
+- `TensorShape`: Static, Dynamic, Unknown (not yet inferred), or Absent (optional input not provided)
 - `DataType`: F32, F16, I32, I64, U8, U32, Bool, Q4, Q8
 
 
 ### onyxia-planner
 
 **Responsibilities:**
+- **Kernel-based shape inference** — each `OpKernel` implements `infer_output_shapes()` for its operation
 - Schedule operations (topological sort with `petgraph`)
 - Resolve all dynamic dimensions to static shapes at plan time
 - Compile WGSL shaders to `naga::Module` using `naga_oil` (the only crate that touches WGSL)
@@ -53,7 +53,7 @@ No computation or optimization — pure data parsing.
 - `PlannedOp`: One ONNX node → name, op_type, inputs, outputs, steps, scratch buffers
 - `Step`: Dispatch (shader + bindings + workgroups), CopyBuffer, WriteBuffer
 - `CompiledShader`: label + `naga::Module` + entry point name
-- `OpKernel` trait: `plan(&self, ctx: &mut PlanContext) -> Result<Vec<Step>>`
+- `OpKernel` trait: `plan(&self, ctx: &mut PlanContext) -> Result<Vec<Step>>` and `infer_output_shapes(&self, node, input_shapes, dynamic_dimensions) -> Result<Vec<TensorShape>>`
 - `KernelRegistry`: Maps op_type strings to `Box<dyn OpKernel>`
 - `PlanContext`: Gives kernels access to node info, tensor shapes, shader compilation, scratch allocation
 
@@ -93,6 +93,16 @@ Operations are added by implementing `OpKernel`:
 ```rust
 pub trait OpKernel: Send + Sync {
     fn name(&self) -> &str;
+    
+    // Shape inference: given input shapes, return output shapes
+    fn infer_output_shapes(
+        &self,
+        node: &Node,
+        input_shapes: &[TensorShape],
+        dynamic_dimensions: &HashMap<String, usize>,
+    ) -> Result<Vec<TensorShape>>;
+    
+    // Planning: generate GPU execution steps
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>>;
 }
 ```
@@ -107,8 +117,10 @@ let plan = compile(&graph, &registry, &dynamic_dimensions)?;
 
 **Benefits:**
 - ✅ Users add operations without modifying library code
+- ✅ Shape inference co-located with kernel implementation
 - ✅ One ONNX node can emit multiple GPU steps (no 1:1 assumption)
 - ✅ Kernels can allocate scratch buffers for multi-pass algorithms
+- ✅ No centralized match block — kernels define their own shape logic
 
 ### 2. Planner Compiles Shaders, Runtime Executes Them
 
@@ -137,7 +149,8 @@ Each crate has a **single, well-defined responsibility**:
 
 | Concern | Owner |
 |---------|-------|
-| ONNX parsing & shape inference | onyxia-onnx |
+| ONNX parsing | onyxia-onnx |
+| Kernel-based shape inference | onyxia-planner |
 | WGSL preprocessing (naga_oil) | onyxia-planner |
 | Shader def resolution | onyxia-planner |
 | Dynamic dimension resolution | onyxia-planner |
@@ -270,7 +283,6 @@ outputs ←───────────────────────
 ### Phase 1: Graph and Parser Foundation ✅ COMPLETED
 - [x] Graph data structures: Graph, Node, TensorInfo, TensorShape, DataType
 - [x] Parse ONNX ModelProto → Graph
-- [x] Shape inference for 18+ operations, ~51% coverage
 - [x] Graph validation
 - [x] DOT graph visualization (full, layers, summary)
 - [x] Integration test with Gemma 3 270m model
@@ -278,9 +290,10 @@ outputs ←───────────────────────
 ### Phase 2: Planner and Kernel System ✅ COMPLETED
 - [x] ExecutionPlan types: Step, PlannedOp, BufferRef, CompiledShader, TensorRegistry
 - [x] Topological scheduling with petgraph
+- [x] Kernel-based shape inference — each OpKernel implements `infer_output_shapes()`
 - [x] `OpKernel` trait and `KernelRegistry` for extensible operation mapping
 - [x] `PlanContext` with shader compilation, shape resolution, scratch allocation
-- [x] `compile()` entry point
+- [x] `compile()` entry point with integrated shape inference
 - [x] Dynamic dimension resolution at plan time
 - [x] Shader deduplication
 - [x] WGSL shaders: add, mul, gelu, rmsnorm, matmul_f32

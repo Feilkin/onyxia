@@ -17,19 +17,19 @@ pub type TensorId = usize;
 pub struct Graph {
     /// All nodes (operations) in the graph.
     pub nodes: Vec<Node>,
-    
+
     /// All tensors in the graph, indexed by name.
     pub tensors: HashMap<String, TensorId>,
-    
+
     /// Tensor metadata.
     pub tensor_info: Vec<TensorInfo>,
-    
+
     /// Names of input tensors.
     pub inputs: Vec<String>,
-    
+
     /// Names of output tensors.
     pub outputs: Vec<String>,
-    
+
     /// Graph metadata.
     pub metadata: GraphMetadata,
 }
@@ -39,13 +39,13 @@ pub struct Graph {
 pub struct GraphMetadata {
     /// Graph name (from ONNX).
     pub name: String,
-    
+
     /// IR version.
     pub ir_version: i64,
-    
+
     /// Producer name.
     pub producer_name: String,
-    
+
     /// Model version.
     pub model_version: i64,
 }
@@ -62,7 +62,7 @@ impl Graph {
             metadata: GraphMetadata::default(),
         }
     }
-    
+
     /// Get tensor ID by name.
     pub fn tensor_id(&self, name: &str) -> Result<TensorId> {
         self.tensors
@@ -70,20 +70,20 @@ impl Graph {
             .copied()
             .ok_or_else(|| OnnxError::MissingTensor(name.to_string()))
     }
-    
+
     /// Get tensor info by ID.
     pub fn tensor(&self, id: TensorId) -> Result<&TensorInfo> {
         self.tensor_info
             .get(id)
             .ok_or_else(|| OnnxError::InvalidGraph(format!("Invalid tensor ID: {}", id)))
     }
-    
+
     /// Get tensor info by name.
     pub fn tensor_by_name(&self, name: &str) -> Result<&TensorInfo> {
         let id = self.tensor_id(name)?;
         self.tensor(id)
     }
-    
+
     /// Add a tensor to the graph.
     pub fn add_tensor(&mut self, info: TensorInfo) -> TensorId {
         let id = self.tensor_info.len();
@@ -92,26 +92,26 @@ impl Graph {
         self.tensors.insert(name, id);
         id
     }
-    
+
     /// Add a node to the graph.
     pub fn add_node(&mut self, node: Node) -> NodeId {
         let id = self.nodes.len();
         self.nodes.push(node);
         id
     }
-    
+
     /// Validate graph structure.
     pub fn validate(&self) -> Result<()> {
         // Check that all inputs exist
         for input in &self.inputs {
             self.tensor_id(input)?;
         }
-        
+
         // Check that all outputs exist
         for output in &self.outputs {
             self.tensor_id(output)?;
         }
-        
+
         // Check that all node inputs/outputs reference valid tensors
         for node in &self.nodes {
             for input in &node.inputs {
@@ -127,7 +127,7 @@ impl Graph {
                 }
             }
         }
-        
+
         Ok(())
     }
 }
@@ -143,19 +143,19 @@ impl Default for Graph {
 pub struct Node {
     /// Node name (from ONNX, may be empty).
     pub name: String,
-    
+
     /// Operation type (e.g., "MatMul", "Add", "Conv").
     pub op_type: String,
-    
+
     /// Input tensor names.
     pub inputs: Vec<String>,
-    
+
     /// Output tensor names.
     pub outputs: Vec<String>,
-    
+
     /// Node attributes.
     pub attributes: HashMap<String, AttributeValue>,
-    
+
     /// Domain (for custom operators).
     pub domain: String,
 }
@@ -172,7 +172,7 @@ impl Node {
             domain: String::new(),
         }
     }
-    
+
     /// Get an attribute value.
     pub fn attr<T>(&self, name: &str) -> Result<T>
     where
@@ -183,15 +183,13 @@ impl Node {
             .attributes
             .get(name)
             .ok_or_else(|| OnnxError::MissingAttribute(name.to_string()))?;
-        
-        T::try_from(value.clone()).map_err(|e| {
-            OnnxError::TypeMismatch {
-                expected: std::any::type_name::<T>().to_string(),
-                actual: format!("{}", e),
-            }
+
+        T::try_from(value.clone()).map_err(|e| OnnxError::TypeMismatch {
+            expected: std::any::type_name::<T>().to_string(),
+            actual: format!("{}", e),
         })
     }
-    
+
     /// Check if an attribute exists.
     pub fn has_attr(&self, name: &str) -> bool {
         self.attributes.contains_key(name)
@@ -212,7 +210,7 @@ pub enum AttributeValue {
 
 impl TryFrom<AttributeValue> for f32 {
     type Error = String;
-    
+
     fn try_from(value: AttributeValue) -> std::result::Result<Self, Self::Error> {
         match value {
             AttributeValue::Float(v) => Ok(v),
@@ -223,7 +221,7 @@ impl TryFrom<AttributeValue> for f32 {
 
 impl TryFrom<AttributeValue> for i64 {
     type Error = String;
-    
+
     fn try_from(value: AttributeValue) -> std::result::Result<Self, Self::Error> {
         match value {
             AttributeValue::Int(v) => Ok(v),
@@ -234,7 +232,7 @@ impl TryFrom<AttributeValue> for i64 {
 
 impl TryFrom<AttributeValue> for String {
     type Error = String;
-    
+
     fn try_from(value: AttributeValue) -> std::result::Result<Self, Self::Error> {
         match value {
             AttributeValue::String(v) => Ok(v),
@@ -245,7 +243,7 @@ impl TryFrom<AttributeValue> for String {
 
 impl TryFrom<AttributeValue> for Vec<i64> {
     type Error = String;
-    
+
     fn try_from(value: AttributeValue) -> std::result::Result<Self, Self::Error> {
         match value {
             AttributeValue::Ints(v) => Ok(v),
@@ -259,16 +257,16 @@ impl TryFrom<AttributeValue> for Vec<i64> {
 pub struct TensorInfo {
     /// Tensor name.
     pub name: String,
-    
+
     /// Data type.
     pub dtype: DataType,
-    
+
     /// Tensor shape.
     pub shape: TensorShape,
-    
+
     /// Tensor kind (input, output, weight, intermediate).
     pub kind: TensorKind,
-    
+
     /// Initializer data (for weights).
     pub initializer: Option<Vec<u8>>,
 }
@@ -308,12 +306,15 @@ impl DataType {
 pub enum TensorShape {
     /// Static shape (all dimensions known).
     Static(Vec<usize>),
-    
+
     /// Dynamic shape with symbolic dimensions.
     Dynamic(Vec<Dimension>),
-    
-    /// Unknown/unspecified shape.
+
+    /// Unknown/unspecified shape (not yet inferred).
     Unknown,
+
+    /// Optional input that is absent (ONNX empty string).
+    Absent,
 }
 
 impl TensorShape {
@@ -321,7 +322,7 @@ impl TensorShape {
     pub fn is_static(&self) -> bool {
         matches!(self, TensorShape::Static(_))
     }
-    
+
     /// Get static dimensions if available.
     pub fn as_static(&self) -> Option<&[usize]> {
         match self {
@@ -329,13 +330,13 @@ impl TensorShape {
             _ => None,
         }
     }
-    
+
     /// Number of dimensions.
     pub fn ndim(&self) -> Option<usize> {
         match self {
             TensorShape::Static(dims) => Some(dims.len()),
             TensorShape::Dynamic(dims) => Some(dims.len()),
-            TensorShape::Unknown => None,
+            TensorShape::Unknown | TensorShape::Absent => None,
         }
     }
 }
@@ -345,7 +346,7 @@ impl TensorShape {
 pub enum Dimension {
     /// Static dimension with known size.
     Static(usize),
-    
+
     /// Named symbolic dimension (e.g., "batch", "sequence", "N").
     /// The actual value must be provided by the user at runtime.
     Named(String),
@@ -356,13 +357,13 @@ pub enum Dimension {
 pub enum TensorKind {
     /// Model input (provided by user).
     Input,
-    
+
     /// Model output (returned to user).
     Output,
-    
+
     /// Static weight from ONNX (stored in runtime).
     Weight,
-    
+
     /// Intermediate value computed during execution.
     Intermediate,
 }
@@ -370,11 +371,11 @@ pub enum TensorKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_graph_creation() {
         let mut graph = Graph::new();
-        
+
         let tensor = TensorInfo {
             name: "input".to_string(),
             dtype: DataType::F32,
@@ -382,28 +383,28 @@ mod tests {
             kind: TensorKind::Input,
             initializer: None,
         };
-        
+
         let id = graph.add_tensor(tensor);
         assert_eq!(id, 0);
         assert_eq!(graph.tensor_id("input").unwrap(), 0);
     }
-    
+
     #[test]
     fn test_node_attributes() {
         let mut node = Node::new("Conv");
         node.attributes
             .insert("kernel_shape".to_string(), AttributeValue::Ints(vec![3, 3]));
-        
+
         let kernel: Vec<i64> = node.attr("kernel_shape").unwrap();
         assert_eq!(kernel, vec![3, 3]);
     }
-    
+
     #[test]
     fn test_tensor_shape() {
         let static_shape = TensorShape::Static(vec![1, 2, 3]);
         assert!(static_shape.is_static());
         assert_eq!(static_shape.ndim(), Some(3));
-        
+
         let dynamic_shape = TensorShape::Dynamic(vec![
             Dimension::Named("batch".to_string()),
             Dimension::Static(512),

@@ -11,7 +11,7 @@ ONNX Model → onyxia-onnx → onyxia-planner → onyxia-runtime → GPU Executi
 ```
 
 - **onyxia-onnx**: Parse ONNX protobuf into a stable Graph API
-- **onyxia-planner**: Compile graphs into execution plans with pre-compiled shaders
+- **onyxia-planner**: Kernel-based shape inference and compilation into execution plans with pre-compiled shaders
 - **onyxia-runtime**: Execute plans on GPU hardware via wgpu
 - **onyxia-cli**: Command-line tools for testing and debugging
 
@@ -31,7 +31,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
 ### What Works
 
 - ✅ **ONNX parsing** with stable Graph API
-- ✅ **Shape inference** for 18+ ONNX operations (~51% coverage on real models)
+- ✅ **Kernel-based shape inference** — each operation defines its own shape logic via `infer_output_shapes()`
 - ✅ **DOT graph visualization** (full, layers, summary views)
 - ✅ **Extensible kernel system** — users add operations via `OpKernel` trait
 - ✅ **Shader compilation** — WGSL → `naga::Module` via naga_oil at plan time
@@ -69,6 +69,17 @@ struct MyCustomKernel;
 
 impl OpKernel for MyCustomKernel {
     fn name(&self) -> &str { "MyCustomOp" }
+    
+    fn infer_output_shapes(
+        &self,
+        node: &Node,
+        input_shapes: &[TensorShape],
+        dynamic_dimensions: &HashMap<String, usize>,
+    ) -> onyxia_planner::Result<Vec<TensorShape>> {
+        // Define shape inference logic for this operation
+        Ok(vec![input_shapes[0].clone()])
+    }
+    
     fn plan(&self, ctx: &mut PlanContext<'_>) -> onyxia_planner::Result<Vec<Step>> {
         // Compile shader, set up bindings, return steps
         todo!()
@@ -166,8 +177,8 @@ cargo nextest run --run-ignored all
 
 | Crate | Description |
 |-------|-------------|
-| `onyxia-onnx` | ONNX protobuf parser, Graph API, shape inference |
-| `onyxia-planner` | Execution plan compiler with extensible kernel system |
+| `onyxia-onnx` | ONNX protobuf parser, Graph API |
+| `onyxia-planner` | Kernel-based shape inference and execution plan compiler |
 | `onyxia-runtime` | GPU executor via wgpu |
 | `onyxia-cli` | CLI tools for model inspection and DOT export |
 

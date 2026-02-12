@@ -4,6 +4,7 @@ use crate::error::Result;
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
+use onyxia_onnx::TensorShape;
 use std::collections::HashMap;
 
 /// Kernel for RMS Normalization (ONNX SimplifiedLayerNormalization operator).
@@ -15,6 +16,21 @@ pub struct RmsNormKernel;
 impl OpKernel for RmsNormKernel {
     fn name(&self) -> &str {
         "RMSNorm"
+    }
+
+    fn infer_output_shapes(
+        &self,
+        _node: &onyxia_onnx::Node,
+        input_shapes: &[TensorShape],
+        _dynamic_dimensions: &HashMap<String, usize>,
+    ) -> Result<Vec<TensorShape>> {
+        // RMSNorm normalizes over the last dimension: output shape equals input shape
+        if input_shapes.is_empty() {
+            return Err(crate::error::CodegenError::InvalidShape(
+                "RMSNorm requires at least one input".to_string(),
+            ));
+        }
+        Ok(vec![input_shapes[0].clone()])
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
@@ -141,10 +157,8 @@ mod tests {
         let mut node = Node::new("SimplifiedLayerNormalization");
         node.inputs = vec!["input".to_string(), "weight".to_string()];
         node.outputs = vec!["output".to_string()];
-        node.attributes.insert(
-            "epsilon".to_string(),
-            AttributeValue::Float(1e-6),
-        );
+        node.attributes
+            .insert("epsilon".to_string(), AttributeValue::Float(1e-6));
 
         let input_ids = vec![0, 1];
         let output_ids = vec![2];
@@ -160,7 +174,9 @@ mod tests {
             &mut shaders,
         );
 
-        let steps = RmsNormKernel.plan(&mut ctx).expect("Planning should succeed");
+        let steps = RmsNormKernel
+            .plan(&mut ctx)
+            .expect("Planning should succeed");
 
         // Verify we got exactly one dispatch step
         assert_eq!(steps.len(), 1);
@@ -235,7 +251,9 @@ mod tests {
             &mut shaders,
         );
 
-        let steps = RmsNormKernel.plan(&mut ctx).expect("Planning should succeed");
+        let steps = RmsNormKernel
+            .plan(&mut ctx)
+            .expect("Planning should succeed");
 
         match &steps[0] {
             Step::Dispatch { immediates, .. } => {
@@ -299,7 +317,9 @@ mod tests {
             &mut shaders,
         );
 
-        let steps = RmsNormKernel.plan(&mut ctx).expect("Planning should succeed");
+        let steps = RmsNormKernel
+            .plan(&mut ctx)
+            .expect("Planning should succeed");
 
         match &steps[0] {
             Step::Dispatch {

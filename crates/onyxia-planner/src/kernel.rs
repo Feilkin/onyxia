@@ -19,6 +19,27 @@ pub trait OpKernel: Send + Sync {
     /// Human-readable kernel name.
     fn name(&self) -> &str;
 
+    /// Infer output tensor shapes for this operation.
+    ///
+    /// Called during shape inference before planning. Given input shapes,
+    /// infer what the output shapes should be.
+    ///
+    /// # Arguments
+    ///
+    /// * `node` - The ONNX node being processed
+    /// * `input_shapes` - Shapes of input tensors
+    /// * `dynamic_dimensions` - Concrete values for dynamic dimensions
+    ///
+    /// # Returns
+    ///
+    /// A vector of output tensor shapes, one per output.
+    fn infer_output_shapes(
+        &self,
+        node: &Node,
+        input_shapes: &[TensorShape],
+        dynamic_dimensions: &HashMap<String, usize>,
+    ) -> Result<Vec<TensorShape>>;
+
     /// Plan the GPU steps needed to execute this operation.
     ///
     /// Called once at plan time (not per-inference). All shader defs are
@@ -155,6 +176,9 @@ impl<'a> PlanContext<'a> {
             }
             TensorShape::Unknown => Err(CodegenError::InvalidShape(
                 "Cannot resolve unknown shape".to_string(),
+            )),
+            TensorShape::Absent => Err(CodegenError::InvalidShape(
+                "Cannot resolve absent optional input shape".to_string(),
             )),
         }
     }
@@ -339,6 +363,18 @@ mod tests {
             "dummy"
         }
 
+        fn infer_output_shapes(
+            &self,
+            _node: &Node,
+            input_shapes: &[TensorShape],
+            _dynamic_dimensions: &HashMap<String, usize>,
+        ) -> Result<Vec<TensorShape>> {
+            // Dummy: output shape equals input shape
+            Ok(vec![
+                input_shapes.get(0).cloned().unwrap_or(TensorShape::Unknown),
+            ])
+        }
+
         fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
             // Compile the trivial shader
             let shader_index = ctx.compile_shader("trivial", TRIVIAL_WGSL, HashMap::new())?;
@@ -370,6 +406,18 @@ mod tests {
     impl OpKernel for AnotherKernel {
         fn name(&self) -> &str {
             "another"
+        }
+
+        fn infer_output_shapes(
+            &self,
+            _node: &Node,
+            input_shapes: &[TensorShape],
+            _dynamic_dimensions: &HashMap<String, usize>,
+        ) -> Result<Vec<TensorShape>> {
+            // Another dummy: output shape equals input shape
+            Ok(vec![
+                input_shapes.get(0).cloned().unwrap_or(TensorShape::Unknown),
+            ])
         }
 
         fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {

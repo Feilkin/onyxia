@@ -830,6 +830,7 @@ dependencies = [
  "prost",
  "prost-build",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -842,6 +843,7 @@ dependencies = [
  "onyxia-onnx",
  "petgraph",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]

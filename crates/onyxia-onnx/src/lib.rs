@@ -28,13 +28,13 @@ use std::path::Path;
 use thiserror::Error;
 
 /// Generated protobuf types from ONNX schema.
+#[allow(clippy::doc_overindented_list_items)]
 pub mod onnx {
     include!(concat!(env!("OUT_DIR"), "/onnx.rs"));
 }
 
 pub mod graph;
 pub mod parser;
-pub mod shape_inference;
 
 pub use graph::{
     AttributeValue, DataType, Dimension, Graph, GraphMetadata, Node, NodeId, TensorId, TensorInfo,
@@ -42,7 +42,6 @@ pub use graph::{
 };
 pub use onnx::ModelProto;
 pub use parser::parse_model;
-pub use shape_inference::infer_shapes;
 
 /// Simplification level for DOT graph generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -391,9 +390,10 @@ fn to_dot_layers(model: &ModelProto) -> String {
             for input in &node.input {
                 if !input.is_empty() && !all_outputs.contains(input) {
                     // Check if this is a shared input
-                    if shared_inputs.contains(input) && node_layer.is_some() {
+                    if shared_inputs.contains(input)
+                        && let Some(layer_key) = node_layer.as_ref()
+                    {
                         // Use layer-local duplicate
-                        let layer_key = node_layer.as_ref().unwrap();
                         let local_id = format!(
                             "{}_{}",
                             layer_key.replace('.', "_"),

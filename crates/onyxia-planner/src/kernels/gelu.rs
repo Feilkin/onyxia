@@ -4,6 +4,7 @@ use crate::error::Result;
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
+use onyxia_onnx::TensorShape;
 use std::collections::HashMap;
 
 /// Kernel for GELU activation (ONNX Gelu operator).
@@ -16,6 +17,21 @@ pub struct GeluKernel;
 impl OpKernel for GeluKernel {
     fn name(&self) -> &str {
         "Gelu"
+    }
+
+    fn infer_output_shapes(
+        &self,
+        _node: &onyxia_onnx::Node,
+        input_shapes: &[TensorShape],
+        _dynamic_dimensions: &HashMap<String, usize>,
+    ) -> Result<Vec<TensorShape>> {
+        // Gelu is a unary operation: output shape equals input shape
+        if input_shapes.is_empty() {
+            return Err(crate::error::CodegenError::InvalidShape(
+                "Gelu requires one input".to_string(),
+            ));
+        }
+        Ok(vec![input_shapes[0].clone()])
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {

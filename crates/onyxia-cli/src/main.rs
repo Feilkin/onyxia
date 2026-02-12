@@ -90,7 +90,14 @@ fn cmd_inspect(model_path: PathBuf) -> Result<()> {
         .with_context(|| format!("Failed to load model from {}", model_path.display()))?;
 
     // Parse into graph structure
-    let model = onyxia_onnx::parse_model(&model_proto).with_context(|| "Failed to parse model")?;
+    let mut model =
+        onyxia_onnx::parse_model(&model_proto).with_context(|| "Failed to parse model")?;
+
+    // Infer shapes for analysis using planner's kernel-based inference
+    let registry = onyxia_planner::KernelRegistry::with_defaults();
+    let dynamic_dims = std::collections::HashMap::new(); // Empty for inspection
+    onyxia_planner::infer_shapes(&mut model, &registry, &dynamic_dims)
+        .with_context(|| "Failed to infer shapes")?;
 
     println!("Model: {}", model.metadata.name);
     println!("  IR version: {}", model.metadata.ir_version);
@@ -124,7 +131,7 @@ fn cmd_inspect(model_path: PathBuf) -> Result<()> {
 
     for info in &model.tensor_info {
         match &info.shape {
-            TensorShape::Unknown => {
+            TensorShape::Unknown | TensorShape::Absent => {
                 unknown_count += 1;
                 if unknown_names.len() < 5 {
                     unknown_names.push(info.name.clone());
