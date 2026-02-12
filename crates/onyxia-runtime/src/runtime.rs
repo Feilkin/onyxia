@@ -2,7 +2,8 @@
 
 use crate::error::{Result, RuntimeError};
 use crate::executor::ModelExecutor;
-use onyxia_codegen::CompiledModel;
+use crate::plan_executor::PlanExecutor;
+use onyxia_codegen::{CompiledModel, ExecutionPlan};
 use onyxia_onnx::{Dimension, TensorShape};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -159,12 +160,99 @@ impl Runtime {
                 ))
             })?;
 
-        ModelExecutor::new(
-            Arc::new(device),
-            Arc::new(queue),
-            model,
-            dynamic_dimensions,
-        )
+        ModelExecutor::new(Arc::new(device), Arc::new(queue), model, dynamic_dimensions)
+    }
+
+    /// Calculate maximum buffer size from an execution plan.
+    ///
+    /// All shapes are static in an execution plan, so this is straightforward.
+    fn calculate_plan_max_buffer_size(plan: &ExecutionPlan) -> Result<u64> {
+        let mut max_size = 0u64;
+
+        for tensor_info in plan.tensors.all() {
+            let size = match &tensor_info.shape {
+                TensorShape::Static(dims) => {
+                    let element_count: usize = dims.iter().product();
+                    let element_size = tensor_info.dtype.size();
+                    (element_count * element_size) as u64
+                }
+                TensorShape::Dynamic(_) | TensorShape::Unknown => {
+                    return Err(RuntimeError::TensorError(format!(
+                        "Tensor '{}' in execution plan has non-static shape. \
+                         All shapes should be resolved at plan time.",
+                        tensor_info.name
+                    )));
+                }
+            };
+
+            max_size = max_size.max(size);
+        }
+
+        // Also account for scratch buffers
+        for operation in &plan.operations {
+            for scratch_desc in &operation.scratch_buffers {
+                max_size = max_size.max(scratch_desc.size);
+            }
+        }
+
+        Ok(max_size)
+    }
+
+    /// Load an execution plan into a plan executor.
+    ///
+    /// This creates a GPU device and materializes pre-compiled shaders into pipelines.
+    /// Unlike `load_model()`, this does NOT require `dynamic_dimensions` because
+    /// they were already resolved at plan-time.
+    ///
+    /// # Arguments
+    /// * `plan` - Pre-compiled execution plan with resolved shapes and naga modules
+    ///
+    /// # Errors
+    /// Returns an error if device creation or resource materialization fails.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use onyxia_runtime::Runtime;
+    /// # use onyxia_codegen::ExecutionPlan;
+    /// # #[pollster::main]
+    /// # async fn main() -> anyhow::Result<()> {
+    /// let runtime = Runtime::new().await?;
+    /// # let plan: ExecutionPlan = todo!();
+    /// let executor = runtime.load_plan(plan).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn load_plan(&self, plan: ExecutionPlan) -> Result<PlanExecutor> {
+        // Calculate maximum buffer size needed
+        let max_buffer_size = Self::calculate_plan_max_buffer_size(&plan)?;
+
+        // Add 10% headroom for intermediate buffers
+        let required_buffer_size = (max_buffer_size as f64 * 1.1) as u64;
+
+        // Get default limits and override max_storage_buffer_binding_size
+        let mut limits = wgpu::Limits::default();
+        // Clamp to u32::MAX since wgpu uses u32 for buffer sizes
+        limits.max_storage_buffer_binding_size = required_buffer_size.min(u32::MAX as u64) as u32;
+
+        // Create device with calculated limits
+        let (device, queue) = self
+            .adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("Onyxia Device (Plan)"),
+                required_features: wgpu::Features::empty(),
+                required_limits: limits,
+                memory_hints: wgpu::MemoryHints::default(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| {
+                RuntimeError::InitError(format!(
+                    "Failed to create device with max buffer size {}: {}",
+                    required_buffer_size, e
+                ))
+            })?;
+
+        PlanExecutor::new(Arc::new(device), Arc::new(queue), plan)
     }
 
     /// Get information about the GPU adapter.

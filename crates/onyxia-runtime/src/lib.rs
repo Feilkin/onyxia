@@ -43,14 +43,16 @@
 //! }
 //! ```
 
-mod error;
-mod tensor;
 mod buffer;
-mod runtime;
+mod error;
 mod executor;
+mod plan_executor;
+mod runtime;
+mod tensor;
 
 // Public exports
-pub use error::{RuntimeError, Result};
-pub use tensor::Tensor;
-pub use runtime::Runtime;
+pub use error::{Result, RuntimeError};
 pub use executor::ModelExecutor;
+pub use plan_executor::PlanExecutor;
+pub use runtime::Runtime;
+pub use tensor::Tensor;

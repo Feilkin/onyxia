@@ -8,12 +8,15 @@ license.workspace = true
 [dependencies]
 bytemuck = "1.25.0"
 futures = "0.3.31"
-naga = { version = "28", features = ["wgsl-out"] }
-naga_oil = "0.21"
+naga = "28"
 onyxia-codegen.workspace = true
 onyxia-onnx = { version = "0.1.0", path = "../onyxia-onnx" }
 pollster = { version = "0.4.0", features = ["macro"] }
 thiserror = "2.0.18"
-wgpu = "28"
+wgpu = { version = "28", features = ["naga-ir"] }
+
+# Legacy executor still uses naga_oil for runtime shader compilation
+# New PlanExecutor uses pre-compiled naga modules from codegen
+naga_oil = "0.21"
 
 [dev-dependencies]
