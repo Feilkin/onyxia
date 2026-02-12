@@ -303,6 +303,7 @@ impl KernelRegistry {
         registry.register("Mul", Box::new(crate::kernels::MulKernel));
         registry.register("Sub", Box::new(crate::kernels::SubKernel));
         registry.register("Cast", Box::new(crate::kernels::CastKernel));
+        registry.register("Gather", Box::new(crate::kernels::GatherKernel));
         registry.register("Gelu", Box::new(crate::kernels::GeluKernel));
         registry.register(
             "SimplifiedLayerNormalization",
