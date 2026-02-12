@@ -11,13 +11,13 @@
 @group(0) @binding(1) var<storage, read> matrix_b: array<f32>;
 @group(0) @binding(2) var<storage, read_write> matrix_c: array<f32>;
 
-struct PushConstants {
+struct ImmediateConstants {
     M: u32,  // Rows of A and C
     N: u32,  // Columns of B and C
     K: u32,  // Columns of A and rows of B
 }
 
-var<push_constant> params: PushConstants;
+var<immediate> params: ImmediateConstants;
 
 // Tile sizes - can be overridden via shader defs
 #ifdef TILE_M

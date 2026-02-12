@@ -11,11 +11,11 @@
 @group(0) @binding(0) var<storage, read> input: array<f32>;
 @group(0) @binding(1) var<storage, read_write> output: array<f32>;
 
-struct PushConstants {
+struct ImmediateConstants {
     size: u32,  // Total number of elements
 }
 
-var<push_constant> params: PushConstants;
+var<immediate> params: ImmediateConstants;
 
 // Workgroup size - can be overridden via shader defs
 #ifdef WORKGROUP_SIZE

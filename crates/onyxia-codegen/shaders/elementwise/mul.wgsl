@@ -9,14 +9,14 @@
 @group(0) @binding(1) var<storage, read> input_b: array<f32>;
 @group(0) @binding(2) var<storage, read_write> output: array<f32>;
 
-// Push constants for shape information
-struct PushConstants {
+// Immediate constants for shape information
+struct ImmediateConstants {
     size: u32,           // Total number of elements in output
     a_size: u32,         // Size of input A (1 if scalar broadcast)
     b_size: u32,         // Size of input B (1 if scalar broadcast)
 }
 
-var<push_constant> params: PushConstants;
+var<immediate> params: ImmediateConstants;
 
 // Workgroup size - can be overridden via shader defs
 #ifdef WORKGROUP_SIZE

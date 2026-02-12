@@ -16,14 +16,14 @@
 @group(0) @binding(1) var<storage, read> weight: array<f32>;
 @group(0) @binding(2) var<storage, read_write> output: array<f32>;
 
-struct PushConstants {
+struct ImmediateConstants {
     batch_size: u32,
     seq_len: u32,
     hidden_dim: u32,
     epsilon: f32,
 }
 
-var<push_constant> params: PushConstants;
+var<immediate> params: ImmediateConstants;
 
 // Workgroup size for reduction - 256 threads per workgroup
 #ifdef WORKGROUP_SIZE

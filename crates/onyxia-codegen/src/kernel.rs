@@ -273,10 +273,17 @@ impl KernelRegistry {
 
     /// Create a registry pre-loaded with all built-in kernels.
     ///
-    /// Registers all implemented kernels (Add, etc.)
+    /// Registers all implemented kernels (Add, Mul, Gelu, RMSNorm, MatMulF32)
     pub fn with_defaults() -> Self {
         let mut registry = Self::new();
         registry.register("Add", Box::new(crate::kernels::AddKernel));
+        registry.register("Mul", Box::new(crate::kernels::MulKernel));
+        registry.register("Gelu", Box::new(crate::kernels::GeluKernel));
+        registry.register(
+            "SimplifiedLayerNormalization",
+            Box::new(crate::kernels::RmsNormKernel),
+        );
+        registry.register("MatMul", Box::new(crate::kernels::MatMulF32Kernel));
         registry
     }
 

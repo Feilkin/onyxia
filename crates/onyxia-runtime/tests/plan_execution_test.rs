@@ -280,3 +280,326 @@ async fn test_multiple_operations() {
     println!("✓ Multiple operations test passed!");
     println!("  d = (a + b) + c = (1 + 2) + 3 = {:?}", d);
 }
+
+/// End-to-end test: Multiply two vectors on GPU and verify correct output.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_mul_e2e() {
+    let mut graph = Graph::new();
+
+    // Add input tensors
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Mul node
+    let mut node = Node::new("Mul");
+    node.name = "mul_node".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    // Compile and execute
+    let registry = KernelRegistry::with_defaults();
+    let plan =
+        compile_to_plan(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new().await.expect("Runtime init should succeed");
+    let mut executor = runtime
+        .load_plan(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Execute: c = a * b
+    let a = Tensor::from_vec(vec![2.0f32, 3.0, 4.0, 5.0], &[4]);
+    let b = Tensor::from_vec(vec![1.5f32, 2.0, 2.5, 3.0], &[4]);
+
+    let outputs = executor
+        .run(&[("a", a), ("b", b)])
+        .expect("Execution should succeed");
+
+    let c = outputs["c"].to_vec::<f32>().expect("Should convert to f32");
+    assert_eq!(
+        c,
+        vec![3.0, 6.0, 10.0, 15.0],
+        "Mul result incorrect: expected [3.0, 6.0, 10.0, 15.0], got {:?}",
+        c
+    );
+
+    println!("✓ End-to-end Mul test passed!");
+    println!("  Input a: [2.0, 3.0, 4.0, 5.0]");
+    println!("  Input b: [1.5, 2.0, 2.5, 3.0]");
+    println!("  Output c: {:?}", c);
+}
+
+/// End-to-end test: GELU activation on GPU and verify correct output.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_gelu_e2e() {
+    let mut graph = Graph::new();
+
+    // Add input and output tensors
+    graph.add_tensor(TensorInfo {
+        name: "x".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![6]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+    graph.add_tensor(TensorInfo {
+        name: "y".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![6]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Gelu node
+    let mut node = Node::new("Gelu");
+    node.name = "gelu_node".to_string();
+    node.inputs = vec!["x".to_string()];
+    node.outputs = vec!["y".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["x".to_string()];
+    graph.outputs = vec!["y".to_string()];
+
+    // Compile and execute
+    let registry = KernelRegistry::with_defaults();
+    let plan =
+        compile_to_plan(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new().await.expect("Runtime init should succeed");
+    let mut executor = runtime
+        .load_plan(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Test inputs with known GELU outputs
+    // GELU(0) ≈ 0, GELU(1) ≈ 0.8413, GELU(-1) ≈ -0.1587
+    let x = Tensor::from_vec(vec![-2.0f32, -1.0, 0.0, 1.0, 2.0, 3.0], &[6]);
+
+    let outputs = executor.run(&[("x", x)]).expect("Execution should succeed");
+
+    let y = outputs["y"].to_vec::<f32>().expect("Should convert to f32");
+    assert_eq!(y.len(), 6);
+
+    // Verify approximate GELU values (tanh approximation)
+    assert!(
+        (y[2] - 0.0).abs() < 0.01,
+        "GELU(0) should be ~0, got {}",
+        y[2]
+    );
+    assert!(
+        (y[3] - 0.8413).abs() < 0.01,
+        "GELU(1) should be ~0.8413, got {}",
+        y[3]
+    );
+    assert!(
+        (y[1] + 0.1587).abs() < 0.01,
+        "GELU(-1) should be ~-0.1587, got {}",
+        y[1]
+    );
+
+    println!("✓ End-to-end GELU test passed!");
+    println!("  Input x: [-2.0, -1.0, 0.0, 1.0, 2.0, 3.0]");
+    println!("  Output y: {:?}", y);
+}
+
+/// End-to-end test: RMS Normalization on GPU and verify correct output.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_rmsnorm_e2e() {
+    use onyxia_onnx::AttributeValue;
+
+    let mut graph = Graph::new();
+
+    // Add input tensor [2, 4] - 2 sequences, 4 hidden dims
+    graph.add_tensor(TensorInfo {
+        name: "input".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![2, 4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add weight tensor [4]
+    graph.add_tensor(TensorInfo {
+        name: "weight".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add output tensor [2, 4]
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![2, 4]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create RMSNorm node
+    let mut node = Node::new("SimplifiedLayerNormalization");
+    node.name = "rmsnorm_node".to_string();
+    node.inputs = vec!["input".to_string(), "weight".to_string()];
+    node.outputs = vec!["output".to_string()];
+    node.attributes
+        .insert("epsilon".to_string(), AttributeValue::Float(1e-5));
+    graph.add_node(node);
+
+    graph.inputs = vec!["input".to_string(), "weight".to_string()];
+    graph.outputs = vec!["output".to_string()];
+
+    // Compile and execute
+    let registry = KernelRegistry::with_defaults();
+    let plan =
+        compile_to_plan(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new().await.expect("Runtime init should succeed");
+    let mut executor = runtime
+        .load_plan(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Test with simple values
+    // Input: [[1, 2, 3, 4], [2, 4, 6, 8]]
+    // Weight: [1, 1, 1, 1] (no scaling)
+    let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 2.0, 4.0, 6.0, 8.0], &[2, 4]);
+    let weight = Tensor::from_vec(vec![1.0f32, 1.0, 1.0, 1.0], &[4]);
+
+    let outputs = executor
+        .run(&[("input", input), ("weight", weight)])
+        .expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+    assert_eq!(output.len(), 8);
+
+    // For first sequence [1,2,3,4]:
+    // mean_square = (1+4+9+16)/4 = 7.5
+    // rms = sqrt(7.5) ≈ 2.7386
+    // normalized ≈ [0.365, 0.730, 1.095, 1.460]
+    let first_rms = (7.5f32).sqrt();
+    let expected_0 = 1.0 / first_rms;
+    assert!(
+        (output[0] - expected_0).abs() < 0.01,
+        "First element should be ~{:.3}, got {:.3}",
+        expected_0,
+        output[0]
+    );
+
+    println!("✓ End-to-end RMSNorm test passed!");
+    println!("  Input: [[1, 2, 3, 4], [2, 4, 6, 8]]");
+    println!("  Weight: [1, 1, 1, 1]");
+    println!("  Output: {:?}", output);
+}
+
+/// End-to-end test: Matrix multiplication on GPU and verify correct output.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_matmul_e2e() {
+    let mut graph = Graph::new();
+
+    // Matrix A: [2, 3]
+    graph.add_tensor(TensorInfo {
+        name: "A".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![2, 3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Matrix B: [3, 2]
+    graph.add_tensor(TensorInfo {
+        name: "B".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3, 2]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Matrix C: [2, 2]
+    graph.add_tensor(TensorInfo {
+        name: "C".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![2, 2]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create MatMul node
+    let mut node = Node::new("MatMul");
+    node.name = "matmul_node".to_string();
+    node.inputs = vec!["A".to_string(), "B".to_string()];
+    node.outputs = vec!["C".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["A".to_string(), "B".to_string()];
+    graph.outputs = vec!["C".to_string()];
+
+    // Compile and execute
+    let registry = KernelRegistry::with_defaults();
+    let plan =
+        compile_to_plan(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new().await.expect("Runtime init should succeed");
+    let mut executor = runtime
+        .load_plan(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Test with simple matrices
+    // A = [[1, 2, 3],     B = [[1, 2],
+    //      [4, 5, 6]]          [3, 4],
+    //                          [5, 6]]
+    //
+    // C = A × B = [[22, 28],
+    //              [49, 64]]
+    let a = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+    let b = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+
+    let outputs = executor
+        .run(&[("A", a), ("B", b)])
+        .expect("Execution should succeed");
+
+    let c = outputs["C"].to_vec::<f32>().expect("Should convert to f32");
+    assert_eq!(c.len(), 4);
+
+    // Verify matrix multiplication result
+    assert_eq!(
+        c,
+        vec![22.0, 28.0, 49.0, 64.0],
+        "MatMul result incorrect: expected [22, 28, 49, 64], got {:?}",
+        c
+    );
+
+    println!("✓ End-to-end MatMul test passed!");
+    println!("  A: [[1, 2, 3], [4, 5, 6]]");
+    println!("  B: [[1, 2], [3, 4], [5, 6]]");
+    println!("  C: {:?}", c);
+}
