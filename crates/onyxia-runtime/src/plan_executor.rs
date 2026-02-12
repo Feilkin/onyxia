@@ -434,8 +434,22 @@ impl PlanExecutor {
                         immediates.as_deref(),
                     )?;
                 }
-                Step::CopyBuffer { src, dst, size } => {
-                    self.execute_copy(&mut encoder, op_index, src, dst, *size)?;
+                Step::CopyBuffer {
+                    src,
+                    src_offset,
+                    dst,
+                    dst_offset,
+                    size,
+                } => {
+                    self.execute_copy(
+                        &mut encoder,
+                        op_index,
+                        src,
+                        *src_offset,
+                        dst,
+                        *dst_offset,
+                        *size,
+                    )?;
                 }
                 Step::WriteBuffer { dst, data } => {
                     self.execute_write(&mut encoder, op_index, dst, data)?;
@@ -507,13 +521,15 @@ impl PlanExecutor {
         encoder: &mut wgpu::CommandEncoder,
         op_index: usize,
         src: &BufferRef,
+        src_offset: u64,
         dst: &BufferRef,
+        dst_offset: u64,
         size: u64,
     ) -> Result<()> {
         let src_buffer = self.resolve_buffer_ref(op_index, src)?;
         let dst_buffer = self.resolve_buffer_ref(op_index, dst)?;
 
-        encoder.copy_buffer_to_buffer(src_buffer, 0, dst_buffer, 0, size);
+        encoder.copy_buffer_to_buffer(src_buffer, src_offset, dst_buffer, dst_offset, size);
 
         Ok(())
     }

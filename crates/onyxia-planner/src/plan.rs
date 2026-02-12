@@ -88,8 +88,12 @@ pub enum Step {
     CopyBuffer {
         /// Source buffer reference.
         src: BufferRef,
+        /// Byte offset in source buffer.
+        src_offset: u64,
         /// Destination buffer reference.
         dst: BufferRef,
+        /// Byte offset in destination buffer.
+        dst_offset: u64,
         /// Size in bytes to copy.
         size: u64,
     },
@@ -315,7 +319,9 @@ mod tests {
         // Test CopyBuffer step
         let copy = Step::CopyBuffer {
             src: BufferRef::Tensor(0),
-            dst: BufferRef::Scratch(0),
+            src_offset: 0,
+            dst: BufferRef::Tensor(1),
+            dst_offset: 0,
             size: 1024,
         };
         match copy {

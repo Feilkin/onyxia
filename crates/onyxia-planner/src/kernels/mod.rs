@@ -2,11 +2,13 @@
 
 pub mod add;
 pub mod cast;
+pub mod concat;
 pub mod constant;
 pub mod gather;
 pub mod gelu;
 pub mod matmul_f32;
 pub mod mul;
+pub mod reducesum;
 pub mod reshape;
 pub mod rmsnorm;
 pub mod shape;
@@ -16,11 +18,13 @@ pub mod unsqueeze;
 
 pub use add::AddKernel;
 pub use cast::CastKernel;
+pub use concat::ConcatKernel;
 pub use constant::ConstantKernel;
 pub use gather::GatherKernel;
 pub use gelu::GeluKernel;
 pub use matmul_f32::MatMulF32Kernel;
 pub use mul::MulKernel;
+pub use reducesum::ReduceSumKernel;
 pub use reshape::ReshapeKernel;
 pub use rmsnorm::RmsNormKernel;
 pub use shape::ShapeKernel;

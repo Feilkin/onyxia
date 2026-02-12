@@ -303,6 +303,7 @@ impl KernelRegistry {
         registry.register("Mul", Box::new(crate::kernels::MulKernel));
         registry.register("Sub", Box::new(crate::kernels::SubKernel));
         registry.register("Cast", Box::new(crate::kernels::CastKernel));
+        registry.register("Concat", Box::new(crate::kernels::ConcatKernel));
         registry.register("Gather", Box::new(crate::kernels::GatherKernel));
         registry.register("Gelu", Box::new(crate::kernels::GeluKernel));
         registry.register(
@@ -313,6 +314,7 @@ impl KernelRegistry {
         registry.register("Constant", Box::new(crate::kernels::ConstantKernel));
         registry.register("Shape", Box::new(crate::kernels::ShapeKernel));
         registry.register("Reshape", Box::new(crate::kernels::ReshapeKernel));
+        registry.register("ReduceSum", Box::new(crate::kernels::ReduceSumKernel));
         registry.register("Transpose", Box::new(crate::kernels::TransposeKernel));
         registry.register("Unsqueeze", Box::new(crate::kernels::UnsqueezeKernel));
         registry

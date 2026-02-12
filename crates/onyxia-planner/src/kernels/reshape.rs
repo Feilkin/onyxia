@@ -61,7 +61,9 @@ impl OpKernel for ReshapeKernel {
 
         Ok(vec![Step::CopyBuffer {
             src: ctx.input(0),
+            src_offset: 0,
             dst: ctx.output(0),
+            dst_offset: 0,
             size: bytes as u64,
         }])
     }
@@ -139,9 +141,17 @@ mod tests {
         assert_eq!(steps.len(), 1);
 
         match &steps[0] {
-            Step::CopyBuffer { src, dst, size } => {
+            Step::CopyBuffer {
+                src,
+                src_offset,
+                dst,
+                dst_offset,
+                size,
+            } => {
                 assert_eq!(*src, BufferRef::Tensor(0)); // input 0 (data)
+                assert_eq!(*src_offset, 0);
                 assert_eq!(*dst, BufferRef::Tensor(2)); // output 0
+                assert_eq!(*dst_offset, 0);
                 // 6 elements * 4 bytes per F32 = 24 bytes
                 assert_eq!(*size, 24);
             }

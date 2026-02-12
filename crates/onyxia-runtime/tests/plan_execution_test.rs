@@ -1362,3 +1362,209 @@ async fn test_transpose_2d_e2e() {
     println!("  Output: [[1, 4], [2, 5], [3, 6]] (shape [3, 2])");
     println!("  Result: {:?}", output);
 }
+
+/// Helper function to create a Concat graph.
+///
+/// Graph structure:
+/// - Inputs: a:[f32;3], b:[f32;4]
+/// - Operation: Concat(a, b, axis=0) -> c
+/// - Output: c:[f32;7]
+fn make_concat_graph() -> Graph {
+    let mut graph = Graph::new();
+
+    // Add input tensor 'a' with 3 elements
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add input tensor 'b' with 4 elements
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add output tensor 'c' with 7 elements
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![7]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Concat node
+    let mut node = Node::new("Concat");
+    node.name = "concat_node".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    node.attributes.insert(
+        "axis".to_string(),
+        onyxia_onnx::AttributeValue::Int(0i64),
+    );
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    graph.metadata.name = "test_concat_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph
+}
+
+/// End-to-end test: Concatenate two vectors on GPU.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_concat_e2e() {
+    let graph = make_concat_graph();
+    graph.validate().expect("Graph validation should succeed");
+
+    let registry = KernelRegistry::with_defaults();
+    let dynamic_dimensions = HashMap::new();
+
+    let plan = compile(&graph, &registry, &dynamic_dimensions).expect("Compilation should succeed");
+
+    assert_eq!(plan.operations.len(), 1, "Should have exactly 1 operation");
+    assert_eq!(plan.inputs.len(), 2, "Should have 2 inputs");
+    assert_eq!(plan.outputs.len(), 1, "Should have 1 output");
+
+    let runtime = Runtime::new().await.expect("Runtime creation should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Model loading should succeed");
+
+    // Prepare inputs: a = [1, 2, 3], b = [4, 5, 6, 7]
+    let input_a = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], &[3]);
+    let input_b = Tensor::from_vec(vec![4.0f32, 5.0, 6.0, 7.0], &[4]);
+
+    let outputs = executor
+        .run(&[("a", input_a), ("b", input_b)])
+        .expect("Execution should succeed");
+
+    assert_eq!(outputs.len(), 1, "Should have 1 output");
+    assert!(outputs.contains_key("c"), "Should have output 'c'");
+
+    let output = outputs["c"].to_vec::<f32>().expect("Should convert to f32");
+
+    assert_eq!(output.len(), 7, "Output should have 7 elements");
+    assert_eq!(
+        output,
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+        "Concat result incorrect"
+    );
+
+    println!("✓ End-to-end Concat test passed!");
+    println!("  Input a: [1, 2, 3] (shape [3])");
+    println!("  Input b: [4, 5, 6, 7] (shape [4])");
+    println!("  Output: [1, 2, 3, 4, 5, 6, 7] (shape [7])");
+    println!("  Result: {:?}", output);
+}
+
+/// Helper function to create a ReduceSum graph.
+///
+/// Graph structure:
+/// - Input: input:[f32;4]
+/// - Operation: ReduceSum(input, axes=[0], keepdims=1) -> output
+/// - Output: output:[f32;1]
+fn make_reducesum_graph() -> Graph {
+    let mut graph = Graph::new();
+
+    // Add input tensor with 4 elements
+    graph.add_tensor(TensorInfo {
+        name: "input".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add output tensor with 1 element (sum of all inputs)
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create ReduceSum node
+    let mut node = Node::new("ReduceSum");
+    node.name = "reducesum_node".to_string();
+    node.inputs = vec!["input".to_string()];
+    node.outputs = vec!["output".to_string()];
+    node.attributes.insert(
+        "axes".to_string(),
+        onyxia_onnx::AttributeValue::Ints(vec![0i64]),
+    );
+    node.attributes.insert(
+        "keepdims".to_string(),
+        onyxia_onnx::AttributeValue::Int(1i64),
+    );
+    graph.add_node(node);
+
+    graph.inputs = vec!["input".to_string()];
+    graph.outputs = vec!["output".to_string()];
+
+    graph.metadata.name = "test_reducesum_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph
+}
+
+/// End-to-end test: Sum reduction on GPU.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_reducesum_e2e() {
+    let graph = make_reducesum_graph();
+    graph.validate().expect("Graph validation should succeed");
+
+    let registry = KernelRegistry::with_defaults();
+    let dynamic_dimensions = HashMap::new();
+
+    let plan = compile(&graph, &registry, &dynamic_dimensions).expect("Compilation should succeed");
+
+    assert_eq!(plan.operations.len(), 1, "Should have exactly 1 operation");
+    assert_eq!(plan.shaders.len(), 1, "Should have exactly 1 shader");
+    assert_eq!(plan.inputs.len(), 1, "Should have 1 input");
+    assert_eq!(plan.outputs.len(), 1, "Should have 1 output");
+
+    let runtime = Runtime::new().await.expect("Runtime creation should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Model loading should succeed");
+
+    // Prepare input: [1, 2, 3, 4], sum should be 10
+    let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[4]);
+
+    let outputs = executor
+        .run(&[("input", input)])
+        .expect("Execution should succeed");
+
+    assert_eq!(outputs.len(), 1, "Should have 1 output");
+    assert!(outputs.contains_key("output"), "Should have output 'output'");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    assert_eq!(output.len(), 1, "Output should have 1 element");
+    assert!((output[0] - 10.0).abs() < 1e-5, "ReduceSum result incorrect");
+
+    println!("✓ End-to-end ReduceSum test passed!");
+    println!("  Input: [1, 2, 3, 4] (shape [4])");
+    println!("  Output: [10] (shape [1])");
+    println!("  Result: {:?}", output);
+}
