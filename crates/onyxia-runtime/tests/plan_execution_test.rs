@@ -597,3 +597,88 @@ async fn test_matmul_e2e() {
     println!("  B: [[1, 2], [3, 4], [5, 6]]");
     println!("  C: {:?}", c);
 }
+
+/// End-to-end test: Reshape a tensor and verify data is preserved.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_reshape_e2e() {
+    let mut graph = Graph::new();
+
+    // Add input tensor [2, 3]
+    graph.add_tensor(TensorInfo {
+        name: "data".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![2, 3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add shape tensor as initializer (constant)
+    let shape_data: Vec<u8> = vec![6, 0, 0, 0, 0, 0, 0, 0]; // i64 value: 6
+    graph.add_tensor(TensorInfo {
+        name: "shape".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Weight,
+        initializer: Some(shape_data),
+    });
+
+    // Add output tensor [6]
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![6]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Reshape node
+    let mut node = Node::new("Reshape");
+    node.name = "reshape_node".to_string();
+    node.inputs = vec!["data".to_string(), "shape".to_string()];
+    node.outputs = vec!["output".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["data".to_string()];
+    graph.outputs = vec!["output".to_string()];
+
+    // Compile and execute
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Verify plan structure
+    assert_eq!(
+        plan.operations.len(),
+        1,
+        "Should have exactly 1 operation (Reshape)"
+    );
+
+    let runtime = Runtime::new().await.expect("Runtime init should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Test: reshape [[1,2,3],[4,5,6]] → [1,2,3,4,5,6]
+    let data = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+
+    let outputs = executor
+        .run(&[("data", data)])
+        .expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Verify data is preserved
+    assert_eq!(
+        output,
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        "Reshape should preserve data: expected [1,2,3,4,5,6], got {:?}",
+        output
+    );
+
+    println!("✓ End-to-end Reshape test passed!");
+    println!("  Input: [[1, 2, 3], [4, 5, 6]] (shape [2, 3])");
+    println!("  Output: {:?} (shape [6])", output);
+}
