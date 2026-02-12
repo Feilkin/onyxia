@@ -12,6 +12,7 @@ Use this skill to find API details, function signatures, and usage patterns from
 Build docs for the workspace and all dependencies:
 
 ```bash
+# Do not pass --open to cargo doc!
 cargo doc --workspace
 ```
 
