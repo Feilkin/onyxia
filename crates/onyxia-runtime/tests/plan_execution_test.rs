@@ -145,6 +145,144 @@ async fn test_add_e2e() {
     println!("  Output c: {:?}", c);
 }
 
+/// Helper function to create a simple Sub graph programmatically.
+///
+/// Graph structure:
+/// - Inputs: a:[f32;4], b:[f32;4]
+/// - Operation: Sub(a, b) -> c
+/// - Output: c:[f32;4]
+fn make_sub_graph() -> Graph {
+    let mut graph = Graph::new();
+
+    // Add input tensor 'a'
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add input tensor 'b'
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add output tensor 'c'
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Sub node
+    let mut node = Node::new("Sub");
+    node.name = "sub_node".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    graph.add_node(node);
+
+    // Set graph inputs and outputs
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    // Set metadata
+    graph.metadata.name = "test_sub_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph
+}
+
+/// End-to-end test: Subtract two vectors on GPU and verify correct output.
+///
+/// This test verifies:
+/// 1. Graph construction (programmatic)
+/// 2. Compilation to ExecutionPlan via compile()
+/// 3. Plan loading into runtime
+/// 4. GPU execution with PlanExecutor::run()
+/// 5. Correct numerical results
+#[pollster::test]
+#[ignore] // Requires GPU - ignore in CI or environments without GPU
+async fn test_sub_e2e() {
+    // Step 1: Build graph programmatically
+    let graph = make_sub_graph();
+
+    // Validate graph structure
+    graph.validate().expect("Graph validation should succeed");
+    assert_eq!(graph.inputs.len(), 2);
+    assert_eq!(graph.outputs.len(), 1);
+    assert_eq!(graph.nodes.len(), 1);
+
+    // Step 2: Compile to ExecutionPlan
+    // No dynamic dimensions needed - all shapes are static
+    let registry = KernelRegistry::with_defaults();
+    let dynamic_dimensions = HashMap::new();
+
+    let plan = compile(&graph, &registry, &dynamic_dimensions).expect("Compilation should succeed");
+
+    // Verify plan structure
+    assert_eq!(
+        plan.operations.len(),
+        1,
+        "Should have exactly 1 operation (Sub)"
+    );
+    assert_eq!(plan.shaders.len(), 1, "Should have exactly 1 shader");
+    assert_eq!(plan.inputs.len(), 2, "Should have 2 inputs");
+    assert_eq!(plan.outputs.len(), 1, "Should have 1 output");
+
+    // Verify operation details
+    let op = &plan.operations[0];
+    assert_eq!(op.op_type, "Sub");
+    assert_eq!(op.inputs.len(), 2);
+    assert_eq!(op.outputs.len(), 1);
+    assert_eq!(op.steps.len(), 1, "Sub should have 1 dispatch step");
+
+    // Step 3: Initialize runtime and load plan
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    println!(
+        "GPU: {} ({:?})",
+        runtime.adapter_info().name,
+        runtime.adapter_info().backend
+    );
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Step 4: Run with concrete inputs
+    let a = Tensor::from_vec(vec![5.0f32, 6.0, 7.0, 8.0], &[4]);
+    let b = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[4]);
+
+    let outputs = executor
+        .run(&[("a", a), ("b", b)])
+        .expect("Execution should succeed");
+
+    // Step 5: Verify output
+    assert!(outputs.contains_key("c"), "Output 'c' should exist");
+
+    let c = outputs["c"].to_vec::<f32>().expect("Should convert to f32");
+
+    assert_eq!(c.len(), 4, "Output should have 4 elements");
+    assert_eq!(c, vec![4.0, 4.0, 4.0, 4.0], "Sub result incorrect");
+
+    println!("✓ End-to-end Sub test passed!");
+    println!("  Input a: [5.0, 6.0, 7.0, 8.0]");
+    println!("  Input b: [1.0, 2.0, 3.0, 4.0]");
+    println!("  Output c: {:?}", c);
+}
+
 /// Test that empty plan can be loaded without crashing.
 #[pollster::test]
 #[ignore] // Requires GPU
@@ -681,4 +819,109 @@ async fn test_reshape_e2e() {
     println!("✓ End-to-end Reshape test passed!");
     println!("  Input: [[1, 2, 3], [4, 5, 6]] (shape [2, 3])");
     println!("  Output: {:?} (shape [6])", output);
+}
+
+/// End-to-end test: Cast I64 to F32 and verify correct conversion.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_cast_i64_to_f32_e2e() {
+    let mut graph = Graph::new();
+
+    // Add input tensor (I64)
+    graph.add_tensor(TensorInfo {
+        name: "input".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add output tensor (F32)
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Cast node
+    let mut node = Node::new("Cast");
+    node.name = "cast_node".to_string();
+    node.inputs = vec!["input".to_string()];
+    node.outputs = vec!["output".to_string()];
+    // Add "to" attribute: ONNX FLOAT = 1
+    node.attributes.insert(
+        "to".to_string(),
+        onyxia_onnx::AttributeValue::Int(1),
+    );
+    graph.add_node(node);
+
+    graph.inputs = vec!["input".to_string()];
+    graph.outputs = vec!["output".to_string()];
+
+    // Set metadata
+    graph.metadata.name = "test_cast_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    // Validate graph
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Verify plan structure
+    assert_eq!(
+        plan.operations.len(),
+        1,
+        "Should have exactly 1 operation (Cast)"
+    );
+    assert_eq!(plan.shaders.len(), 1, "Should have exactly 1 shader");
+    assert_eq!(plan.inputs.len(), 1, "Should have 1 input");
+    assert_eq!(plan.outputs.len(), 1, "Should have 1 output");
+
+    // Initialize runtime and load plan
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    println!(
+        "GPU: {} ({:?})",
+        runtime.adapter_info().name,
+        runtime.adapter_info().backend
+    );
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Test: Cast [1i64, 2i64, 3i64, 4i64] → [1.0f32, 2.0f32, 3.0f32, 4.0f32]
+    let input = Tensor::from_vec(vec![1i64, 2, 3, 4], &[4]);
+
+    let outputs = executor
+        .run(&[("input", input)])
+        .expect("Execution should succeed");
+
+    // Verify output
+    assert!(outputs.contains_key("output"), "Output should exist");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    assert_eq!(output.len(), 4, "Output should have 4 elements");
+    assert_eq!(
+        output,
+        vec![1.0, 2.0, 3.0, 4.0],
+        "Cast I64→F32 result incorrect: expected [1.0, 2.0, 3.0, 4.0], got {:?}",
+        output
+    );
+
+    println!("✓ End-to-end Cast I64→F32 test passed!");
+    println!("  Input: [1i64, 2i64, 3i64, 4i64]");
+    println!("  Output: {:?}", output);
 }
