@@ -1,5 +1,18 @@
 # Copilot Instructions for Onyxia
 
+## Current Project Status (February 2026)
+
+⚠️ **Pipeline ~90% complete but blocked at codegen stage**
+
+- ✅ **onyxia-onnx**: Fully functional (parser, shape inference for 18+ ops)
+- ❌ **onyxia-codegen**: Scheduler works, but `build_compiled_model()` returns empty operations list
+- ⏸️  **onyxia-runtime**: Infrastructure ready, blocked waiting for operations to execute
+- ✅ **onyxia-cli**: Working for model inspection and DOT visualization
+
+**Critical blocker**: `crates/onyxia-codegen/src/lib.rs:87` needs to generate operations from Graph nodes. See [ARCHITECTURE.md](../ARCHITECTURE.md#-critical-blocker-codegen--runtime-gap).
+
+---
+
 ## Project Overview
 
 Onyxia is a **GPU compute shader runtime for ONNX models**, built in Rust 2024 edition. It compiles ONNX operator graphs into WGSL compute shaders executed via `wgpu`.

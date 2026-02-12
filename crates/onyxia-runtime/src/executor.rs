@@ -15,6 +15,7 @@ pub struct ModelExecutor {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     model: CompiledModel,
+    dynamic_dimensions: HashMap<String, usize>,
     buffer_manager: BufferManager,
     compute_pipelines: HashMap<ShaderHandle, wgpu::ComputePipeline>,
     bind_group_layouts: HashMap<ShaderHandle, wgpu::BindGroupLayout>,
@@ -28,12 +29,14 @@ impl ModelExecutor {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         model: CompiledModel,
+        dynamic_dimensions: HashMap<String, usize>,
     ) -> Result<Self> {
         let mut executor = Self {
             device: Arc::clone(&device),
             queue: Arc::clone(&queue),
             buffer_manager: BufferManager::new(device, queue),
             model,
+            dynamic_dimensions,
             compute_pipelines: HashMap::new(),
             bind_group_layouts: HashMap::new(),
         };
@@ -114,7 +117,7 @@ impl ModelExecutor {
     /// Allocate GPU buffers for all tensors.
     fn allocate_buffers(&mut self) -> Result<()> {
         for (id, info) in self.model.tensors.all().iter().enumerate() {
-            self.buffer_manager.allocate(id, info)?;
+            self.buffer_manager.allocate_with_dimensions(id, info, &self.dynamic_dimensions)?;
             
             // Upload initializer data if present
             if let Some(ref initializer) = info.initializer {
@@ -226,6 +229,15 @@ impl ModelExecutor {
     /// Build shader definitions for an operation.
     fn build_shader_defs(&self, operation: &Operation) -> Result<HashMap<String, ShaderDefValue>> {
         let mut defs = HashMap::new();
+        
+        // Add dynamic dimensions as shader defs
+        for (dim_name, dim_value) in &self.dynamic_dimensions {
+            // Convert to uppercase for shader constants (e.g., BATCH, SEQUENCE)
+            defs.insert(
+                dim_name.to_uppercase(),
+                ShaderDefValue::UInt(*dim_value as u32),
+            );
+        }
         
         // Add workgroup size
         defs.insert("WORKGROUP_SIZE".to_string(), ShaderDefValue::UInt(256));

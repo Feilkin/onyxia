@@ -20,14 +20,69 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
 
 ## Features
 
-- ✅ ONNX parsing with stable Graph API
-- ✅ DOT graph visualization (full, layers, summary views)
-- ✅ Codegen foundation (scheduling, compiled model structure)
-- 🚧 WGSL compute shader generation (Phase 2 in progress)
-- 🚧 GPU execution via wgpu (cross-platform: DX12/Vulkan/Metal)
+- ✅ **ONNX parsing** with stable Graph API (onyxia-onnx)
+- ✅ **Shape inference** for 18+ ONNX operations (~51% coverage on real models)
+- ✅ **DOT graph visualization** (full, layers, summary views)
+- ✅ **Codegen foundation** (scheduling, compiled model structure, shader files)
+- ✅ **Runtime infrastructure** (device init, buffer management, deferred device creation)
+- ✅ **WGSL shaders** written (Add, Mul, Gelu, RMSNorm, MatMul-f32)
+- 🚨 **CRITICAL GAP**: Codegen doesn't generate operations - pipeline broken at codegen stage
+- ⏸️  **Blocked**: GPU execution waiting for codegen operation generation
 - 🔜 Quantized model support (4-bit, 8-bit via `MatMulNBits`)
 - 🔜 KV cache management for efficient LLM generation
 - 🔜 Performance optimizations (fusion, tiling, memory pooling)
+
+## Current Status
+
+**The pipeline is ~90% complete but has a critical gap at the codegen stage:**
+
+```
+✅ ONNX Model → Parser → Graph (works perfectly)
+✅ Graph → Scheduler → Ordered nodes (works)
+❌ Graph → Codegen → Operations (returns empty list - BLOCKER)
+✅ Operations → Runtime → GPU execution (infrastructure ready, nothing to execute)
+```
+
+See [ARCHITECTURE.md](ARCHITECTURE.md#-critical-blocker-codegen--runtime-gap) for details on the blocker and what's needed to unblock end-to-end execution.
+
+## What You Can Do Today
+
+**Working Features:**
+- ✅ **Inspect ONNX models**: Parse any ONNX file and examine structure
+- ✅ **Visualize graphs**: Generate DOT graphs (full/layers/summary views)
+- ✅ **Check shapes**: Run shape inference to see tensor shapes (~51% coverage)
+- ✅ **Test parsing**: Validate ONNX model compatibility
+
+**Not Yet Working:**
+- ❌ **Run models**: Cannot execute on GPU yet (operations list empty from codegen)
+- ❌ **Inference**: No forward pass implementation
+- ❌ **Benchmarking**: Can't measure performance
+
+**Example - Inspect a model:**
+```bash
+# Parse and analyze model structure
+cargo run --bin onyxia -- inspect models/gemma-3-270m-it-ONNX/onnx/model_q4.onnx
+
+# Generate visualization
+cargo run --bin onyxia -- dot models/gemma-3-270m-it-ONNX/onnx/model_q4.onnx \
+  -o model.dot -s summary
+dot -Tpng model.dot -o model.png
+```
+
+## For Contributors
+
+**High-Priority Work Needed:**
+
+1. **Unblock codegen** (2-3 days) - Implement operation generation in `crates/onyxia-codegen/src/lib.rs`
+   - Map ONNX nodes → Operation instances
+   - Connect op_type strings to ShaderHandle  
+   - Extract parameters from attributes
+   
+2. **Test end-to-end** (1 day) - Once operations generate, validate pipeline works
+3. **Add more shaders** (ongoing) - Cover more ONNX operations
+4. **Shape inference improvements** (1-2 days) - Implement constant evaluation for remaining 49%
+
+See [ARCHITECTURE.md Development Phases](ARCHITECTURE.md#development-phases) for detailed roadmap.
 
 ## Prerequisites
 

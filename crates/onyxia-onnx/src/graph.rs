@@ -346,13 +346,8 @@ pub enum Dimension {
     /// Static dimension with known size.
     Static(usize),
     
-    /// Batch dimension (dynamic).
-    Batch,
-    
-    /// Sequence length dimension (dynamic).
-    Sequence,
-    
-    /// Named symbolic dimension.
+    /// Named symbolic dimension (e.g., "batch", "sequence", "N").
+    /// The actual value must be provided by the user at runtime.
     Named(String),
 }
 
@@ -410,7 +405,7 @@ mod tests {
         assert_eq!(static_shape.ndim(), Some(3));
         
         let dynamic_shape = TensorShape::Dynamic(vec![
-            Dimension::Batch,
+            Dimension::Named("batch".to_string()),
             Dimension::Static(512),
         ]);
         assert!(!dynamic_shape.is_static());

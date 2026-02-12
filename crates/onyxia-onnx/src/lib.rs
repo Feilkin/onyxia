@@ -34,6 +34,7 @@ pub mod onnx {
 
 pub mod graph;
 pub mod parser;
+pub mod shape_inference;
 
 pub use graph::{
     AttributeValue, DataType, Dimension, Graph, GraphMetadata, Node, NodeId, TensorId, TensorInfo,
@@ -41,6 +42,7 @@ pub use graph::{
 };
 pub use onnx::ModelProto;
 pub use parser::parse_model;
+pub use shape_inference::infer_shapes;
 
 /// Simplification level for DOT graph generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +81,9 @@ pub enum OnnxError {
 
     #[error("Unsupported data type: {0}")]
     UnsupportedDataType(String),
+
+    #[error("Shape inference error: {0}")]
+    ShapeInference(String),
 }
 
 /// Result type for ONNX operations.

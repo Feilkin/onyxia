@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use onyxia_onnx::TensorShape;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -29,6 +30,12 @@ enum Commands {
         #[arg(short, long, default_value = "full")]
         simplify: String,
     },
+    /// Inspect an ONNX model's structure
+    Inspect {
+        /// Path to the ONNX model file
+        #[arg(value_name = "MODEL")]
+        model: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -41,6 +48,9 @@ fn main() -> Result<()> {
             simplify,
         } => {
             cmd_dot(model, output, &simplify)?;
+        }
+        Commands::Inspect { model } => {
+            cmd_inspect(model)?;
         }
     }
 
@@ -68,6 +78,92 @@ fn cmd_dot(model_path: PathBuf, output_path: Option<PathBuf>, simplify: &str) ->
         eprintln!("Wrote DOT output to {}", output_path.display());
     } else {
         print!("{}", dot);
+    }
+
+    Ok(())
+}
+
+/// Inspect an ONNX model's structure.
+fn cmd_inspect(model_path: PathBuf) -> Result<()> {
+    // Load the ONNX model
+    let model_proto = onyxia_onnx::load_model(&model_path)
+        .with_context(|| format!("Failed to load model from {}", model_path.display()))?;
+
+    // Parse into graph structure
+    let model = onyxia_onnx::parse_model(&model_proto).with_context(|| "Failed to parse model")?;
+
+    println!("Model: {}", model.metadata.name);
+    println!("  IR version: {}", model.metadata.ir_version);
+    println!("  Producer: {}", model.metadata.producer_name);
+    println!("  Nodes: {}", model.nodes.len());
+    println!("  Tensors: {}", model.tensor_info.len());
+    println!();
+
+    println!("Inputs ({}):", model.inputs.len());
+    for input_name in &model.inputs {
+        if let Some(&tensor_id) = model.tensors.get(input_name) {
+            let info = &model.tensor_info[tensor_id];
+            println!("  {} - {:?} {:?}", info.name, info.dtype, info.shape);
+        }
+    }
+    println!();
+
+    println!("Outputs ({}):", model.outputs.len());
+    for output_name in &model.outputs {
+        if let Some(&tensor_id) = model.tensors.get(output_name) {
+            let info = &model.tensor_info[tensor_id];
+            println!("  {} - {:?} {:?}", info.name, info.dtype, info.shape);
+        }
+    }
+    println!();
+
+    // Count tensors by shape type
+    let mut unknown_count = 0;
+    let mut known_count = 0;
+    let mut unknown_names = Vec::new();
+
+    for info in &model.tensor_info {
+        match &info.shape {
+            TensorShape::Unknown => {
+                unknown_count += 1;
+                if unknown_names.len() < 5 {
+                    unknown_names.push(info.name.clone());
+                }
+            }
+            _ => known_count += 1,
+        }
+    }
+
+    println!("Shape statistics:");
+    println!("  Known shapes: {}", known_count);
+    println!("  Unknown shapes: {}", unknown_count);
+    if !unknown_names.is_empty() {
+        println!(
+            "  First unknown: {:?}",
+            &unknown_names[..unknown_names.len().min(5)]
+        );
+    }
+    println!();
+
+    // Show first few operations
+    println!("First 20 operations:");
+    for (i, node) in model.nodes.iter().take(20).enumerate() {
+        println!("  {}. {} ({})", i + 1, node.name, node.op_type);
+        println!("     Inputs: {:?}", node.inputs);
+        println!("     Outputs: {:?}", node.outputs);
+    }
+    println!();
+
+    // Find operations that use embedding table
+    println!("Operations using 'embed_tokens':");
+    for (i, node) in model.nodes.iter().enumerate() {
+        if node.inputs.iter().any(|inp| inp.contains("embed_tokens"))
+            || node.outputs.iter().any(|out| out.contains("embed_tokens"))
+        {
+            println!("  {}. {} ({})", i + 1, node.name, node.op_type);
+            println!("     Inputs: {:?}", node.inputs);
+            println!("     Outputs: {:?}", node.outputs);
+        }
     }
 
     Ok(())
