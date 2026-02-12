@@ -851,10 +851,8 @@ async fn test_cast_i64_to_f32_e2e() {
     node.inputs = vec!["input".to_string()];
     node.outputs = vec!["output".to_string()];
     // Add "to" attribute: ONNX FLOAT = 1
-    node.attributes.insert(
-        "to".to_string(),
-        onyxia_onnx::AttributeValue::Int(1),
-    );
+    node.attributes
+        .insert("to".to_string(), onyxia_onnx::AttributeValue::Int(1));
     graph.add_node(node);
 
     graph.inputs = vec!["input".to_string()];
@@ -1042,8 +1040,8 @@ async fn test_gather_e2e() {
     let data = Tensor::from_vec(
         vec![
             1.0f32, 2.0, 3.0, // Row 0
-            4.0, 5.0, 6.0,    // Row 1
-            7.0, 8.0, 9.0,    // Row 2
+            4.0, 5.0, 6.0, // Row 1
+            7.0, 8.0, 9.0, // Row 2
             10.0, 11.0, 12.0, // Row 3
         ],
         &[4, 3],
@@ -1177,14 +1175,17 @@ async fn test_gather_embedding_e2e() {
     );
 
     let outputs = executor
-        .run(&[(
-            "embedding_table",
-            embedding_table,
-        ), ("token_ids", token_ids)])
+        .run(&[
+            ("embedding_table", embedding_table),
+            ("token_ids", token_ids),
+        ])
         .expect("Execution should succeed");
 
     // Verify output
-    assert!(outputs.contains_key("embeddings"), "Embeddings should exist");
+    assert!(
+        outputs.contains_key("embeddings"),
+        "Embeddings should exist"
+    );
 
     let embeddings = outputs["embeddings"]
         .to_vec::<f32>()
@@ -1212,10 +1213,7 @@ async fn test_gather_embedding_e2e() {
         5.1, 5.2, 5.3, 5.4, // Token 5
     ];
 
-    assert_eq!(
-        embeddings, expected,
-        "Embedding lookup result incorrect"
-    );
+    assert_eq!(embeddings, expected, "Embedding lookup result incorrect");
 
     println!("✓ End-to-end embedding Gather test passed!");
     println!("  Embedding table: [8, 4]");
@@ -1335,10 +1333,7 @@ async fn test_transpose_2d_e2e() {
     // Step 4: Run with concrete input
     // Input: [[1, 2, 3],
     //         [4, 5, 6]]
-    let input = Tensor::from_vec(
-        vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0],
-        &[2, 3],
-    );
+    let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
 
     let outputs = executor
         .run(&[("input", input)])
@@ -1347,15 +1342,21 @@ async fn test_transpose_2d_e2e() {
     // Step 5: Verify output
     assert!(outputs.contains_key("output"), "Output should exist");
 
-    let output = outputs["output"].to_vec::<f32>().expect("Should convert to f32");
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
 
     assert_eq!(output.len(), 6, "Output should have 6 elements");
-    
+
     // Expected: [[1, 4],
     //            [2, 5],
     //            [3, 6]]
     // In row-major order: [1, 4, 2, 5, 3, 6]
-    assert_eq!(output, vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0], "Transpose result incorrect");
+    assert_eq!(
+        output,
+        vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0],
+        "Transpose result incorrect"
+    );
 
     println!("✓ End-to-end Transpose test passed!");
     println!("  Input: [[1, 2, 3], [4, 5, 6]] (shape [2, 3])");
@@ -1404,10 +1405,8 @@ fn make_concat_graph() -> Graph {
     node.name = "concat_node".to_string();
     node.inputs = vec!["a".to_string(), "b".to_string()];
     node.outputs = vec!["c".to_string()];
-    node.attributes.insert(
-        "axis".to_string(),
-        onyxia_onnx::AttributeValue::Int(0i64),
-    );
+    node.attributes
+        .insert("axis".to_string(), onyxia_onnx::AttributeValue::Int(0i64));
     graph.add_node(node);
 
     graph.inputs = vec!["a".to_string(), "b".to_string()];
@@ -1437,7 +1436,9 @@ async fn test_concat_e2e() {
     assert_eq!(plan.inputs.len(), 2, "Should have 2 inputs");
     assert_eq!(plan.outputs.len(), 1, "Should have 1 output");
 
-    let runtime = Runtime::new().await.expect("Runtime creation should succeed");
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime creation should succeed");
     let mut executor = runtime
         .load_model(plan)
         .await
@@ -1540,7 +1541,9 @@ async fn test_reducesum_e2e() {
     assert_eq!(plan.inputs.len(), 1, "Should have 1 input");
     assert_eq!(plan.outputs.len(), 1, "Should have 1 output");
 
-    let runtime = Runtime::new().await.expect("Runtime creation should succeed");
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime creation should succeed");
     let mut executor = runtime
         .load_model(plan)
         .await
@@ -1554,17 +1557,253 @@ async fn test_reducesum_e2e() {
         .expect("Execution should succeed");
 
     assert_eq!(outputs.len(), 1, "Should have 1 output");
-    assert!(outputs.contains_key("output"), "Should have output 'output'");
+    assert!(
+        outputs.contains_key("output"),
+        "Should have output 'output'"
+    );
 
     let output = outputs["output"]
         .to_vec::<f32>()
         .expect("Should convert to f32");
 
     assert_eq!(output.len(), 1, "Output should have 1 element");
-    assert!((output[0] - 10.0).abs() < 1e-5, "ReduceSum result incorrect");
+    assert!(
+        (output[0] - 10.0).abs() < 1e-5,
+        "ReduceSum result incorrect"
+    );
 
     println!("✓ End-to-end ReduceSum test passed!");
     println!("  Input: [1, 2, 3, 4] (shape [4])");
     println!("  Output: [10] (shape [1])");
     println!("  Result: {:?}", output);
+}
+
+/// Helper function to create a MatMulNBits graph with Q4 quantization.
+///
+/// Graph structure:
+/// - Input A: [2, 8] - activations (f32)
+/// - Input B: [2, 1, 4] - quantized weights (u8, packed Q4)
+/// - Input scales: [2, 1] - dequantization scales (f32)
+/// - Output C: [2, 2] - matmul result (f32)
+///
+/// Test case (without zero_points for simplicity):
+/// - Block size: 8 (8 elements per quantization block)
+/// - K=8, N=2, M=2
+/// - blob_size = block_size / 2 = 8 / 2 = 4 bytes = 1 u32
+/// - Scale: 1.0 for simplicity (no zero_points)
+fn make_matmul_nbits_graph() -> Graph {
+    let mut graph = Graph::new();
+
+    // Add input tensor 'A' [2, 8]
+    graph.add_tensor(TensorInfo {
+        name: "A".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![2, 8]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add packed weights 'B' [N=2, n_blocks=1, blob_size=4]
+    // blob_size = block_size / 2 = 8 / 2 = 4 bytes
+    graph.add_tensor(TensorInfo {
+        name: "B".to_string(),
+        dtype: DataType::U8,
+        shape: TensorShape::Static(vec![2, 1, 4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add scales [N=2, n_blocks=1]
+    graph.add_tensor(TensorInfo {
+        name: "scales".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![2, 1]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add output tensor 'C' [2, 2]
+    graph.add_tensor(TensorInfo {
+        name: "C".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![2, 2]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create MatMulNBits node (without zero_points)
+    let mut node = Node::new("MatMulNBits");
+    node.name = "matmul_nbits_node".to_string();
+    node.inputs = vec!["A".to_string(), "B".to_string(), "scales".to_string()];
+    node.outputs = vec!["C".to_string()];
+
+    // Add attributes
+    node.attributes
+        .insert("K".to_string(), onyxia_onnx::AttributeValue::Int(8));
+    node.attributes
+        .insert("N".to_string(), onyxia_onnx::AttributeValue::Int(2));
+    node.attributes
+        .insert("bits".to_string(), onyxia_onnx::AttributeValue::Int(4));
+    node.attributes.insert(
+        "block_size".to_string(),
+        onyxia_onnx::AttributeValue::Int(8),
+    );
+
+    graph.add_node(node);
+
+    // Set graph inputs and outputs
+    graph.inputs = vec!["A".to_string(), "B".to_string(), "scales".to_string()];
+    graph.outputs = vec!["C".to_string()];
+
+    // Set metadata
+    graph.metadata.name = "test_matmul_nbits_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph
+}
+
+/// Pack Q4 values into u32 format (8 values per u32).
+///
+/// Q4 values are 4-bit integers (0-15). We pack 8 of them into one u32.
+fn pack_q4_values(values: &[u8]) -> Vec<u32> {
+    assert!(
+        values.iter().all(|&v| v < 16),
+        "All values must be 4-bit (0-15)"
+    );
+
+    let mut packed = Vec::new();
+    for chunk in values.chunks(8) {
+        let mut val: u32 = 0;
+        for (i, &v) in chunk.iter().enumerate() {
+            val |= (v as u32) << (i * 4);
+        }
+        packed.push(val);
+    }
+    packed
+}
+
+/// End-to-end test: MatMulNBits with Q4 quantization on GPU.
+///
+/// This test verifies:
+/// 1. Graph construction with Q4 quantized weights
+/// 2. Compilation to ExecutionPlan
+/// 3. GPU execution with quantized matmul
+/// 4. Correct dequantization and matmul computation
+#[pollster::test]
+#[ignore] // Requires GPU - ignore in CI
+async fn test_matmul_q4_e2e() {
+    // Step 1: Build graph
+    let graph = make_matmul_nbits_graph();
+
+    graph.validate().expect("Graph validation should succeed");
+
+    // Step 2: Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let dynamic_dimensions = HashMap::new();
+
+    let plan = compile(&graph, &registry, &dynamic_dimensions).expect("Compilation should succeed");
+
+    // Verify plan structure
+    assert_eq!(plan.operations.len(), 1, "Should have 1 operation");
+    assert_eq!(
+        plan.inputs.len(),
+        3,
+        "Should have 3 inputs (no zero_points)"
+    );
+    assert_eq!(plan.outputs.len(), 1, "Should have 1 output");
+
+    // Step 3: Initialize runtime
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    println!(
+        "GPU: {} ({:?})",
+        runtime.adapter_info().name,
+        runtime.adapter_info().backend
+    );
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Step 4: Prepare test data
+    // Activation matrix A [2, 8]:
+    // [[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    //  [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]]
+    let a_data = vec![
+        1.0f32, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0,
+    ];
+    let a = Tensor::from_vec(a_data, &[2, 8]);
+
+    // Weight matrix (logically [K=8, N=2], stored as [N=2, blocks=1, blob_size=4]):
+    // Column 0: 8 weights = [1, 2, 3, 4, 5, 6, 7, 8] (Q4 values)
+    // Column 1: 8 weights = [2, 3, 4, 5, 6, 7, 8, 9] (Q4 values)
+    //
+    // With zero_point=8 (default), scale=1.0:
+    // Dequantized column 0: [1-8, 2-8, 3-8, ..., 8-8] = [-7, -6, -5, -4, -3, -2, -1, 0]
+    // Dequantized column 1: [2-8, 3-8, 4-8, ..., 9-8] = [-6, -5, -4, -3, -2, -1, 0, 1]
+    //
+    // Packed format: 8 Q4 values per u32 (4 bits each)
+    let col0_q4 = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+    let col1_q4 = vec![2u8, 3, 4, 5, 6, 7, 8, 9];
+
+    let col0_packed = pack_q4_values(&col0_q4);
+    let col1_packed = pack_q4_values(&col1_q4);
+
+    // B tensor: [N=2, n_blocks=1, blob_size=4]
+    // Total: 2 * 1 * 4 = 8 bytes
+    let mut b_data: Vec<u8> = Vec::new();
+    b_data.extend_from_slice(&col0_packed[0].to_le_bytes());
+    b_data.extend_from_slice(&col1_packed[0].to_le_bytes());
+
+    let b = Tensor::from_vec(b_data, &[2, 1, 4]);
+
+    // Scales: [N=2, n_blocks=1]
+    let scales_data = vec![1.0f32, 1.0];
+    let scales = Tensor::from_vec(scales_data, &[2, 1]);
+
+    // Step 5: Run inference
+    let outputs = executor
+        .run(&[("A", a), ("B", b), ("scales", scales)])
+        .expect("Execution should succeed");
+
+    // Step 6: Verify output
+    assert!(outputs.contains_key("C"), "Output 'C' should exist");
+
+    let c = outputs["C"].to_vec::<f32>().expect("Should convert to f32");
+
+    assert_eq!(c.len(), 4, "Output should have 4 elements (2x2 matrix)");
+
+    // Expected result (manually computed with zero_point=8):
+    // Dequantized weights:
+    //   col0 = [-7, -6, -5, -4, -3, -2, -1, 0]
+    //   col1 = [-6, -5, -4, -3, -2, -1, 0, 1]
+    //
+    // C[0,0] = 1*(-7) + 1*(-6) + 1*(-5) + 1*(-4) + 1*(-3) + 1*(-2) + 1*(-1) + 1*0
+    //        = -7 -6 -5 -4 -3 -2 -1 + 0 = -28
+    // C[0,1] = 1*(-6) + 1*(-5) + 1*(-4) + 1*(-3) + 1*(-2) + 1*(-1) + 1*0 + 1*1
+    //        = -6 -5 -4 -3 -2 -1 + 0 + 1 = -20
+    // C[1,0] = 2*(-7) + 2*(-6) + ... + 2*0 = 2 * (-28) = -56
+    // C[1,1] = 2*(-6) + 2*(-5) + ... + 2*1 = 2 * (-20) = -40
+    let expected = vec![-28.0f32, -20.0, -56.0, -40.0];
+
+    for (i, (&actual, &expected)) in c.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 0.1,
+            "Mismatch at index {}: expected {}, got {}",
+            i,
+            expected,
+            actual
+        );
+    }
+
+    println!("✓ End-to-end MatMulNBits Q4 test passed!");
+    println!("  Activation A: 2x8 matrix (rows of 1s and 2s)");
+    println!("  Weights (Q4, zero_point=8): col0=[1..8], col1=[2..9]");
+    println!("  Output C: {:?}", c);
+    println!("  Expected: {:?}", expected);
 }
