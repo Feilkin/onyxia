@@ -308,6 +308,23 @@ impl PlanExecutor {
                     RuntimeError::AllocationError(format!("Buffer {} not found", id))
                 })?;
 
+                // Validate initializer size matches tensor size
+                let TensorShape::Static(dims) = &info.shape else {
+                    unreachable!("Already validated above");
+                };
+                let expected_size: usize = dims.iter().product::<usize>() * info.dtype.size();
+                if initializer.len() != expected_size {
+                    return Err(RuntimeError::TensorError(format!(
+                        "Tensor '{}': initializer data size {} doesn't match expected size {} \
+                         (shape {:?} × {} bytes/element)",
+                        info.name,
+                        initializer.len(),
+                        expected_size,
+                        dims,
+                        info.dtype.size()
+                    )));
+                }
+
                 // Ensure data is properly aligned
                 let mut aligned_data = initializer.clone();
                 while aligned_data.len() < size as usize {
@@ -572,8 +589,12 @@ impl PlanExecutor {
         }
     }
 
-    /// Download a tensor from GPU to CPU.
-    fn download_tensor(&self, tensor_id: TensorId) -> Result<Vec<u8>> {
+    /// Download a tensor from GPU to CPU for testing purposes.
+    ///
+    /// This method is public to support integration tests but is not
+    /// part of the stable API.
+    #[doc(hidden)]
+    pub fn download_tensor(&self, tensor_id: TensorId) -> Result<Vec<u8>> {
         let buffer = self.tensor_buffers.get(&tensor_id).ok_or_else(|| {
             RuntimeError::AllocationError(format!("Buffer {} not found", tensor_id))
         })?;
