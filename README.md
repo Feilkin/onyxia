@@ -43,7 +43,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
 ✅ Operations → Runtime → GPU execution (infrastructure ready, nothing to execute)
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#-critical-blocker-codegen--runtime-gap) for details on the blocker and what's needed to unblock end-to-end execution.
+See [ARCHITECTURE.md](ARCHITECTURE.md#-critical-blocker-planner--runtime-gap) for details on the blocker and what's needed to unblock end-to-end execution.
 
 ## What You Can Do Today
 
@@ -54,7 +54,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md#-critical-blocker-codegen--runtime-gap) fo
 - ✅ **Test parsing**: Validate ONNX model compatibility
 
 **Not Yet Working:**
-- ❌ **Run models**: Cannot execute on GPU yet (operations list empty from codegen)
+- ❌ **Run models**: Cannot execute on GPU yet (steps list empty from planner)
 - ❌ **Inference**: No forward pass implementation
 - ❌ **Benchmarking**: Can't measure performance
 
@@ -73,7 +73,7 @@ dot -Tpng model.dot -o model.png
 
 **High-Priority Work Needed:**
 
-1. **Unblock codegen** (2-3 days) - Implement operation generation in `crates/onyxia-codegen/src/lib.rs`
+1. **Unblock planner** (2-3 days) - Implement step generation in `crates/onyxia-planner/src/lib.rs`
    - Map ONNX nodes → Operation instances
    - Connect op_type strings to ShaderHandle  
    - Extract parameters from attributes
@@ -137,7 +137,7 @@ dot -Tpng model.dot -o model.png
 | Crate | Description | Documentation |
 |-------|-------------|---------------|
 | `onyxia-onnx` | ONNX protobuf parser | [crates/onyxia-onnx](crates/onyxia-onnx) |
-| `onyxia-codegen` | WGSL shader compiler | [crates/onyxia-codegen/DESIGN.md](crates/onyxia-codegen/DESIGN.md) |
+| `onyxia-planner` | Execution plan compiler | [crates/onyxia-planner/DESIGN.md](crates/onyxia-planner/DESIGN.md) |
 | `onyxia-runtime` | GPU executor via wgpu | [crates/onyxia-runtime/DESIGN.md](crates/onyxia-runtime/DESIGN.md) |
 | `onyxia-cli` | CLI testing tools | [crates/onyxia-cli](crates/onyxia-cli) |
 
@@ -153,7 +153,7 @@ The `models/` directory contains sample ONNX models for testing:
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full development plan. Current status:
 
-- ✅ Phase 1: Graph and Codegen Foundation (COMPLETED)
+- ✅ Phase 1: Graph and Planner Foundation (COMPLETED)
   - Graph data structures, ONNX parser, scheduler, compiled model
 - 🚧 Phase 2: Core Operator Shaders (CURRENT)
   - WGSL shader generation for elementwise ops, LayerNorm, MatMul

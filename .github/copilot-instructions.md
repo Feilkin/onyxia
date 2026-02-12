@@ -2,14 +2,14 @@
 
 ## Current Project Status (February 2026)
 
-⚠️ **Pipeline ~90% complete but blocked at codegen stage**
+⚠️ **Pipeline ~90% complete but blocked at planner stage**
 
 - ✅ **onyxia-onnx**: Fully functional (parser, shape inference for 18+ ops)
-- ❌ **onyxia-codegen**: Scheduler works, but `build_compiled_model()` returns empty operations list
-- ⏸️  **onyxia-runtime**: Infrastructure ready, blocked waiting for operations to execute
+- ❌ **onyxia-planner**: Scheduler works, but `compile()` returns empty steps list
+- ⏸️  **onyxia-runtime**: Infrastructure ready, blocked waiting for steps to execute
 - ✅ **onyxia-cli**: Working for model inspection and DOT visualization
 
-**Critical blocker**: `crates/onyxia-codegen/src/lib.rs:87` needs to generate operations from Graph nodes. See [ARCHITECTURE.md](../ARCHITECTURE.md#-critical-blocker-codegen--runtime-gap).
+**Critical blocker**: `crates/onyxia-planner/src/lib.rs:87` needs to generate steps from Graph nodes. See [ARCHITECTURE.md](../ARCHITECTURE.md#-critical-blocker-planner--runtime-gap).
 
 ---
 
@@ -35,8 +35,8 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in Rust 2024 e
 | Crate | Purpose |
 |-------|---------|
 | `onyxia-onnx` | Parse ONNX protobuf models into internal IR |
-| `onyxia-codegen` | Generate WGSL shaders and compile execution graphs |
-| `onyxia-runtime` | Execute compiled graphs on GPU via `wgpu` |
+| `onyxia-planner` | Generate execution plans with pre-compiled WGSL shaders |
+| `onyxia-runtime` | Execute execution plans on GPU via `wgpu` |
 | `onyxia-cli` | CLI for testing models, generating dot graphs, benchmarking |
 
 ### Key Technology Choices
@@ -93,6 +93,6 @@ pub mod onnx {
 - For GPU code, write WGSL in separate `.wgsl` files and use `naga_oil` for runtime compilation
 
 ### Cross-Crate Communication
-- `onyxia-onnx` exports an IR that `onyxia-codegen` consumes
-- `onyxia-codegen` produces executable graphs for `onyxia-runtime`
+- `onyxia-onnx` exports an IR that `onyxia-planner` consumes
+- `onyxia-planner` produces execution plans for `onyxia-runtime`
 - Keep crate boundaries clean; avoid circular dependencies

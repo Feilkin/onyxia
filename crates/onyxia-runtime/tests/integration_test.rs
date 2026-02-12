@@ -1,7 +1,7 @@
 //! Integration tests for runtime execution.
 
-use onyxia_codegen::compile;
-use onyxia_onnx::load_model;
+use onyxia_planner::{compile, KernelRegistry};
+use onyxia_onnx::{load_model, parser::parse_model};
 use onyxia_runtime::Runtime;
 use std::collections::HashMap;
 
@@ -10,7 +10,7 @@ use std::collections::HashMap;
 /// - GPU initialization
 /// - Model loading
 /// - Buffer allocation
-/// - Shader compilation
+/// - Pipeline creation
 #[pollster::test]
 async fn test_runtime_load_gemma_model() {
     // Load the quantized Gemma model
@@ -23,7 +23,7 @@ async fn test_runtime_load_gemma_model() {
     }
 
     // Load ONNX model
-    let model = match load_model(model_path) {
+    let model_proto = match load_model(model_path) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("Failed to load model: {}", e);
@@ -31,8 +31,28 @@ async fn test_runtime_load_gemma_model() {
         }
     };
 
+    // Parse model into graph
+    let graph = match parse_model(&model_proto) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("Failed to parse model: {}", e);
+            return;
+        }
+    };
+
+    // Create kernel registry
+    let registry = KernelRegistry::with_defaults();
+
+    // Specify dynamic dimensions for the model
+    let dynamic_dimensions = HashMap::from([
+        ("batch_size".to_string(), 1),
+        ("sequence_length".to_string(), 64),
+        ("past_sequence_length".to_string(), 0),
+        ("total_sequence_length".to_string(), 64),
+    ]);
+
     // Compile the model
-    let compiled = match compile(&model) {
+    let plan = match compile(&graph, &registry, &dynamic_dimensions) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to compile model: {}", e);
@@ -40,9 +60,9 @@ async fn test_runtime_load_gemma_model() {
         }
     };
 
-    println!("Compiled model: {}", compiled.metadata.name);
-    println!("  Operations: {}", compiled.operations.len());
-    println!("  Tensors: {}", compiled.tensors.all().len());
+    println!("Compiled model: {}", plan.metadata.name);
+    println!("  Operations: {}", plan.operations.len());
+    println!("  Tensors: {}", plan.tensors.all().len());
 
     // Initialize runtime
     let runtime = match Runtime::new().await {
@@ -57,28 +77,16 @@ async fn test_runtime_load_gemma_model() {
     let adapter_info = runtime.adapter_info();
     println!("GPU: {} ({:?})", adapter_info.name, adapter_info.backend);
 
-    // Specify dynamic dimensions for the model
-    // Note: Dimension names come from the ONNX model - we need to provide all symbolic dimensions
-    // Models may use multiple dimension names depending on the export configuration
-    // Using smaller sequence_length to avoid GPU buffer size limits
-    let dynamic_dimensions = HashMap::from([
-        ("batch_size".to_string(), 1),
-        ("sequence_length".to_string(), 64), // Reduced to fit GPU limits
-        ("past_sequence_length".to_string(), 0), // For KV cache (empty initially)
-        ("total_sequence_length".to_string(), 64), // Must match sequence_length initially
-    ]);
-
     // Load model into executor
     // This will:
-    // - Calculate required GPU buffer sizes from model + dynamic dimensions
+    // - Calculate required GPU buffer sizes from execution plan
     // - Create GPU device with appropriate limits
-    // - Allocate GPU buffers for all tensors (with resolved dimensions)
-    // - Compile all shaders (with dimension values as shader defs)
+    // - Allocate GPU buffers for all tensors
+    // - Create compute pipelines from pre-compiled naga modules
     // - Create bind groups
-    let _executor = match runtime.load_model(compiled, dynamic_dimensions).await {
+    let _executor = match runtime.load_model(plan).await {
         Ok(e) => {
             println!("✓ Successfully loaded model into executor!");
-            println!("  Model info: {:?}", e.model().metadata);
             e
         }
         Err(e) => {
@@ -119,7 +127,7 @@ async fn test_runtime_load_gemma_full_precision() {
     }
 
     // Load ONNX model
-    let model = match load_model(model_path) {
+    let model_proto = match load_model(model_path) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("Failed to load model: {}", e);
@@ -127,8 +135,28 @@ async fn test_runtime_load_gemma_full_precision() {
         }
     };
 
+    // Parse model into graph
+    let graph = match parse_model(&model_proto) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("Failed to parse model: {}", e);
+            return;
+        }
+    };
+
+    // Create kernel registry
+    let registry = KernelRegistry::with_defaults();
+
+    // Specify dynamic dimensions for the model
+    let dynamic_dimensions = HashMap::from([
+        ("batch_size".to_string(), 1),
+        ("sequence_length".to_string(), 64),
+        ("past_sequence_length".to_string(), 0),
+        ("total_sequence_length".to_string(), 64),
+    ]);
+
     // Compile the model
-    let compiled = match compile(&model) {
+    let plan = match compile(&graph, &registry, &dynamic_dimensions) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to compile model: {}", e);
@@ -136,9 +164,9 @@ async fn test_runtime_load_gemma_full_precision() {
         }
     };
 
-    println!("Compiled model: {}", compiled.metadata.name);
-    println!("  Operations: {}", compiled.operations.len());
-    println!("  Tensors: {}", compiled.tensors.all().len());
+    println!("Compiled model: {}", plan.metadata.name);
+    println!("  Operations: {}", plan.operations.len());
+    println!("  Tensors: {}", plan.tensors.all().len());
 
     // Initialize runtime
     let runtime = match Runtime::new().await {
@@ -153,21 +181,10 @@ async fn test_runtime_load_gemma_full_precision() {
     let adapter_info = runtime.adapter_info();
     println!("GPU: {} ({:?})", adapter_info.name, adapter_info.backend);
 
-    // Specify dynamic dimensions for the model
-    // Models may use multiple dimension names depending on the export configuration
-    // Using smaller sequence_length to avoid GPU buffer size limits
-    let dynamic_dimensions = HashMap::from([
-        ("batch_size".to_string(), 1),
-        ("sequence_length".to_string(), 64), // Reduced to fit GPU limits
-        ("past_sequence_length".to_string(), 0), // For KV cache (empty initially)
-        ("total_sequence_length".to_string(), 64), // Must match sequence_length initially
-    ]);
-
     // Load model into executor
-    let _executor = match runtime.load_model(compiled, dynamic_dimensions).await {
+    let _executor = match runtime.load_model(plan).await {
         Ok(e) => {
             println!("✓ Successfully loaded full precision model into executor!");
-            println!("  Model info: {:?}", e.model().metadata);
             e
         }
         Err(e) => {

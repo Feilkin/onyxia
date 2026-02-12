@@ -5,7 +5,7 @@
 
 use crate::error::{Result, RuntimeError};
 use crate::tensor::Tensor;
-use onyxia_codegen::plan::{BindingDesc, BufferRef, ExecutionPlan, PlannedOp, Step};
+use onyxia_planner::plan::{BindingDesc, BufferRef, ExecutionPlan, PlannedOp, Step};
 use onyxia_onnx::{TensorId, TensorShape};
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -113,7 +113,7 @@ impl PlanExecutor {
     fn create_bind_group_layout_for_shader(
         &self,
         _shader_index: usize,
-        compiled_shader: &onyxia_codegen::plan::CompiledShader,
+        compiled_shader: &onyxia_planner::plan::CompiledShader,
     ) -> Result<wgpu::BindGroupLayout> {
         // Extract bindings from the naga module entry point
         let entry_point = compiled_shader
@@ -618,8 +618,8 @@ impl PlanExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use onyxia_codegen::plan::ExecutionPlan;
-    use onyxia_codegen::{ModelMetadata, TensorRegistry};
+    use onyxia_planner::plan::ExecutionPlan;
+    use onyxia_planner::{ModelMetadata, TensorRegistry};
 
     #[pollster::test]
     #[ignore] // Requires GPU
@@ -642,7 +642,7 @@ mod tests {
         };
 
         // Should be able to load an empty plan without crashing
-        let result = runtime.load_plan(plan).await;
+        let result = runtime.load_model(plan).await;
         assert!(result.is_ok(), "Failed to load empty plan: {:?}", result);
     }
 }

@@ -14,7 +14,7 @@
 //!
 //! ```no_run
 //! use onyxia_runtime::{Runtime, Tensor};
-//! use onyxia_codegen::compile;
+//! use onyxia_planner::compile;
 //! use onyxia_onnx::load_model;
 //!
 //! #[pollster::main]
@@ -45,14 +45,12 @@
 
 mod buffer;
 mod error;
-mod executor;
 mod plan_executor;
 mod runtime;
 mod tensor;
 
 // Public exports
 pub use error::{Result, RuntimeError};
-pub use executor::ModelExecutor;
 pub use plan_executor::PlanExecutor;
 pub use runtime::Runtime;
 pub use tensor::Tensor;

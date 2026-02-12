@@ -817,22 +817,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "onyxia-codegen",
  "onyxia-onnx",
+ "onyxia-planner",
  "onyxia-runtime",
  "pollster",
-]
-
-[[package]]
-name = "onyxia-codegen"
-version = "0.1.0"
-dependencies = [
- "half",
- "naga",
- "naga_oil",
- "onyxia-onnx",
- "petgraph",
- "thiserror",
 ]
 
 [[package]]
@@ -845,15 +833,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "onyxia-planner"
+version = "0.1.0"
+dependencies = [
+ "half",
+ "naga",
+ "naga_oil",
+ "onyxia-onnx",
+ "petgraph",
+ "thiserror",
+]
+
+[[package]]
 name = "onyxia-runtime"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
  "futures",
  "naga",
- "naga_oil",
- "onyxia-codegen",
  "onyxia-onnx",
+ "onyxia-planner",
  "pollster",
  "thiserror",
  "wgpu",

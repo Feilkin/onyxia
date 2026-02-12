@@ -1,11 +1,9 @@
 //! Runtime initialization and GPU device management.
 
 use crate::error::{Result, RuntimeError};
-use crate::executor::ModelExecutor;
 use crate::plan_executor::PlanExecutor;
-use onyxia_codegen::{CompiledModel, ExecutionPlan};
-use onyxia_onnx::{Dimension, TensorShape};
-use std::collections::HashMap;
+use onyxia_planner::ExecutionPlan;
+use onyxia_onnx::TensorShape;
 use std::sync::Arc;
 
 /// Main entry point for GPU runtime.
@@ -69,106 +67,10 @@ impl Runtime {
         })
     }
 
-    /// Calculate the maximum buffer size required for a model.
-    fn calculate_max_buffer_size(
-        model: &CompiledModel,
-        dynamic_dimensions: &HashMap<String, usize>,
-    ) -> Result<u64> {
-        let mut max_size = 0u64;
-
-        for tensor_info in model.tensors.all() {
-            let size = match &tensor_info.shape {
-                TensorShape::Static(dims) => {
-                    let element_count: usize = dims.iter().product();
-                    let element_size = tensor_info.dtype.size();
-                    (element_count * element_size) as u64
-                }
-                TensorShape::Dynamic(dims) => {
-                    let mut element_count = 1usize;
-                    for dim in dims {
-                        match dim {
-                            Dimension::Static(val) => element_count *= val,
-                            Dimension::Named(name) => {
-                                let val = dynamic_dimensions.get(name).ok_or_else(|| {
-                                    RuntimeError::TensorError(format!(
-                                        "Dynamic dimension '{}' not provided in dynamic_dimensions",
-                                        name
-                                    ))
-                                })?;
-                                element_count *= val;
-                            }
-                        }
-                    }
-                    let element_size = tensor_info.dtype.size();
-                    (element_count * element_size) as u64
-                }
-                TensorShape::Unknown => {
-                    return Err(RuntimeError::TensorError(format!(
-                        "Cannot calculate buffer size for tensor '{}' with unknown shape",
-                        tensor_info.name
-                    )));
-                }
-            };
-
-            max_size = max_size.max(size);
-        }
-
-        Ok(max_size)
-    }
-
-    /// Load a compiled model into an executor.
-    ///
-    /// This creates a GPU device with buffer limits calculated from the model's requirements.
-    ///
-    /// # Arguments
-    /// * `model` - The compiled model to execute
-    /// * `dynamic_dimensions` - Concrete values for symbolic dimensions (e.g., {"batch_size": 1, "sequence_length": 512})
-    ///
-    /// # Errors
-    /// Returns an error if device creation, shader compilation, or buffer allocation fails.
-    pub async fn load_model(
-        &self,
-        model: CompiledModel,
-        dynamic_dimensions: HashMap<String, usize>,
-    ) -> Result<ModelExecutor> {
-        // Calculate maximum buffer size needed
-        let max_buffer_size = Self::calculate_max_buffer_size(&model, &dynamic_dimensions)?;
-
-        // Add 10% headroom for intermediate buffers
-        let required_buffer_size = (max_buffer_size as f64 * 1.1) as u64;
-
-        // Get default limits and override max_storage_buffer_binding_size
-        let mut limits = wgpu::Limits::default();
-        // Clamp to u32::MAX since wgpu uses u32 for buffer sizes
-        limits.max_storage_buffer_binding_size = required_buffer_size.min(u32::MAX as u64) as u32;
-        // Request immediate data support (push constants) - 128 bytes is a common minimum
-        limits.max_immediate_size = 128;
-
-        // Create device with calculated limits
-        let (device, queue) = self
-            .adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("Onyxia Device"),
-                required_features: wgpu::Features::IMMEDIATES,
-                required_limits: limits,
-                memory_hints: wgpu::MemoryHints::default(),
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| {
-                RuntimeError::InitError(format!(
-                    "Failed to create device with max buffer size {}: {}",
-                    required_buffer_size, e
-                ))
-            })?;
-
-        ModelExecutor::new(Arc::new(device), Arc::new(queue), model, dynamic_dimensions)
-    }
-
     /// Calculate maximum buffer size from an execution plan.
     ///
     /// All shapes are static in an execution plan, so this is straightforward.
-    fn calculate_plan_max_buffer_size(plan: &ExecutionPlan) -> Result<u64> {
+    fn calculate_max_buffer_size(plan: &ExecutionPlan) -> Result<u64> {
         let mut max_size = 0u64;
 
         for tensor_info in plan.tensors.all() {
@@ -200,11 +102,10 @@ impl Runtime {
         Ok(max_size)
     }
 
-    /// Load an execution plan into a plan executor.
+    /// Load an execution plan into a model executor.
     ///
     /// This creates a GPU device and materializes pre-compiled shaders into pipelines.
-    /// Unlike `load_model()`, this does NOT require `dynamic_dimensions` because
-    /// they were already resolved at plan-time.
+    /// Dynamic dimensions are already resolved at plan-time, so all shapes are static.
     ///
     /// # Arguments
     /// * `plan` - Pre-compiled execution plan with resolved shapes and naga modules
@@ -215,18 +116,18 @@ impl Runtime {
     /// # Example
     /// ```no_run
     /// # use onyxia_runtime::Runtime;
-    /// # use onyxia_codegen::ExecutionPlan;
+    /// # use onyxia_planner::ExecutionPlan;
     /// # #[pollster::main]
     /// # async fn main() -> anyhow::Result<()> {
     /// let runtime = Runtime::new().await?;
     /// # let plan: ExecutionPlan = todo!();
-    /// let executor = runtime.load_plan(plan).await?;
+    /// let executor = runtime.load_model(plan).await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn load_plan(&self, plan: ExecutionPlan) -> Result<PlanExecutor> {
+    pub async fn load_model(&self, plan: ExecutionPlan) -> Result<PlanExecutor> {
         // Calculate maximum buffer size needed
-        let max_buffer_size = Self::calculate_plan_max_buffer_size(&plan)?;
+        let max_buffer_size = Self::calculate_max_buffer_size(&plan)?;
 
         // Add 10% headroom for intermediate buffers
         let required_buffer_size = (max_buffer_size as f64 * 1.1) as u64;
@@ -242,7 +143,7 @@ impl Runtime {
         let (device, queue) = self
             .adapter
             .request_device(&wgpu::DeviceDescriptor {
-                label: Some("Onyxia Device (Plan)"),
+                label: Some("Onyxia Device"),
                 required_features: wgpu::Features::IMMEDIATES,
                 required_limits: limits,
                 memory_hints: wgpu::MemoryHints::default(),

@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use onyxia_codegen::{compile, KernelRegistry};
+//! use onyxia_planner::{compile, KernelRegistry};
 //! use onyxia_onnx::Graph;
 //! use std::collections::HashMap;
 //!
@@ -33,7 +33,7 @@ pub mod scheduler;
 pub use error::{CodegenError, Result};
 pub use kernel::{KernelRegistry, OpKernel, PlanContext};
 pub use plan::{
-    BindingDesc, BufferRef, CompiledShader, ExecutionPlan, ModelMetadata, PlannedOp,
+    BindingDesc, BufferRef, CompiledShader, ExecutionPlan, ModelMetadata, PlannedOp, 
     ScratchBufferDesc, ShaderIndex, Step, TensorRegistry,
 };
 
@@ -66,7 +66,7 @@ use scheduler::Scheduler;
 /// # Example
 ///
 /// ```rust
-/// use onyxia_codegen::{compile, KernelRegistry};
+/// use onyxia_planner::{compile, KernelRegistry};
 /// use onyxia_onnx::Graph;
 /// use std::collections::HashMap;
 ///
