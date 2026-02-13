@@ -1,29 +1,14 @@
 # Copilot Instructions for Onyxia
 
-## Current Project Status (February 2026)
-
-⚠️ **Pipeline ~90% complete but blocked at planner stage**
-
-- ✅ **onyxia-onnx**: Fully functional (parser, shape inference for 18+ ops)
-- ❌ **onyxia-planner**: Scheduler works, but `compile()` returns empty steps list
-- ⏸️  **onyxia-runtime**: Infrastructure ready, blocked waiting for steps to execute
-- ✅ **onyxia-cli**: Working for model inspection and DOT visualization
-
-**Critical blocker**: `crates/onyxia-planner/src/lib.rs:87` needs to generate steps from Graph nodes. See [ARCHITECTURE.md](../ARCHITECTURE.md#-critical-blocker-planner--runtime-gap).
-
----
-
-## Project Overview
-
 Onyxia is a **GPU compute shader runtime for ONNX models**, built in Rust 2024 edition. It compiles ONNX operator graphs into WGSL compute shaders executed via `wgpu`.
 
 ### Architecture
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  onyxia-onnx    │────▶│ onyxia-codegen  │────▶│ onyxia-runtime  │
-│  (ONNX parser)  │     │ (WGSL compiler) │     │ (GPU executor)  │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
+┌─────────────────┐     ┌──────────────────┐      ┌─────────────────┐
+│  onyxia-onnx    │────▶│ onyxia-planner  │────▶│ onyxia-runtime  │
+│  (ONNX parser)  │     │ (execution graph)│      │ (GPU executor)  │
+└─────────────────┘     └──────────────────┘      └─────────────────┘
                                                         ▲
                                                         │
                                                ┌─────────────────┐
@@ -38,6 +23,8 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in Rust 2024 e
 | `onyxia-planner` | Generate execution plans with pre-compiled WGSL shaders |
 | `onyxia-runtime` | Execute execution plans on GPU via `wgpu` |
 | `onyxia-cli` | CLI for testing models, generating dot graphs, benchmarking |
+
+Read [ARCHITECTURE.md](../ARCHITECTURE.md) for more details.
 
 ### Key Technology Choices
 
@@ -54,12 +41,13 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in Rust 2024 e
 **Prerequisite**: `protoc` must be installed. See [README.md](../README.md) for installation instructions.
 
 ```bash
-cargo build                      # Build all crates
-cargo build -p onyxia-cli        # Build specific crate
-cargo nextest run                # Run tests (use nextest, not cargo test)
-cargo nextest run -p onyxia-onnx # Test specific crate
-cargo clippy --workspace         # Lint all crates
-cargo fmt --all                  # Format all crates
+cargo build                                         # Build all crates
+cargo build -p onyxia-cli                           # Build specific crate
+cargo nextest run                                   # Run tests (use nextest, not cargo test)
+cargo nextest run -p onyxia-onnx                    # Test specific crate
+cargo nextest run --run-ignored=all --no-fail-fast  # Run all tests (requirest a GPU).
+cargo clippy --workspace                            # Lint all crates
+cargo fmt --all                                     # Format all crates
 ```
 
 ### ONNX Protobuf Generation
