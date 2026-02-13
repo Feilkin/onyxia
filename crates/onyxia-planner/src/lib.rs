@@ -31,6 +31,7 @@ pub mod kernels;
 pub mod plan;
 pub mod scheduler;
 pub mod shape_inference;
+pub mod symbolic_expr;
 
 pub use error::{CodegenError, Result};
 pub use kernel::{KernelRegistry, OpKernel, PlanContext};

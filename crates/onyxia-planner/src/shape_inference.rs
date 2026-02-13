@@ -17,6 +17,7 @@ use crate::error::{CodegenError, Result};
 use crate::inference::{InferenceContext, TensorValue};
 use crate::kernel::KernelRegistry;
 use crate::scheduler::Scheduler;
+use crate::symbolic_expr::{evaluate_expr, parse_expr};
 use onyxia_onnx::{Dimension, Graph, TensorId, TensorShape};
 use std::collections::HashMap;
 use tracing::{debug, warn};
@@ -47,14 +48,22 @@ pub fn resolve_dynamic_dimensions(
                 match dim {
                     Dimension::Static(size) => resolved.push(*size),
                     Dimension::Named(name) => {
-                        let size = dynamic_dimensions.get(name).ok_or_else(|| {
+                        // Parse and evaluate the dimension expression
+                        let expr = parse_expr(name).map_err(|parse_err| {
                             CodegenError::InvalidShape(format!(
-                                "Dynamic dimension '{}' not provided in dynamic_dimensions \
-                                 (tensor: '{}')",
-                                name, info.name
+                                "Failed to parse dimension '{}': {} (tensor: '{}')",
+                                name, parse_err, info.name
                             ))
                         })?;
-                        resolved.push(*size);
+
+                        let size = evaluate_expr(&expr, dynamic_dimensions).map_err(|eval_err| {
+                            CodegenError::InvalidShape(format!(
+                                "Failed to evaluate dimension '{}': {} (tensor: '{}')",
+                                name, eval_err, info.name
+                            ))
+                        })?;
+
+                        resolved.push(size);
                     }
                 }
             }

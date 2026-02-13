@@ -35,11 +35,15 @@ fn test_compile_gemma_model() {
     let registry = KernelRegistry::with_defaults();
 
     // Provide dynamic dimensions for the model
+    // Note: Model contains expressions like "sequence_length * num_attention_heads"
+    // which are evaluated automatically by the symbolic expression evaluator
     let dynamic_dimensions = HashMap::from([
         ("batch_size".to_string(), 1),
         ("sequence_length".to_string(), 64),
         ("past_sequence_length".to_string(), 0),
         ("total_sequence_length".to_string(), 64),
+        ("num_attention_heads".to_string(), 8),
+        ("num_key_value_heads".to_string(), 8),
     ]);
 
     // Compile the model - this should succeed with all shape inference implemented
