@@ -32,7 +32,7 @@ async fn test_runtime_load_gemma_model() {
     };
 
     // Parse model into graph
-    let graph = match parse_model(&model_proto) {
+    let graph = match parse_model(&model_proto, None) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("Failed to parse model: {}", e);
@@ -55,10 +55,6 @@ async fn test_runtime_load_gemma_model() {
     let plan =
         compile(&graph, &registry, &dynamic_dimensions).expect("Model compilation should succeed");
 
-    println!("Compiled model: {}", plan.metadata.name);
-    println!("  Operations: {}", plan.operations.len());
-    println!("  Tensors: {}", plan.tensors.all().len());
-
     // Initialize runtime - skip test if no GPU available (e.g., in CI)
     let runtime = match Runtime::new().await {
         Ok(r) => r,
@@ -69,9 +65,6 @@ async fn test_runtime_load_gemma_model() {
         }
     };
 
-    let adapter_info = runtime.adapter_info();
-    println!("GPU: {} ({:?})", adapter_info.name, adapter_info.backend);
-
     // Load model into executor
     // This will:
     // - Calculate required GPU buffer sizes from execution plan
@@ -80,10 +73,7 @@ async fn test_runtime_load_gemma_model() {
     // - Create compute pipelines from pre-compiled naga modules
     // - Create bind groups
     let _executor = match runtime.load_model(plan).await {
-        Ok(e) => {
-            println!("✓ Successfully loaded Gemma 3 270M model into executor!");
-            e
-        }
+        Ok(e) => e,
         Err(e) => {
             let err_msg = e.to_string();
             // Buffer size errors are acceptable on GPUs with limited memory - skip test
@@ -122,7 +112,7 @@ async fn test_runtime_load_gemma_full_precision() {
     };
 
     // Parse model into graph
-    let graph = match parse_model(&model_proto) {
+    let graph = match parse_model(&model_proto, None) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("Failed to parse model: {}", e);
@@ -145,10 +135,6 @@ async fn test_runtime_load_gemma_full_precision() {
     let plan =
         compile(&graph, &registry, &dynamic_dimensions).expect("Model compilation should succeed");
 
-    println!("Compiled model: {}", plan.metadata.name);
-    println!("  Operations: {}", plan.operations.len());
-    println!("  Tensors: {}", plan.tensors.all().len());
-
     // Initialize runtime - skip test if no GPU available (e.g., in CI)
     let runtime = match Runtime::new().await {
         Ok(r) => r,
@@ -159,15 +145,9 @@ async fn test_runtime_load_gemma_full_precision() {
         }
     };
 
-    let adapter_info = runtime.adapter_info();
-    println!("GPU: {} ({:?})", adapter_info.name, adapter_info.backend);
-
     // Load model into executor
     let _executor = match runtime.load_model(plan).await {
-        Ok(e) => {
-            println!("✓ Successfully loaded full precision Gemma 3 270M model into executor!");
-            e
-        }
+        Ok(e) => e,
         Err(e) => {
             let err_msg = e.to_string();
             // Buffer size errors are acceptable on GPUs with limited memory - skip test

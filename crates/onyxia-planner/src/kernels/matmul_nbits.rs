@@ -63,9 +63,15 @@ impl OpKernel for MatMulNBitsKernel {
             .attr::<i64>("N")
             .map_err(|e| crate::error::CodegenError::OnnxError(e))? as usize;
 
-        // Output shape: [M, N]
+        // Output shape: preserve batch dimensions from A, replace last two dims with [M, N]
+        // A: [...batch..., M, K]  ->  Output: [...batch..., M, N]
         let m = a_dims[a_dims.len() - 2];
-        Ok(vec![TensorShape::Static(vec![m, n])])
+        
+        let mut output_dims = a_dims[..a_dims.len() - 2].to_vec();
+        output_dims.push(m);
+        output_dims.push(n);
+        
+        Ok(vec![TensorShape::Static(output_dims)])
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {

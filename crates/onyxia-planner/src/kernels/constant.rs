@@ -46,6 +46,7 @@ impl OpKernel for ConstantKernel {
         }
 
         let output_name = &ctx.node.outputs[0];
+        
         if let Some(&tensor_id) = ctx.graph.tensors.get(output_name) {
             if let Ok(tensor_info) = ctx.graph.tensor(tensor_id) {
                 if let Some(value) = TensorValue::from_initializer(tensor_info)? {

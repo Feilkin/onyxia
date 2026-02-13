@@ -1,6 +1,6 @@
 //! Test compilation of the Gemma 3 270m model.
 
-use onyxia_onnx::{load_model, parser::parse_model};
+use onyxia_onnx::load_and_parse_model;
 use onyxia_planner::{KernelRegistry, compile};
 use std::collections::HashMap;
 
@@ -15,18 +15,10 @@ fn test_compile_gemma_model() {
         return;
     }
 
-    let model_proto = match load_model(model_path) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("Failed to load model: {}", e);
-            return;
-        }
-    };
-
-    let graph = match parse_model(&model_proto) {
+    let graph = match load_and_parse_model(model_path) {
         Ok(g) => g,
         Err(e) => {
-            eprintln!("Failed to parse model: {}", e);
+            eprintln!("Failed to load and parse model: {}", e);
             return;
         }
     };
@@ -50,15 +42,9 @@ fn test_compile_gemma_model() {
     let plan = compile(&graph, &registry, &dynamic_dimensions)
         .expect("Model compilation should succeed with shape inference for all operators");
 
-    // Verify basic properties
-    println!("Model: {}", plan.metadata.name);
-    println!("Operations: {}", plan.operations.len());
-    println!("Tensors: {}", plan.tensors.all().len());
-
     // Should have many tensors (weights, intermediates)
     assert!(
         plan.tensors.all().len() > 100,
         "Model should have many tensors"
     );
-    println!("✓ Successfully compiled Gemma 3 270M model!");
 }

@@ -34,7 +34,9 @@ impl OpKernel for MatMulF32Kernel {
         // Extract static dimensions (Phase 1 already resolved Dynamic dims)
         let a_dims = match &ctx.input_shapes[0] {
             TensorShape::Static(dims) => dims,
-            TensorShape::Unknown | TensorShape::Absent => return Ok(vec![TensorShape::Unknown]),
+            TensorShape::Unknown | TensorShape::Absent => {
+                return Ok(vec![TensorShape::Unknown]);
+            }
             TensorShape::Dynamic(_) => {
                 return Err(crate::error::CodegenError::InvalidShape(
                     "Unexpected Dynamic shape after dimension resolution".to_string(),
@@ -59,10 +61,17 @@ impl OpKernel for MatMulF32Kernel {
             )));
         }
 
-        // Output shape: [M, N]
+        // Output shape: preserve batch dimensions from A, replace last two dims with [M, N]
+        // A: [...batch..., M, K]  B: [K, N]  ->  Output: [...batch..., M, N]
         let m = a_dims[a_dims.len() - 2];
         let n = b_dims[b_dims.len() - 1];
-        Ok(vec![TensorShape::Static(vec![m, n])])
+        
+        let mut output_dims = a_dims[..a_dims.len() - 2].to_vec();
+        output_dims.push(m);
+        output_dims.push(n);
+        
+        
+        Ok(vec![TensorShape::Static(output_dims)])
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {

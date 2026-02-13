@@ -4,9 +4,17 @@ use crate::graph::*;
 use crate::onnx::{AttributeProto, ModelProto, NodeProto, TensorProto, tensor_proto};
 use crate::{OnnxError, Result};
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 
 /// Parse an ONNX ModelProto into a Graph.
-pub fn parse_model(model: &ModelProto) -> Result<Graph> {
+///
+/// # Arguments
+///
+/// * `model` - The ONNX ModelProto to parse
+/// * `base_dir` - Optional base directory for resolving external data files (relative to model file location)
+pub fn parse_model(model: &ModelProto, base_dir: Option<&Path>) -> Result<Graph> {
     let graph_proto = model
         .graph
         .as_ref()
@@ -48,7 +56,7 @@ pub fn parse_model(model: &ModelProto) -> Result<Graph> {
 
     // Parse initializers as weight tensors
     for init in initializers.values() {
-        let tensor_info = parse_initializer(init, TensorKind::Weight)?;
+        let tensor_info = parse_initializer(init, TensorKind::Weight, base_dir)?;
         graph.add_tensor(tensor_info);
     }
 
@@ -69,9 +77,9 @@ pub fn parse_model(model: &ModelProto) -> Result<Graph> {
         // Register intermediate tensors (outputs that aren't already registered)
         for output in &node.outputs {
             if !graph.tensors.contains_key(output) {
-                // Special handling for Constant nodes - extract shape and data from tensor attribute
+                // Tensor not yet registered - create new TensorInfo
                 let tensor_info = if node.op_type == "Constant" {
-                    extract_constant_tensor_info(node_proto, output)?
+                    extract_constant_tensor_info(node_proto, output, base_dir)?
                 } else {
                     // Default fallback for tensors without value_info entries
                     // Type and shape will be inferred during compilation
@@ -84,6 +92,18 @@ pub fn parse_model(model: &ModelProto) -> Result<Graph> {
                     }
                 };
                 graph.add_tensor(tensor_info);
+            } else if node.op_type == "Constant" {
+                //Tensor already exists (e.g., from value_info), but Constant nodes have the actualdata
+                // Extract and update the tensor's initializer
+                if let Some(&tensor_id) = graph.tensors.get(output) {
+                    let constant_info = extract_constant_tensor_info(node_proto, output, base_dir)?;
+                    if let Some(existing_info) = graph.tensor_info.get_mut(tensor_id) {
+                        // Update the existing tensor with initializer data and correct dtype/shape
+                        existing_info.initializer = constant_info.initializer;
+                        existing_info.dtype = constant_info.dtype;
+                        existing_info.shape = constant_info.shape;
+                    }
+                }
             }
         }
 
@@ -132,7 +152,11 @@ fn parse_value_info(
 }
 
 /// Parse a TensorProto (initializer) into TensorInfo.
-fn parse_initializer(tensor: &TensorProto, kind: TensorKind) -> Result<TensorInfo> {
+fn parse_initializer(
+    tensor: &TensorProto,
+    kind: TensorKind,
+    base_dir: Option<&Path>,
+) -> Result<TensorInfo> {
     let name = tensor.name.clone();
     let dtype = parse_data_type(tensor.data_type)?;
 
@@ -142,8 +166,13 @@ fn parse_initializer(tensor: &TensorProto, kind: TensorKind) -> Result<TensorInf
         TensorShape::Static(tensor.dims.iter().map(|&d| d as usize).collect())
     };
 
-    // Extract raw data
-    let initializer = if !tensor.raw_data.is_empty() {
+    // Extract raw data - check if it's external or embedded
+    let initializer = if tensor.data_location == 1 {
+        // EXTERNAL
+        // Load from external file
+        load_external_data(tensor, base_dir)?
+    } else if !tensor.raw_data.is_empty() {
+        // Embedded raw data
         Some(tensor.raw_data.clone())
     } else {
         // Handle typed data fields (float_data, int32_data, etc.)
@@ -159,32 +188,107 @@ fn parse_initializer(tensor: &TensorProto, kind: TensorKind) -> Result<TensorInf
     })
 }
 
+/// Load external tensor data from a file.
+fn load_external_data(tensor: &TensorProto, base_dir: Option<&Path>) -> Result<Option<Vec<u8>>> {
+    // Parse external_data key-value pairs
+    let mut location: Option<String> = None;
+    let mut offset: u64 = 0;
+    let mut length: Option<usize> = None;
+
+    for entry in &tensor.external_data {
+        match entry.key.as_str() {
+            "location" => location = Some(entry.value.clone()),
+            "offset" => {
+                offset = entry.value.parse().map_err(|e| {
+                    OnnxError::InvalidModel(format!("Invalid offset in external_data: {}", e))
+                })?
+            }
+            "length" => {
+                length = Some(entry.value.parse().map_err(|e| {
+                    OnnxError::InvalidModel(format!("Invalid length in external_data: {}", e))
+                })?)
+            }
+            _ => {} // Ignore unknown keys (e.g., checksum)
+        }
+    }
+
+    let location = location.ok_or_else(|| {
+        OnnxError::InvalidModel("External data missing 'location' key".to_string())
+    })?;
+
+    // Resolve path relative to base_dir
+    let external_path = if let Some(base) = base_dir {
+        base.join(&location)
+    } else {
+        PathBuf::from(&location)
+    };
+
+    // Open file and read data
+    let mut file = File::open(&external_path).map_err(|e| {
+        OnnxError::InvalidModel(format!(
+            "Failed to open external data file '{}': {}",
+            external_path.display(),
+            e
+        ))
+    })?;
+
+    // Seek to offset if specified
+    if offset > 0 {
+        file.seek(SeekFrom::Start(offset))?;
+    }
+
+    // Read data
+    let data = if let Some(len) = length {
+        // Read exactly 'length' bytes
+        let mut buffer = vec![0u8; len];
+        file.read_exact(&mut buffer)?;
+        buffer
+    } else {
+        // Read to end of file
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
+        buffer
+    };
+
+    Ok(Some(data))
+}
+
 /// Extract TensorInfo from a Constant node's tensor attribute, including shape and data.
-fn extract_constant_tensor_info(node: &NodeProto, name: &str) -> Result<TensorInfo> {
+fn extract_constant_tensor_info(
+    node: &NodeProto,
+    name: &str,
+    base_dir: Option<&Path>,
+) -> Result<TensorInfo> {
     // Find the "value" attribute which contains the TensorProto
     for attr in &node.attribute {
-        if attr.name == "value"
-            && let Some(ref tensor) = attr.t
-        {
-            let shape = if tensor.dims.is_empty() {
-                TensorShape::Static(vec![]) // Scalar
-            } else {
-                TensorShape::Static(tensor.dims.iter().map(|&d| d as usize).collect())
-            };
+        if attr.name == "value" {
+            if let Some(ref tensor) = attr.t {
+                let shape = if tensor.dims.is_empty() {
+                    TensorShape::Static(vec![]) // Scalar
+                } else {
+                    TensorShape::Static(tensor.dims.iter().map(|&d| d as usize).collect())
+                };
 
-            let dtype = tensor_data_type_to_dtype(tensor.data_type);
+                let dtype = tensor_data_type_to_dtype(tensor.data_type);
 
-            // Extract raw data from tensor
-            // Data can be in `raw_data` or in typed arrays like `int64_data`, `int32_data`, etc.
-            let initializer = extract_tensor_raw_data(tensor);
+                // Extract raw data - check if it's external or embedded
+                let initializer = if tensor.data_location == 1 {
+                    // EXTERNAL
+                    // Load from external file
+                    load_external_data(tensor, base_dir)?
+                } else {
+                    // Extract raw data from tensor (embedded or typed arrays)
+                    extract_tensor_raw_data(tensor)
+                };
 
-            return Ok(TensorInfo {
-                name: name.to_string(),
-                dtype,
-                shape,
-                kind: TensorKind::Intermediate,
-                initializer,
-            });
+                return Ok(TensorInfo {
+                    name: name.to_string(),
+                    dtype,
+                    shape,
+                    kind: TensorKind::Intermediate,
+                    initializer,
+                });
+            }
         }
     }
 
@@ -426,7 +530,7 @@ mod tests {
             ..Default::default()
         };
 
-        let graph = parse_model(&model).unwrap();
+        let graph = parse_model(&model, None).unwrap();
         assert_eq!(graph.metadata.name, "test_graph");
         assert_eq!(graph.metadata.ir_version, 8);
     }

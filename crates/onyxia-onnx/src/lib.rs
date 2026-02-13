@@ -112,6 +112,34 @@ pub fn load_model<P: AsRef<Path>>(path: P) -> Result<ModelProto> {
     Ok(model)
 }
 
+/// Load and parse an ONNX model from a file into a Graph.
+///
+/// This function handles external data files automatically by resolving
+/// relative paths based on the model file's directory.
+///
+/// # Arguments
+///
+/// * `path` - Path to the ONNX model file
+///
+/// # Returns
+///
+/// Returns the parsed `Graph` or an error if loading/parsing fails.
+///
+/// # Example
+///
+/// ```no_run
+/// use onyxia_onnx::load_and_parse_model;
+///
+/// let graph = load_and_parse_model("path/to/model.onnx")?;
+/// # Ok::<(), onyxia_onnx::OnnxError>(())
+/// ```
+pub fn load_and_parse_model<P: AsRef<Path>>(path: P) -> Result<Graph> {
+    let path = path.as_ref();
+    let model = load_model(path)?;
+    let base_dir = path.parent();
+    parse_model(&model, base_dir)
+}
+
 /// Convert an ONNX model to Graphviz DOT format.
 ///
 /// Generates a directed graph representing the computation graph structure

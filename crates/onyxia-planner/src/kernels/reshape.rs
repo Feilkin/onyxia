@@ -32,7 +32,9 @@ impl OpKernel for ReshapeKernel {
         // Get input data shape
         let data_shape = match &ctx.input_shapes[0] {
             TensorShape::Static(dims) => dims,
-            TensorShape::Unknown => return Ok(vec![TensorShape::Unknown]),
+            TensorShape::Unknown => {
+                return Ok(vec![TensorShape::Unknown]);
+            }
             TensorShape::Absent => {
                 return Err(crate::error::CodegenError::InvalidShape(
                     "Reshape data input is absent".to_string(),

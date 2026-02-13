@@ -88,7 +88,9 @@ fn cmd_dot(
 
     // Parse model if we need to filter
     let dot = if let Some(filter_prefix) = filter {
-        let graph = onyxia_onnx::parse_model(&model).with_context(|| "Failed to parse model")?;
+        let base_dir = model_path.parent();
+        let graph =
+            onyxia_onnx::parse_model(&model, base_dir).with_context(|| "Failed to parse model")?;
 
         // Find nodes matching the filter
         let mut selected_nodes: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -290,13 +292,13 @@ fn escape_dot_string(s: &str) -> String {
 
 /// Inspect an ONNX model's structure.
 fn cmd_inspect(model_path: PathBuf, dynamic_dim_args: Vec<String>) -> Result<()> {
-    // Load the ONNX model
-    let model_proto = onyxia_onnx::load_model(&model_path)
-        .with_context(|| format!("Failed to load model from {}", model_path.display()))?;
-
-    // Parse into graph structure
-    let mut model =
-        onyxia_onnx::parse_model(&model_proto).with_context(|| "Failed to parse model")?;
+    // Load and parse the ONNX model (handles external data automatically)
+    let mut model = onyxia_onnx::load_and_parse_model(&model_path).with_context(|| {
+        format!(
+            "Failed to load and parse model from {}",
+            model_path.display()
+        )
+    })?;
 
     // Parse dynamic dimensions from arguments
     let mut dynamic_dims = std::collections::HashMap::new();

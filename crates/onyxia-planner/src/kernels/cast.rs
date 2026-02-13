@@ -62,8 +62,8 @@ impl OpKernel for CastKernel {
         if let Ok(to_code) = ctx.node.attr::<i64>("to") {
             let expected_dtype = onnx_dtype_to_datatype(to_code);
             if expected_dtype != target_dtype {
-                eprintln!(
-                    "Warning: Cast node '{}' has 'to' attribute ({:?}) that doesn't match output tensor dtype ({:?}). Using output dtype.",
+                tracing::warn!(
+                    "Cast node '{}' has 'to' attribute ({:?}) that doesn't match output tensor dtype ({:?}). Using output dtype.",
                     ctx.node.name, expected_dtype, target_dtype
                 );
             }
