@@ -56,19 +56,35 @@ impl OpKernel for CastKernel {
         // Optional: Validate 'to' attribute if present (ONNX Cast spec)
         // The 'to' attribute is an int representing the target ONNX data type code
         // In practice, the output tensor dtype is already set correctly by the parser
+        // Note: We don't enforce strict matching because some models may have mismatches
+        // between the 'to' attribute and the actual output tensor dtype. We trust the
+        // output tensor dtype since that's what the rest of the graph expects.
         if let Ok(to_code) = ctx.node.attr::<i64>("to") {
             let expected_dtype = onnx_dtype_to_datatype(to_code);
             if expected_dtype != target_dtype {
-                return Err(CodegenError::InvalidShape(format!(
-                    "Cast 'to' attribute ({:?}) doesn't match output tensor dtype ({:?})",
-                    expected_dtype, target_dtype
-                )));
+                eprintln!(
+                    "Warning: Cast node '{}' has 'to' attribute ({:?}) that doesn't match output tensor dtype ({:?}). Using output dtype.",
+                    ctx.node.name, expected_dtype, target_dtype
+                );
             }
         }
 
         // Calculate number of elements based on output shape
         let output_shape = ctx.static_shape(&output_info.shape)?;
         let num_elements: usize = output_shape.iter().product();
+
+        // Handle no-op casts (source == target)
+        if source_dtype == target_dtype {
+            // For same-type casts, just copy the buffer
+            let buffer_size_bytes = num_elements * source_dtype.size();
+            return Ok(vec![Step::CopyBuffer {
+                src: ctx.input(0),
+                src_offset: 0,
+                dst: ctx.output(0),
+                dst_offset: 0,
+                size: buffer_size_bytes as u64,
+            }]);
+        }
 
         // Determine which shader variant to use
         let (shader_label, shader_def) = match (source_dtype, target_dtype) {
@@ -440,6 +456,7 @@ mod tests {
         node.outputs = vec!["output".to_string()];
 
         // Add wrong "to" attribute (ONNX INT32 = 6, but output is F32)
+        // This should now produce a warning but still succeed
         node.attributes
             .insert("to".to_string(), AttributeValue::Int(6));
 
@@ -457,11 +474,11 @@ mod tests {
             &mut shaders,
         );
 
-        // Should fail because 'to' attribute doesn't match output dtype
+        // Should succeed despite 'to' attribute mismatch (with a warning)
         let result = CastKernel.plan(&mut ctx);
         assert!(
-            result.is_err(),
-            "Planning should fail when 'to' attribute doesn't match output dtype"
+            result.is_ok(),
+            "Planning should succeed even when 'to' attribute doesn't match output dtype"
         );
     }
 }

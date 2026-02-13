@@ -52,6 +52,16 @@ pub fn parse_model(model: &ModelProto) -> Result<Graph> {
         graph.add_tensor(tensor_info);
     }
 
+    // Parse value_info for intermediate tensors (optional type/shape annotations)
+    // This provides type and shape information for intermediate values in the graph.
+    // ONNX spec: "It is optional for a value to appear in value_info list"
+    for value_info_proto in &graph_proto.value_info {
+        if !graph.tensors.contains_key(&value_info_proto.name) {
+            let tensor_info = parse_value_info(value_info_proto, TensorKind::Intermediate)?;
+            graph.add_tensor(tensor_info);
+        }
+    }
+
     // Parse nodes and collect intermediate tensors
     for node_proto in &graph_proto.node {
         let node = parse_node(node_proto)?;
@@ -63,9 +73,11 @@ pub fn parse_model(model: &ModelProto) -> Result<Graph> {
                 let tensor_info = if node.op_type == "Constant" {
                     extract_constant_tensor_info(node_proto, output)?
                 } else {
+                    // Default fallback for tensors without value_info entries
+                    // Type and shape will be inferred during compilation
                     TensorInfo {
                         name: output.clone(),
-                        dtype: DataType::F32, // Default, may be inferred later
+                        dtype: DataType::F32, // Default fallback
                         shape: TensorShape::Unknown,
                         kind: TensorKind::Intermediate,
                         initializer: None,

@@ -41,36 +41,67 @@ impl OpKernel for RotaryEmbeddingKernel {
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
         // Read attributes
-        let num_heads: i64 = ctx.node.attr("num_heads")?;
+        let num_heads_attr: i64 = ctx.node.attr("num_heads").unwrap_or(0);
         let interleaved: i64 = ctx.node.attr("interleaved").unwrap_or(0); // Default: split-half
 
-        // Get input shape: [batch, seq_len, num_heads, head_dim]
+        // Get input shape - support both 3D and 4D formats
         let input_info = ctx.input_info(0)?;
         let input_shape = ctx.static_shape(&input_info.shape)?;
 
-        // Validate input shape
-        if input_shape.len() != 4 {
-            return Err(crate::error::CodegenError::InvalidShape(format!(
-                "RotaryEmbedding expects 4D input [batch, seq_len, num_heads, head_dim], got shape {:?}",
-                input_shape
-            )));
-        }
+        let (batch_size, seq_len, num_heads, head_dim) = match input_shape.len() {
+            // 4D format: [batch, seq_len, num_heads, head_dim]
+            4 => {
+                let batch = input_shape[0] as u32;
+                let seq = input_shape[1] as u32;
+                let heads = input_shape[2] as u32;
+                let head_dim = input_shape[3] as u32;
 
-        let batch_size = input_shape[0] as u32;
-        let seq_len = input_shape[1] as u32;
-        let heads_in_shape = input_shape[2] as u32;
-        let head_dim = input_shape[3] as u32;
+                // If num_heads attribute is provided and non-zero, validate it matches
+                if num_heads_attr > 0 && heads != num_heads_attr as u32 {
+                    return Err(crate::error::CodegenError::InvalidShape(format!(
+                        "RotaryEmbedding: num_heads attribute ({}) doesn't match input shape num_heads ({})",
+                        num_heads_attr, heads
+                    )));
+                }
 
-        // Validate num_heads attribute matches input shape
-        if heads_in_shape != num_heads as u32 {
-            return Err(crate::error::CodegenError::InvalidShape(format!(
-                "RotaryEmbedding: num_heads attribute ({}) doesn't match input shape num_heads ({})",
-                num_heads, heads_in_shape
-            )));
-        }
+                (batch, seq, heads, head_dim)
+            }
+            // 3D format: [batch, seq_len, hidden] where hidden = num_heads * head_dim
+            3 => {
+                let batch = input_shape[0] as u32;
+                let seq = input_shape[1] as u32;
+                let hidden = input_shape[2] as u32;
+
+                // If num_heads is provided, use it; otherwise we can't proceed
+                if num_heads_attr <= 0 {
+                    return Err(crate::error::CodegenError::InvalidShape(format!(
+                        "RotaryEmbedding with 3D input [batch, seq, hidden] requires num_heads attribute, got shape {:?}",
+                        input_shape
+                    )));
+                }
+
+                // Compute head_dim from hidden dimension
+                let head_dim = hidden / (num_heads_attr as u32);
+
+                if hidden != (num_heads_attr as u32) * head_dim {
+                    return Err(crate::error::CodegenError::InvalidShape(format!(
+                        "RotaryEmbedding: hidden dimension {} is not divisible by num_heads {}",
+                        hidden, num_heads_attr
+                    )));
+                }
+
+                (batch, seq, num_heads_attr as u32, head_dim)
+            }
+            _ => {
+                return Err(crate::error::CodegenError::InvalidShape(format!(
+                    "RotaryEmbedding expects 3D [batch, seq_len, hidden] or 4D [batch, seq_len, num_heads, head_dim] input, got shape {:?}",
+                    input_shape
+                )));
+            }
+        };
 
         // Calculate total number of threads needed (one per pair)
-        let total_pairs = batch_size * seq_len * (num_heads as u32) * (head_dim / 2);
+        let total_pairs = batch_size * seq_len * num_heads * (head_dim / 2);
 
         // Configure workgroup size
         let workgroup_size: u32 = 256;
@@ -216,9 +247,9 @@ mod tests {
         let graph = onyxia_onnx::Graph::new();
         let output_shapes = kernel
             .infer_output_shapes(&{
-            let input_values = vec![None; input_shapes.len()];
-            InferenceContext::new(&node, &graph, input_shapes.clone(), input_values)
-        })
+                let input_values = vec![None; input_shapes.len()];
+                InferenceContext::new(&node, &graph, input_shapes.clone(), input_values)
+            })
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -361,11 +392,11 @@ mod tests {
     fn test_rotary_embedding_invalid_shape() {
         let mut graph = Graph::new();
 
-        // Invalid input shape: 3D instead of 4D
+        // Invalid input shape: 2D instead of 3D or 4D
         graph.add_tensor(TensorInfo {
             name: "input".to_string(),
             dtype: DataType::F32,
-            shape: TensorShape::Static(vec![1, 2, 4]),
+            shape: TensorShape::Static(vec![1, 8]),
             kind: TensorKind::Input,
             initializer: None,
         });
@@ -397,7 +428,7 @@ mod tests {
         graph.add_tensor(TensorInfo {
             name: "output".to_string(),
             dtype: DataType::F32,
-            shape: TensorShape::Static(vec![1, 2, 4]),
+            shape: TensorShape::Static(vec![1, 8]),
             kind: TensorKind::Output,
             initializer: None,
         });
@@ -411,7 +442,7 @@ mod tests {
         ];
         node.outputs = vec!["output".to_string()];
         node.attributes
-            .insert("num_heads".to_string(), AttributeValue::Int(1));
+            .insert("num_heads".to_string(), AttributeValue::Int(2));
 
         let input_ids = vec![0, 1, 2, 3];
         let output_ids = vec![4];
@@ -430,7 +461,7 @@ mod tests {
         let result = RotaryEmbeddingKernel.plan(&mut ctx);
         assert!(
             result.is_err(),
-            "Planning with invalid input shape should fail"
+            "Planning with invalid input shape (2D) should fail"
         );
     }
 }

@@ -50,14 +50,40 @@ impl OpKernel for GroupQueryAttentionKernel {
         // Output 0: attention output, same shape as query input
         let output_shape = ctx.input_shapes[0].clone();
 
-        // Outputs 1 and 2 are present_key and present_value
-        // We need to infer these from past_key/past_value + current key/value shapes
-        // For now, return Unknown and let runtime handle it
-        // TODO: Properly infer KV cache output shapes
-        let present_key_shape = TensorShape::Unknown;
-        let present_value_shape = TensorShape::Unknown;
+        // Outputs 1 and 2: present_key and present_value
+        // Shape: [batch, kv_num_heads, total_seq_len, head_dim]
+        // where total_seq_len = past_seq_len + seq_len
+        let present_kv_shape = match (&ctx.input_shapes[0], &ctx.input_shapes[3]) {
+            (TensorShape::Static(query_dims), TensorShape::Static(past_key_dims)) => {
+                if query_dims.len() != 3 {
+                    return Err(CodegenError::InvalidShape(format!(
+                        "GroupQueryAttention expected query shape [batch, seq_len, hidden], got {:?}",
+                        query_dims
+                    )));
+                }
+                if past_key_dims.len() != 4 {
+                    return Err(CodegenError::InvalidShape(format!(
+                        "GroupQueryAttention expected past_key shape [batch, kv_heads, past_seq, head_dim], got {:?}",
+                        past_key_dims
+                    )));
+                }
 
-        Ok(vec![output_shape, present_key_shape, present_value_shape])
+                let batch = query_dims[0];
+                let seq_len = query_dims[1];
+                let kv_num_heads = past_key_dims[1];
+                let past_seq_len = past_key_dims[2];
+                let head_dim = past_key_dims[3];
+                let total_seq_len = past_seq_len + seq_len;
+
+                TensorShape::Static(vec![batch, kv_num_heads, total_seq_len, head_dim])
+            }
+            _ => {
+                // If shapes are not fully static, we can't infer the KV cache shape
+                TensorShape::Unknown
+            }
+        };
+
+        Ok(vec![output_shape, present_kv_shape.clone(), present_kv_shape])
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {

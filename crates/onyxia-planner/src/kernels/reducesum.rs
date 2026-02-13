@@ -48,11 +48,15 @@ impl OpKernel for ReduceSumKernel {
         // - From "axes" attribute (for older opsets)
         // - Empty means reduce all axes
         let axes: Vec<i64> = if ctx.input_shapes.len() > 1 {
-            // Axes from second input - for now, we don't support this at plan time
-            // (would need to read initializer data)
-            return Err(crate::error::CodegenError::UnsupportedOp(
-                "ReduceSum with axes as second input not yet supported".to_string(),
-            ));
+            // Axes from second input - try to read from constant-folded value
+            if let Some(axes_i64) = ctx.input_value_as_i64(1)? {
+                axes_i64.to_vec()
+            } else if let Some(axes_i32) = ctx.input_value_as_i32(1)? {
+                axes_i32.iter().map(|&v| v as i64).collect()
+            } else {
+                // Axes value not available at compile time - can't infer shape
+                return Ok(vec![TensorShape::Unknown]);
+            }
         } else {
             // Try to get axes from attribute
             ctx.node.attr("axes").unwrap_or_else(|_| {
