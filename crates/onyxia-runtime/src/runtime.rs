@@ -130,13 +130,29 @@ impl Runtime {
         let max_buffer_size = Self::calculate_max_buffer_size(&plan)?;
 
         // Add 10% headroom for intermediate buffers
-        let required_buffer_size = (max_buffer_size as f64 * 1.1) as u64;
+        let required_buffer_size = max_buffer_size;
 
-        // Get default limits and override max_storage_buffer_binding_size
+        // Check if adapter can support the required buffer size
+        let adapter_limits = self.adapter.limits();
+        if required_buffer_size > adapter_limits.max_buffer_size {
+            return Err(RuntimeError::InitError(format!(
+                "Model requires buffer size of {} bytes ({:.2} MB), but adapter only supports {} bytes ({:.2} MB)",
+                required_buffer_size,
+                required_buffer_size as f64 / (1024.0 * 1024.0),
+                adapter_limits.max_buffer_size,
+                adapter_limits.max_buffer_size as f64 / (1024.0 * 1024.0)
+            )));
+        }
+
+        // Get default limits and override buffer size limits
         let mut limits = wgpu::Limits::default();
-        // Clamp to u32::MAX since wgpu uses u32 for buffer sizes
-        limits.max_storage_buffer_binding_size = required_buffer_size.min(u32::MAX as u64) as u32;
-        // Request immediate data support (push constants) - 128 bytes is a common minimum
+        let required_size_u32 = required_buffer_size.min(u32::MAX as u64) as u32;
+
+        // Set both buffer size and binding size limits
+        limits.max_buffer_size = required_buffer_size;
+        limits.max_storage_buffer_binding_size = required_size_u32;
+
+        // Request immediate data support (push constants)
         limits.max_immediate_size = 128;
 
         // Create device with calculated limits

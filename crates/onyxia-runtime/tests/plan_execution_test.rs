@@ -304,3 +304,109 @@ async fn test_add_with_bias_e2e() {
     println!("✓ Add with bias test passed!");
     println!("  output = input + bias = {:?}", output);
 }
+
+/// Test loading Gemma model with ~450 initializer tensors.
+///
+/// This is a stress test to verify that large-scale initializer upload works correctly.
+/// The Gemma Q4 model has approximately 450 weight tensors totaling ~250MB of data.
+#[pollster::test]
+#[ignore] // Requires GPU and Gemma model files
+async fn test_gemma_initializers_load() {
+    use std::path::PathBuf;
+
+    // Path to Gemma Q4 model (relative to workspace root)
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let model_path = workspace_root
+        .join("models")
+        .join("gemma-3-270m-it-ONNX")
+        .join("onnx")
+        .join("model_q4.onnx");
+
+    // Verify model file exists
+    if !model_path.exists() {
+        panic!(
+            "Gemma model not found at {:?}. Please download the model first.",
+            model_path
+        );
+    }
+
+    println!("Loading Gemma Q4 model from {:?}...", model_path);
+
+    // Load and parse the ONNX model
+    let graph = onyxia_onnx::load_and_parse_model(&model_path)
+        .expect("Failed to load and parse Gemma model");
+
+    println!("✓ Model loaded and parsed successfully");
+    println!("  Model: {}", graph.metadata.name);
+    println!("  Nodes: {}", graph.nodes.len());
+    println!("  Tensors: {}", graph.tensor_info.len());
+
+    // Count tensors with initializers
+    let initializer_count = graph
+        .tensor_info
+        .iter()
+        .filter(|t| t.initializer.is_some())
+        .count();
+    let total_initializer_bytes: usize = graph
+        .tensor_info
+        .iter()
+        .filter_map(|t| t.initializer.as_ref().map(|i| i.len()))
+        .sum();
+
+    println!("  Initializer tensors: {}", initializer_count);
+    println!(
+        "  Total initializer data: {:.2} MB",
+        total_initializer_bytes as f64 / (1024.0 * 1024.0)
+    );
+
+    // Compile the model
+    println!("Compiling model...");
+    let registry = KernelRegistry::with_defaults();
+
+    // Provide dynamic dimensions for the model
+    // These values come from config.json in the model directory
+    let dynamic_dimensions = HashMap::from([
+        ("batch_size".to_string(), 1),
+        ("sequence_length".to_string(), 64),
+        ("past_sequence_length".to_string(), 0),
+        ("total_sequence_length".to_string(), 64),
+        ("num_attention_heads".to_string(), 4), // from config.json
+        ("head_size".to_string(), 256),         // head_dim from config.json
+        ("num_key_value_heads".to_string(), 1), // from config.json
+    ]);
+
+    let plan =
+        compile(&graph, &registry, &dynamic_dimensions).expect("Failed to compile Gemma model");
+
+    println!("✓ Model compiled successfully");
+    println!("  Operations: {}", plan.operations.len());
+    println!("  Shaders: {}", plan.shaders.len());
+
+    // Load the plan (this uploads all initializers to GPU)
+    println!("Loading plan and uploading initializers to GPU...");
+    let runtime = Runtime::new().await.expect("Failed to initialize runtime");
+
+    match runtime.load_model(plan).await {
+        Ok(_) => {
+            println!("✓ Gemma initializers load test passed!");
+            println!(
+                "  Successfully uploaded {} initializer tensors ({:.2} MB) to GPU",
+                initializer_count,
+                total_initializer_bytes as f64 / (1024.0 * 1024.0)
+            );
+        }
+        Err(e) => {
+            // If this fails due to GPU limitations, that's fine - at minimum we verified
+            // the model loads, parses, and compiles successfully
+            panic!(
+                "Failed to load Gemma model (compilation succeeded): {:?}",
+                e
+            );
+        }
+    }
+}
