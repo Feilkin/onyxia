@@ -42,26 +42,9 @@ fn test_compile_gemma_model() {
         ("total_sequence_length".to_string(), 64),
     ]);
 
-    // Compile the model
-    let plan = match compile(&graph, &registry, &dynamic_dimensions) {
-        Ok(p) => p,
-        Err(e) => {
-            let err_msg = e.to_string();
-            // Unknown shape errors are expected - shape inference only covers ~51% of ops
-            // But we should fail LOUDLY so it's clear what's missing
-            if err_msg.contains("unknown shape") {
-                println!("✓ Expected compilation failure: Missing shape inference for operator");
-                println!(
-                    "  Shape inference implementation covers only 5 operators: Add, Mul, Gelu, RMSNorm, MatMul"
-                );
-                println!("  Error: {}", err_msg);
-                println!("  This is expected until more operators are implemented.");
-                return;
-            }
-            // Any other error is unexpected - fail loudly
-            panic!("Unexpected compilation error: {}", e);
-        }
-    };
+    // Compile the model - this should succeed with all shape inference implemented
+    let plan = compile(&graph, &registry, &dynamic_dimensions)
+        .expect("Model compilation should succeed with shape inference for all operators");
 
     // Verify basic properties
     println!("Model: {}", plan.metadata.name);
@@ -73,5 +56,5 @@ fn test_compile_gemma_model() {
         plan.tensors.all().len() > 100,
         "Model should have many tensors"
     );
-    println!("✓ Successfully compiled model!");
+    println!("✓ Successfully compiled Gemma 3 270M model!");
 }

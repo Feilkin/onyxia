@@ -51,25 +51,20 @@ async fn test_runtime_load_gemma_model() {
         ("total_sequence_length".to_string(), 64),
     ]);
 
-    // Compile the model
-    let plan = match compile(&graph, &registry, &dynamic_dimensions) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Failed to compile model: {}", e);
-            return;
-        }
-    };
+    // Compile the model - should succeed with all operators supported
+    let plan =
+        compile(&graph, &registry, &dynamic_dimensions).expect("Model compilation should succeed");
 
     println!("Compiled model: {}", plan.metadata.name);
     println!("  Operations: {}", plan.operations.len());
     println!("  Tensors: {}", plan.tensors.all().len());
 
-    // Initialize runtime
+    // Initialize runtime - skip test if no GPU available (e.g., in CI)
     let runtime = match Runtime::new().await {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("Failed to initialize runtime: {}", e);
-            eprintln!("This is expected if no GPU is available (e.g., in CI)");
+            eprintln!("Skipping test: Failed to initialize runtime (no GPU available)");
+            eprintln!("  Error: {}", e);
             return;
         }
     };
@@ -86,31 +81,20 @@ async fn test_runtime_load_gemma_model() {
     // - Create bind groups
     let _executor = match runtime.load_model(plan).await {
         Ok(e) => {
-            println!("✓ Successfully loaded model into executor!");
+            println!("✓ Successfully loaded Gemma 3 270M model into executor!");
             e
         }
         Err(e) => {
             let err_msg = e.to_string();
-            // Buffer size errors are expected on GPUs with limited memory
+            // Buffer size errors are acceptable on GPUs with limited memory - skip test
             if err_msg.contains("exceeds GPU maximum buffer size") {
-                println!("✓ Dynamic dimensions working! (Failed due to GPU buffer size limit)");
-                println!("  This validates dimension resolution and buffer allocation logic.");
-                println!("  Error: {}", err_msg);
+                eprintln!("Skipping test: Model exceeds GPU buffer size limit");
+                eprintln!("  This is expected on GPUs with limited memory.");
+                eprintln!("  Error: {}", err_msg);
                 return;
             }
-            // Unknown shape errors are expected - need shape inference
-            if err_msg.contains("unknown shape") {
-                println!("✓ Dynamic device creation working!");
-                println!(
-                    "  Model loading stopped at shape inference (intermediate tensors need inference)."
-                );
-                println!("  This validates buffer size calculation and device creation.");
-                return;
-            }
-            // Other errors indicate implementation issues
-            eprintln!("Failed to load model (expected): {}", e);
-            println!("Note: Full model execution not yet supported");
-            return;
+            // All other errors should fail the test
+            panic!("Failed to load model into executor: {}", e);
         }
     };
 }
@@ -157,25 +141,20 @@ async fn test_runtime_load_gemma_full_precision() {
         ("total_sequence_length".to_string(), 64),
     ]);
 
-    // Compile the model
-    let plan = match compile(&graph, &registry, &dynamic_dimensions) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Failed to compile model: {}", e);
-            return;
-        }
-    };
+    // Compile the model - should succeed with all operators supported
+    let plan =
+        compile(&graph, &registry, &dynamic_dimensions).expect("Model compilation should succeed");
 
     println!("Compiled model: {}", plan.metadata.name);
     println!("  Operations: {}", plan.operations.len());
     println!("  Tensors: {}", plan.tensors.all().len());
 
-    // Initialize runtime
+    // Initialize runtime - skip test if no GPU available (e.g., in CI)
     let runtime = match Runtime::new().await {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("Failed to initialize runtime: {}", e);
-            eprintln!("This is expected if no GPU is available (e.g., in CI)");
+            eprintln!("Skipping test: Failed to initialize runtime (no GPU available)");
+            eprintln!("  Error: {}", e);
             return;
         }
     };
@@ -186,33 +165,22 @@ async fn test_runtime_load_gemma_full_precision() {
     // Load model into executor
     let _executor = match runtime.load_model(plan).await {
         Ok(e) => {
-            println!("✓ Successfully loaded full precision model into executor!");
+            println!("✓ Successfully loaded full precision Gemma 3 270M model into executor!");
             e
         }
         Err(e) => {
             let err_msg = e.to_string();
-            // Buffer size errors are expected on GPUs with limited memory
+            // Buffer size errors are acceptable on GPUs with limited memory - skip test
             if err_msg.contains("exceeds GPU maximum buffer size") {
-                println!("✓ Dynamic dimensions working! (Failed due to GPU buffer size limit)");
-                println!("  This validates dimension resolution and buffer allocation logic.");
-                println!(
-                    "  Note: Full precision Gemma needs ~640MB+ per tensor, exceeds GPU limits"
+                eprintln!("Skipping test: Full precision model exceeds GPU buffer size limit");
+                eprintln!(
+                    "  Full precision Gemma needs ~640MB+ per tensor, exceeds GPU limits on most consumer hardware."
                 );
+                eprintln!("  Error: {}", err_msg);
                 return;
             }
-            // Unknown shape errors are expected - need shape inference
-            if err_msg.contains("unknown shape") {
-                println!("✓ Dynamic device creation working!");
-                println!(
-                    "  Model loading stopped at shape inference (intermediate tensors need inference)."
-                );
-                println!("  This validates buffer size calculation and device creation.");
-                return;
-            }
-            // Other errors might indicate missing shader implementations
-            eprintln!("Failed to load model: {}", e);
-            println!("Note: May need static shapes or missing shader implementations");
-            return;
+            // All other errors should fail the test
+            panic!("Failed to load full precision model into executor: {}", e);
         }
     };
 }

@@ -344,20 +344,69 @@ mod tests {
     #[test]
     fn test_unsqueeze_kernel_shape_inference() {
         let kernel = UnsqueezeKernel;
-        let node = Node::new("Unsqueeze");
-        let input_shapes = vec![
-            TensorShape::Static(vec![4]),
-            TensorShape::Static(vec![1]), // axes input
-        ];
-
         let graph = onyxia_onnx::Graph::new();
+        
+        // Test with axes from attribute (opset < 13 pattern)
+        let mut node = Node::new("Unsqueeze");
+        node.attributes.insert(
+            "axes".to_string(),
+            onyxia_onnx::AttributeValue::Ints(vec![0i64, 2i64]),
+        );
+        
+        let input_shapes = vec![TensorShape::Static(vec![4])];
+
         let output_shapes = kernel
             .infer_output_shapes(&graph, &node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
-        // Shape inference returns Unknown - actual shape is determined by global pass
-        assert_eq!(output_shapes[0], TensorShape::Unknown);
+        // Input [4] with axes [0, 2] should produce [1, 4, 1]
+        assert_eq!(output_shapes[0], TensorShape::Static(vec![1, 4, 1]));
+    }
+
+    #[test]
+    fn test_unsqueeze_kernel_shape_inference_with_initializer() {
+        // Test with axes from initializer (opset >= 13 pattern)
+        let mut graph = onyxia_onnx::Graph::new();
+        
+        // Add data tensor
+        graph.add_tensor(TensorInfo {
+            name: "data".to_string(),
+            dtype: DataType::F32,
+            shape: TensorShape::Static(vec![3, 4]),
+            kind: TensorKind::Input,
+            initializer: None,
+        });
+        
+        // Add axes tensor as constant/initializer
+        let axes_data: Vec<u8> = vec![1i64]
+            .into_iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        graph.add_tensor(TensorInfo {
+            name: "axes".to_string(),
+            dtype: DataType::I64,
+            shape: TensorShape::Static(vec![1]),
+            kind: TensorKind::Weight,
+            initializer: Some(axes_data),
+        });
+        
+        let mut node = Node::new("Unsqueeze");
+        node.inputs = vec!["data".to_string(), "axes".to_string()];
+        
+        let kernel = UnsqueezeKernel;
+        let input_shapes = vec![
+            TensorShape::Static(vec![3, 4]),
+            TensorShape::Static(vec![1]),
+        ];
+
+        let output_shapes = kernel
+            .infer_output_shapes(&graph, &node, &input_shapes)
+            .expect("Shape inference should succeed");
+
+        assert_eq!(output_shapes.len(), 1);
+        // Input [3, 4] with axes [1] should produce [3, 1, 4]
+        assert_eq!(output_shapes[0], TensorShape::Static(vec![3, 1, 4]));
     }
 
     #[test]

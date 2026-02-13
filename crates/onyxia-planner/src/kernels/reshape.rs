@@ -80,54 +80,57 @@ impl OpKernel for ReshapeKernel {
 
         // Parse i64 shape from raw bytes
         let target_shape = parse_i64_array(initializer);
-                    
-                    // Handle -1 dimension (infer from total size)
-                    let total_elements: usize = data_shape.iter().product();
-                    let mut output_shape = Vec::new();
-                    let mut infer_dim = None;
-                    let mut known_product: i64 = 1;
-                    
-                    for (idx, &dim) in target_shape.iter().enumerate() {
-                        if dim == -1 {
-                            if infer_dim.is_some() {
-                                return Err(crate::error::CodegenError::InvalidShape(
-                                    "Reshape can have at most one -1 dimension".to_string(),
-                                ));
-                            }
-                            infer_dim = Some(idx);
-                            output_shape.push(0); // Placeholder
-                        } else if dim == 0 {
-                            // 0 means "copy from input shape"
-                            if idx < data_shape.len() {
-                                output_shape.push(data_shape[idx]);
-                                known_product *= data_shape[idx] as i64;
-                            } else {
-                                return Err(crate::error::CodegenError::InvalidShape(
-                                    format!("Reshape: dimension 0 at index {} out of range", idx),
-                                ));
-                            }
-                        } else if dim > 0 {
-                            output_shape.push(dim as usize);
-                            known_product *= dim;
-                        } else {
-                            return Err(crate::error::CodegenError::InvalidShape(
-                                format!("Invalid reshape dimension: {}", dim),
-                            ));
-                        }
-                    }
-                    
-                    // Compute inferred dimension
-                    if let Some(idx) = infer_dim {
-                        let inferred = total_elements as i64 / known_product;
-                        if inferred * known_product != total_elements as i64 {
-                            return Err(crate::error::CodegenError::InvalidShape(
-                                format!("Cannot reshape {} elements into {:?}", total_elements, target_shape),
-                            ));
-                        }
-                        output_shape[idx] = inferred as usize;
-                    }
-                    
-                    Ok(vec![TensorShape::Static(output_shape)])
+
+        // Handle -1 dimension (infer from total size)
+        let total_elements: usize = data_shape.iter().product();
+        let mut output_shape = Vec::new();
+        let mut infer_dim = None;
+        let mut known_product: i64 = 1;
+
+        for (idx, &dim) in target_shape.iter().enumerate() {
+            if dim == -1 {
+                if infer_dim.is_some() {
+                    return Err(crate::error::CodegenError::InvalidShape(
+                        "Reshape can have at most one -1 dimension".to_string(),
+                    ));
+                }
+                infer_dim = Some(idx);
+                output_shape.push(0); // Placeholder
+            } else if dim == 0 {
+                // 0 means "copy from input shape"
+                if idx < data_shape.len() {
+                    output_shape.push(data_shape[idx]);
+                    known_product *= data_shape[idx] as i64;
+                } else {
+                    return Err(crate::error::CodegenError::InvalidShape(format!(
+                        "Reshape: dimension 0 at index {} out of range",
+                        idx
+                    )));
+                }
+            } else if dim > 0 {
+                output_shape.push(dim as usize);
+                known_product *= dim;
+            } else {
+                return Err(crate::error::CodegenError::InvalidShape(format!(
+                    "Invalid reshape dimension: {}",
+                    dim
+                )));
+            }
+        }
+
+        // Compute inferred dimension
+        if let Some(idx) = infer_dim {
+            let inferred = total_elements as i64 / known_product;
+            if inferred * known_product != total_elements as i64 {
+                return Err(crate::error::CodegenError::InvalidShape(format!(
+                    "Cannot reshape {} elements into {:?}",
+                    total_elements, target_shape
+                )));
+            }
+            output_shape[idx] = inferred as usize;
+        }
+
+        Ok(vec![TensorShape::Static(output_shape)])
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
@@ -153,7 +156,11 @@ impl OpKernel for ReshapeKernel {
 fn parse_i64_array(bytes: &[u8]) -> Vec<i64> {
     bytes
         .chunks_exact(8)
-        .map(|chunk| i64::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7]]))
+        .map(|chunk| {
+            i64::from_le_bytes([
+                chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+            ])
+        })
         .collect()
 }
 
@@ -357,12 +364,37 @@ mod tests {
 
     #[test]
     fn test_reshape_kernel_shape_inference() {
+        let mut graph = Graph::new();
+
+        // Add data tensor
+        graph.add_tensor(TensorInfo {
+            name: "data".to_string(),
+            dtype: DataType::F32,
+            shape: TensorShape::Static(vec![2, 3]),
+            kind: TensorKind::Input,
+            initializer: None,
+        });
+
+        // Add shape tensor (constant with target shape [3, 2])
+        let shape_data: Vec<u8> = vec![3i64, 2i64]
+            .into_iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        graph.add_tensor(TensorInfo {
+            name: "target_shape".to_string(),
+            dtype: DataType::I64,
+            shape: TensorShape::Static(vec![2]),
+            kind: TensorKind::Weight,
+            initializer: Some(shape_data),
+        });
+
+        let mut node = Node::new("Reshape");
+        node.inputs = vec!["data".to_string(), "target_shape".to_string()];
+
         let kernel = ReshapeKernel;
-        let graph = Graph::new();  // Empty test graph
-        let node = Node::new("Reshape");
         let input_shapes = vec![
             TensorShape::Static(vec![2, 3]),
-            TensorShape::Static(vec![1]), // shape input
+            TensorShape::Static(vec![2]), // shape input
         ];
 
         let output_shapes = kernel
@@ -370,7 +402,159 @@ mod tests {
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
-        // Shape inference returns Unknown - actual shape is determined by global pass
-        assert_eq!(output_shapes[0], TensorShape::Unknown);
+        assert_eq!(output_shapes[0], TensorShape::Static(vec![3, 2]));
+    }
+
+    /// Test case reproducing the Gemma model pattern where Reshape's target shape
+    /// is computed by a chain of operations: Shape → Gather → Unsqueeze → Concat → Reshape
+    ///
+    /// This pattern is currently unsupported and returns Unknown, but could be handled
+    /// with constant folding or symbolic execution in the future.
+    #[test]
+    fn test_reshape_with_computed_shape_gemma_pattern() {
+        let mut graph = Graph::new();
+
+        // Input: position_ids [batch_size, sequence_length]
+        graph.add_tensor(TensorInfo {
+            name: "input_ids".to_string(),
+            dtype: DataType::I64,
+            shape: TensorShape::Static(vec![1, 64]),
+            kind: TensorKind::Input,
+            initializer: None,
+        });
+
+        graph.add_tensor(TensorInfo {
+            name: "position_ids".to_string(),
+            dtype: DataType::I64,
+            shape: TensorShape::Static(vec![1, 64]),
+            kind: TensorKind::Input,
+            initializer: None,
+        });
+
+        // Constant: index 1 (to extract sequence_length)
+        graph.add_tensor(TensorInfo {
+            name: "index_1".to_string(),
+            dtype: DataType::I64,
+            shape: TensorShape::Static(vec![]),
+            kind: TensorKind::Weight,
+            initializer: Some(1i64.to_le_bytes().to_vec()),
+        });
+
+        // Constant: -1 (for reshape)
+        graph.add_tensor(TensorInfo {
+            name: "neg_one".to_string(),
+            dtype: DataType::I64,
+            shape: TensorShape::Static(vec![1]),
+            kind: TensorKind::Weight,
+            initializer: Some((-1i64).to_le_bytes().to_vec()),
+        });
+
+        // Constant: axes for unsqueeze
+        graph.add_tensor(TensorInfo {
+            name: "axes_0".to_string(),
+            dtype: DataType::I64,
+            shape: TensorShape::Static(vec![1]),
+            kind: TensorKind::Weight,
+            initializer: Some(0i64.to_le_bytes().to_vec()),
+        });
+
+        // Intermediate: Shape/output_0 - shape of input_ids as int64 tensor
+        graph.add_tensor(TensorInfo {
+            name: "shape_output".to_string(),
+            dtype: DataType::I64,
+            shape: TensorShape::Unknown, // Shape op output - can't infer without execution
+            kind: TensorKind::Intermediate,
+            initializer: None,
+        });
+
+        // Intermediate: Gather/output_0 - extracted dimension (sequence_length)
+        graph.add_tensor(TensorInfo {
+            name: "gather_output".to_string(),
+            dtype: DataType::I64,
+            shape: TensorShape::Unknown, // Scalar value 64
+            kind: TensorKind::Intermediate,
+            initializer: None,
+        });
+
+        // Intermediate: Unsqueeze/output_0 - [64]
+        graph.add_tensor(TensorInfo {
+            name: "unsqueeze_output".to_string(),
+            dtype: DataType::I64,
+            shape: TensorShape::Unknown,
+            kind: TensorKind::Intermediate,
+            initializer: None,
+        });
+
+        // Intermediate: Concat/output_0 - [-1, 64]
+        graph.add_tensor(TensorInfo {
+            name: "concat_output".to_string(),
+            dtype: DataType::I64,
+            shape: TensorShape::Unknown,
+            kind: TensorKind::Intermediate,
+            initializer: None,
+        });
+
+        // Output: Reshape/output_0
+        graph.add_tensor(TensorInfo {
+            name: "reshape_output".to_string(),
+            dtype: DataType::I64,
+            shape: TensorShape::Unknown,
+            kind: TensorKind::Output,
+            initializer: None,
+        });
+
+        // Build the chain of nodes
+        let mut shape_node = Node::new("Shape");
+        shape_node.inputs = vec!["input_ids".to_string()];
+        shape_node.outputs = vec!["shape_output".to_string()];
+
+        let mut gather_node = Node::new("Gather");
+        gather_node.inputs = vec!["shape_output".to_string(), "index_1".to_string()];
+        gather_node.outputs = vec!["gather_output".to_string()];
+
+        let mut unsqueeze_node = Node::new("Unsqueeze");
+        unsqueeze_node.inputs = vec!["gather_output".to_string(), "axes_0".to_string()];
+        unsqueeze_node.outputs = vec!["unsqueeze_output".to_string()];
+
+        let mut concat_node = Node::new("Concat");
+        concat_node
+            .attributes
+            .insert("axis".to_string(), onyxia_onnx::AttributeValue::Int(0));
+        concat_node.inputs = vec!["neg_one".to_string(), "unsqueeze_output".to_string()];
+        concat_node.outputs = vec!["concat_output".to_string()];
+
+        let mut reshape_node = Node::new("Reshape");
+        reshape_node.inputs = vec!["position_ids".to_string(), "concat_output".to_string()];
+        reshape_node.outputs = vec!["reshape_output".to_string()];
+
+        graph.nodes.push(shape_node);
+        graph.nodes.push(gather_node);
+        graph.nodes.push(unsqueeze_node);
+        graph.nodes.push(concat_node);
+        graph.nodes.push(reshape_node.clone());
+
+        graph.inputs = vec!["input_ids".to_string(), "position_ids".to_string()];
+        graph.outputs = vec!["reshape_output".to_string()];
+
+        // Test shape inference on the Reshape node
+        let kernel = ReshapeKernel;
+        let input_shapes = vec![
+            TensorShape::Static(vec![1, 64]), // position_ids
+            TensorShape::Unknown,             // concat_output (computed at runtime)
+        ];
+
+        let output_shapes = kernel
+            .infer_output_shapes(&graph, &reshape_node, &input_shapes)
+            .expect("Shape inference should succeed");
+
+        assert_eq!(output_shapes.len(), 1);
+
+        // Expected output shape: position_ids is [1, 64] = 64 elements
+        // Target shape [-1, 64] with 64 elements means: -1 = 64/64 = 1
+        // So output should be [1, 64]
+        //
+        // Currently fails because we don't have constant folding to evaluate
+        // the Shape → Gather → Unsqueeze → Concat chain.
+        assert_eq!(output_shapes[0], TensorShape::Static(vec![1, 64]));
     }
 }
