@@ -27,6 +27,10 @@ pub struct PlanExecutor {
     bind_group_layouts: Vec<wgpu::BindGroupLayout>,
     /// GPU buffers for model tensors, keyed by TensorId.
     tensor_buffers: HashMap<TensorId, wgpu::Buffer>,
+    /// Original tensor buffers before any aliasing (for reset).
+    original_buffers: HashMap<TensorId, wgpu::Buffer>,
+    /// Track which tensor IDs have been aliased (for selective restore).
+    aliased_tensors: std::collections::HashSet<TensorId>,
     /// Per-operation scratch buffers. `scratch_pools[op_index][scratch_index]`.
     scratch_pools: Vec<Vec<wgpu::Buffer>>,
 }
@@ -49,6 +53,8 @@ impl PlanExecutor {
             pipelines: Vec::with_capacity(plan.shaders.len()),
             bind_group_layouts: Vec::with_capacity(plan.shaders.len()),
             tensor_buffers: HashMap::new(),
+            original_buffers: HashMap::new(),
+            aliased_tensors: std::collections::HashSet::new(),
             scratch_pools: Vec::with_capacity(plan.operations.len()),
             plan,
         };
@@ -362,14 +368,92 @@ impl PlanExecutor {
         Ok(())
     }
 
-    /// Execute the plan with provided inputs.
+    /// Alias an output tensor's buffer to serve as an input tensor in subsequent runs.
+    ///
+    /// The underlying GPU buffer is NOT copied — the output buffer is directly reused
+    /// as the input buffer. This enables zero-copy patterns like KV caching where
+    /// an output from one run becomes the input to the next run.
+    ///
+    /// Both names must exist in the plan's TensorRegistry.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // After first run, alias present.0.key -> past_key_values.0.key
+    /// executor.alias_buffer("present.0.key", "past_key_values.0.key")?;
+    /// // Next run will read past_key_values.0.key from present.0.key's buffer
+    /// ```
+    pub fn alias_buffer(&mut self, source_name: &str, target_name: &str) -> Result<()> {
+        let (source_id, _) = self
+            .plan
+            .tensors
+            .find_by_name(source_name)
+            .ok_or_else(|| RuntimeError::TensorNotFound(source_name.to_string()))?;
+        let (target_id, _) = self
+            .plan
+            .tensors
+            .find_by_name(target_name)
+            .ok_or_else(|| RuntimeError::TensorNotFound(target_name.to_string()))?;
+
+        // Sanity check
+        if source_id == target_id {
+            return Err(RuntimeError::AllocationError(
+                "Cannot alias a tensor to itself".to_string(),
+            ));
+        }
+
+        // Before aliasing, save the original buffer for target if not already saved
+        if !self.aliased_tensors.contains(&target_id) {
+            if let Some(original) = self.tensor_buffers.get(&target_id) {
+                self.original_buffers.insert(target_id, original.clone());
+            }
+        }
+
+        let buffer = self
+            .tensor_buffers
+            .get(&source_id)
+            .ok_or_else(|| {
+                RuntimeError::AllocationError(format!("Buffer for '{}' not found", source_name))
+            })?
+            .clone(); // wgpu::Buffer is Clone (internally refcounted)
+
+        self.tensor_buffers.insert(target_id, buffer);
+        self.aliased_tensors.insert(target_id);
+        Ok(())
+    }
+
+    /// Clear all buffer aliases, restoring original buffer assignments.
+    ///
+    /// This resets all tensors to use their originally allocated buffers,
+    /// undoing any aliases created with `alias_buffer()`.
+    pub fn clear_aliases(&mut self) -> Result<()> {
+        // Restore only the buffers that were aliased
+        for id in &self.aliased_tensors {
+            if let Some(original_buffer) = self.original_buffers.get(id) {
+                self.tensor_buffers.insert(*id, original_buffer.clone());
+            }
+        }
+        self.aliased_tensors.clear();
+        Ok(())
+    }
+
+    /// Execute the plan but only download the specified outputs to CPU.
+    ///
+    /// All outputs are still computed on GPU, but only the named ones are
+    /// transferred to CPU and returned. This is useful for operations like
+    /// KV caching where most outputs (e.g., `present.*` tensors) should stay
+    /// on GPU, and only specific outputs (e.g., `logits`) need to be downloaded.
     ///
     /// # Arguments
-    /// * `inputs` - Named input tensors
+    /// * `inputs` - Named input tensors to upload
+    /// * `output_names` - Names of outputs to download
     ///
     /// # Returns
-    /// Named output tensors
-    pub fn run(&mut self, inputs: &[(&str, Tensor)]) -> Result<HashMap<String, Tensor>> {
+    /// Named output tensors (only the requested ones)
+    pub fn run_with_outputs(
+        &mut self,
+        inputs: &[(&str, Tensor)],
+        output_names: &[&str],
+    ) -> Result<HashMap<String, Tensor>> {
         // Upload inputs to GPU
         for (name, tensor) in inputs {
             let (tensor_id, _) = self.plan.tensors.find_by_name(name).ok_or_else(|| {
@@ -398,14 +482,15 @@ impl PlanExecutor {
             })
             .map_err(|e| RuntimeError::ExecutionError(format!("GPU poll failed: {:?}", e)))?;
 
-        // Download outputs from GPU
+        // Download only the requested outputs from GPU
         let mut outputs = HashMap::new();
-        for output_id in &self.plan.outputs {
-            let info = self.plan.tensors.get(*output_id).ok_or_else(|| {
-                RuntimeError::TensorNotFound(format!("Output {} not found", output_id))
-            })?;
+        for output_name in output_names {
+            let (output_id, info) =
+                self.plan.tensors.find_by_name(output_name).ok_or_else(|| {
+                    RuntimeError::TensorNotFound(format!("Output '{}' not found", output_name))
+                })?;
 
-            let data = self.download_tensor(*output_id)?;
+            let data = self.download_tensor(output_id)?;
 
             // Extract shape
             let shape: Vec<usize> = match &info.shape {
@@ -424,6 +509,29 @@ impl PlanExecutor {
         }
 
         Ok(outputs)
+    }
+
+    /// Execute the plan and download all outputs.
+    ///
+    /// This is a convenience wrapper around `run_with_outputs()` that downloads
+    /// all outputs defined in the execution plan.
+    ///
+    /// # Arguments
+    /// * `inputs` - Named input tensors to upload
+    ///
+    /// # Returns
+    /// Named output tensors
+    pub fn run(&mut self, inputs: &[(&str, Tensor)]) -> Result<HashMap<String, Tensor>> {
+        // Collect all output names (separate from the mutable borrow)
+        let output_ids = self.plan.outputs.clone();
+        let output_names: Vec<String> = output_ids
+            .iter()
+            .filter_map(|id| self.plan.tensors.get(*id).map(|info| info.name.clone()))
+            .collect();
+        let output_name_refs: Vec<&str> = output_names.iter().map(|s| s.as_str()).collect();
+
+        // Delegate to run_with_outputs
+        self.run_with_outputs(inputs, &output_name_refs)
     }
 
     /// Execute a single operation by dispatching its steps.
@@ -662,7 +770,8 @@ impl PlanExecutor {
 
 #[cfg(test)]
 mod tests {
-    
+    use super::*;
+    use onyxia_onnx::{DataType, TensorInfo, TensorKind};
     use onyxia_planner::plan::ExecutionPlan;
     use onyxia_planner::{ModelMetadata, TensorRegistry};
 
@@ -689,5 +798,213 @@ mod tests {
         // Should be able to load an empty plan without crashing
         let result = runtime.load_model(plan).await;
         assert!(result.is_ok(), "Failed to load empty plan: {:?}", result);
+    }
+
+    #[pollster::test]
+    #[ignore] // Requires GPU
+    async fn test_alias_buffer() {
+        let runtime = crate::Runtime::new().await.unwrap();
+
+        // Create a simple plan with two tensors
+        let mut tensors = TensorRegistry::new();
+        let source_id = tensors.add(TensorInfo {
+            name: "source".to_string(),
+            shape: TensorShape::Static(vec![4]),
+            dtype: DataType::F32,
+            kind: TensorKind::Input,
+            initializer: None,
+        });
+        let target_id = tensors.add(TensorInfo {
+            name: "target".to_string(),
+            shape: TensorShape::Static(vec![4]),
+            dtype: DataType::F32,
+            kind: TensorKind::Output,
+            initializer: None,
+        });
+
+        let plan = ExecutionPlan {
+            operations: Vec::new(),
+            shaders: Vec::new(),
+            tensors,
+            inputs: vec![source_id],
+            outputs: vec![source_id, target_id],
+            metadata: ModelMetadata {
+                name: "test_alias".to_string(),
+                version: 1,
+                ir_version: 9,
+                producer: "test".to_string(),
+            },
+        };
+
+        let mut executor = runtime.load_model(plan).await.unwrap();
+
+        // Upload data to source
+        let source_data = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[4]);
+        executor
+            .run(&[("source", source_data.clone())])
+            .expect("First run failed");
+
+        // Alias source -> target (zero-copy)
+        executor
+            .alias_buffer("source", "target")
+            .expect("Alias failed");
+
+        // Upload new data to source
+        let new_data = Tensor::from_vec(vec![5.0f32, 6.0, 7.0, 8.0], &[4]);
+        executor
+            .run(&[("source", new_data)])
+            .expect("Second run failed");
+
+        // Verify that target now points to source's buffer
+        // Both should have the new data since they share the same buffer
+        let source_result = executor.download_tensor(0).unwrap();
+        let target_result = executor.download_tensor(1).unwrap();
+
+        assert_eq!(
+            source_result, target_result,
+            "Aliased buffers should be identical"
+        );
+    }
+
+    #[pollster::test]
+    #[ignore] // Requires GPU
+    async fn test_run_with_outputs_subset() {
+        let runtime = crate::Runtime::new().await.unwrap();
+
+        // Create a plan with multiple outputs
+        let mut tensors = TensorRegistry::new();
+        let input_id = tensors.add(TensorInfo {
+            name: "input".to_string(),
+            shape: TensorShape::Static(vec![4]),
+            dtype: DataType::F32,
+            kind: TensorKind::Input,
+            initializer: None,
+        });
+        let output1_id = tensors.add(TensorInfo {
+            name: "output1".to_string(),
+            shape: TensorShape::Static(vec![4]),
+            dtype: DataType::F32,
+            kind: TensorKind::Output,
+            initializer: None,
+        });
+        let output2_id = tensors.add(TensorInfo {
+            name: "output2".to_string(),
+            shape: TensorShape::Static(vec![4]),
+            dtype: DataType::F32,
+            kind: TensorKind::Output,
+            initializer: None,
+        });
+
+        let plan = ExecutionPlan {
+            operations: Vec::new(),
+            shaders: Vec::new(),
+            tensors,
+            inputs: vec![input_id],
+            outputs: vec![output1_id, output2_id],
+            metadata: ModelMetadata {
+                name: "test_selective_output".to_string(),
+                version: 1,
+                ir_version: 9,
+                producer: "test".to_string(),
+            },
+        };
+
+        let mut executor = runtime.load_model(plan).await.unwrap();
+
+        // Run with input
+        let input_data = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[4]);
+
+        // Request only output1, not output2
+        let outputs = executor
+            .run_with_outputs(&[("input", input_data.clone())], &["output1"])
+            .expect("run_with_outputs failed");
+
+        // Verify we got only the requested output
+        assert_eq!(outputs.len(), 1, "Should only have one output");
+        assert!(outputs.contains_key("output1"), "Missing output1");
+        assert!(!outputs.contains_key("output2"), "Should not have output2");
+    }
+
+    #[pollster::test]
+    #[ignore] // Requires GPU
+    async fn test_clear_aliases() {
+        let runtime = crate::Runtime::new().await.unwrap();
+
+        // Create a plan with two tensors
+        let mut tensors = TensorRegistry::new();
+        let source_id = tensors.add(TensorInfo {
+            name: "source".to_string(),
+            shape: TensorShape::Static(vec![4]),
+            dtype: DataType::F32,
+            kind: TensorKind::Input,
+            initializer: None,
+        });
+        let target_id = tensors.add(TensorInfo {
+            name: "target".to_string(),
+            shape: TensorShape::Static(vec![4]),
+            dtype: DataType::F32,
+            kind: TensorKind::Input,
+            initializer: None,
+        });
+
+        let plan = ExecutionPlan {
+            operations: Vec::new(),
+            shaders: Vec::new(),
+            tensors,
+            inputs: vec![source_id, target_id],
+            outputs: vec![source_id, target_id],
+            metadata: ModelMetadata {
+                name: "test_clear_alias".to_string(),
+                version: 1,
+                ir_version: 9,
+                producer: "test".to_string(),
+            },
+        };
+
+        let mut executor = runtime.load_model(plan).await.unwrap();
+
+        // Upload different data to source and target
+        let source_data = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[4]);
+        let target_data = Tensor::from_vec(vec![5.0f32, 6.0, 7.0, 8.0], &[4]);
+
+        executor
+            .run(&[
+                ("source", source_data.clone()),
+                ("target", target_data.clone()),
+            ])
+            .expect("First run failed");
+
+        // Alias source -> target
+        executor
+            .alias_buffer("source", "target")
+            .expect("Alias failed");
+
+        // Clear aliases to restore original buffers
+        executor.clear_aliases().expect("Clear aliases failed");
+
+        // Upload data again
+        executor
+            .run(&[
+                ("source", source_data.clone()),
+                ("target", target_data.clone()),
+            ])
+            .expect("Second run failed");
+
+        // Verify they're separate again
+        let source_result = executor.download_tensor(source_id).unwrap();
+        let target_result = executor.download_tensor(target_id).unwrap();
+
+        // Convert to f32 for comparison
+        let source_f32: Vec<f32> = source_result
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+        let target_f32: Vec<f32> = target_result
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+
+        assert_eq!(source_f32, vec![1.0, 2.0, 3.0, 4.0], "Source data mismatch");
+        assert_eq!(target_f32, vec![5.0, 6.0, 7.0, 8.0], "Target data mismatch");
     }
 }
