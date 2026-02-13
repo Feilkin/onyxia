@@ -40,7 +40,7 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in 3 main stag
 ### onyxia-planner
 
 **Responsibilities:**
-- **Kernel-based shape inference** — each `OpKernel` implements `infer_output_shapes()` for its operation, called iteratively until convergence
+- **Kernel-based shape inference** — each `OpKernel` implements `infer_output_shapes()` for its operation, called once in topological order with value propagation for data-dependent shape inference
 - Schedule operations (topological sort with `petgraph`)
 - Resolve all dynamic dimensions to static shapes at plan time
 - Compile WGSL shaders to `naga::Module` using `naga_oil` (the only crate that touches WGSL)
@@ -53,7 +53,9 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in 3 main stag
 - `PlannedOp`: One ONNX node → name, op_type, inputs, outputs, steps, scratch buffers
 - `Step`: Dispatch (shader + bindings + workgroups), CopyBuffer, WriteBuffer
 - `CompiledShader`: label + `naga::Module` + entry point name
-- `OpKernel` trait: `plan(&self, ctx: &mut PlanContext) -> Result<Vec<Step>>` and `infer_output_shapes(&self, node, input_shapes) -> Result<Vec<TensorShape>>`
+- `OpKernel` trait: `infer_output_shapes(&self, ctx: &InferenceContext) -> Result<Vec<TensorShape>>`, optional `try_fold(&self, ctx: &InferenceContext) -> Result<Vec<Option<TensorValue>>>`, and `plan(&self, ctx: &mut PlanContext) -> Result<Vec<Step>>`
+- `InferenceContext`: Provides node, graph, input shapes, and constant-folded input values to kernels during shape inference
+- `TensorValue`: Represents compile-time constant values for data-dependent shape inference
 - `KernelRegistry`: Maps op_type strings to `Box<dyn OpKernel>`
 - `PlanContext`: Gives kernels access to node info, tensor shapes, shader compilation, scratch allocation
 
@@ -98,12 +100,19 @@ Operations are added by implementing `OpKernel`:
 pub trait OpKernel: Send + Sync {
     fn name(&self) -> &str;
     
-    // Shape inference: given input shapes, return output shapes
+    // Shape inference: given input shapes and values, return output shapes
     fn infer_output_shapes(
         &self,
-        node: &Node,
-        input_shapes: &[TensorShape],
+        ctx: &InferenceContext<'_>,
     ) -> Result<Vec<TensorShape>>;
+    
+    // Constant folding: compute outputs from constant inputs at compile time
+    fn try_fold(
+        &self,
+        ctx: &InferenceContext<'_>,
+    ) -> Result<Vec<Option<TensorValue>>> {
+        Ok(vec![None; ctx.node.outputs.len()])
+    }
     
     // Planning: generate GPU execution steps
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>>;
@@ -154,10 +163,12 @@ Each crate has a **single, well-defined responsibility**:
 |---------|-------|
 | ONNX parsing | onyxia-onnx |
 | Kernel-based shape inference | onyxia-planner |
+| Value propagation and constant folding | onyxia-planner |
 | WGSL preprocessing (naga_oil) | onyxia-planner |
 | Shader def resolution | onyxia-planner |
 | Dynamic dimension resolution | onyxia-planner |
 | Three-phase shape inference | onyxia-planner |
+| Broadcasting utility | onyxia-planner |
 | Pipeline/buffer materialization | onyxia-runtime |
 | GPU dispatch & data transfer | onyxia-runtime |
 
@@ -207,8 +218,8 @@ var<workgroup> tile: array<f32, #{TILE_SIZE} * #{BLOCK_SIZE}>;
 **Phase 1 — Dynamic Dimension Substitution:**
 Replace all `Dynamic(Named(...))` dimensions with concrete `Static` values from the user-provided `dynamic_dimensions` map. After this phase, no `Named` dimensions remain.
 
-**Phase 2 — Iterative Forward Shape Inference:**
-Run multiple forward passes over the graph, calling each kernel's `infer_output_shapes()` to resolve `Unknown` shapes from known inputs. Iterates until convergence (fixed-point). This handles cascading dependencies where one node's output shape depends on another node's not-yet-inferred output.
+**Phase 2 — Forward Shape and Value Inference:**
+Run a single forward pass over the graph in topological order, calling each kernel's `infer_output_shapes()` and `try_fold()` to resolve `Unknown` shapes and propagate constant values. This enables data-dependent shape inference where operations like Reshape read their target shape from computed tensors like `Shape → Gather → Concat`.
 
 **Phase 3 — Planning (Static Only):**
 All shapes must be `Static` before planning. Kernels call `ctx.static_shape()` which only accepts `TensorShape::Static` — any remaining `Dynamic` or `Unknown` shapes are errors.
@@ -219,7 +230,7 @@ let dynamic_dimensions = HashMap::from([
     ("sequence".to_string(), 8192),
 ]);
 
-// Phase 1: Named dims → Static, Phase 2: iterative inference, Phase 3: plan
+// Phase 1: Named dims → Static, Phase 2: forward inference + value propagation, Phase 3: plan
 let plan = compile(&graph, &registry, &dynamic_dimensions)?;
 
 // Runtime receives only static shapes — no dimension resolution needed.
@@ -301,14 +312,18 @@ outputs ←───────────────────────
 ### Phase 2: Planner and Kernel System ✅ COMPLETED
 - [x] ExecutionPlan types: Step, PlannedOp, BufferRef, CompiledShader, TensorRegistry
 - [x] Topological scheduling with petgraph
-- [x] Three-phase shape inference: dynamic dim substitution → iterative forward inference → static-only planning
-- [x] `OpKernel` trait and `KernelRegistry` for extensible operation mapping
+- [x] Three-phase shape inference: dynamic dim substitution → forward inference with value propagation → static-only planning
+- [x] `OpKernel` trait with `InferenceContext` and optional `try_fold` for constant folding
+- [x] `TensorValue` type for compile-time constant propagation
+- [x] `KernelRegistry` for extensible operation mapping
 - [x] `PlanContext` with shader compilation, `static_shape()`, scratch allocation
+- [x] `InferenceContext` with input shapes and values for data-dependent shape inference
 - [x] `compile()` entry point with integrated shape inference
-- [x] Dynamic dimension resolution at plan time (Phase 1 of shape inference)
+- [x] Dynamic dimension resolution at plan time
 - [x] Shader deduplication
 - [x] 19 built-in kernels covering all Gemma 3 270m ops
-- [x] Error handling and unit tests (108 tests)
+- [x] Broadcasting utility for ONNX-compliant multidirectional broadcasting
+- [x] Error handling and unit tests (101 tests)
 
 ### Phase 3: Runtime Execution ✅ COMPLETED
 - [x] wgpu device setup with deferred creation
@@ -354,7 +369,7 @@ outputs ←───────────────────────
 ## Testing Strategy
 
 ### Unit Tests
-- 108 passing across all crates
+- 101 passing across all crates
 - Programmatic graph construction, no model files needed
 
 ### Integration Tests

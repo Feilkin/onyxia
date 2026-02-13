@@ -31,14 +31,14 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
 ### What Works
 
 - ✅ **ONNX parsing** with stable Graph API
-- ✅ **Kernel-based shape inference** — three-phase: dynamic dim substitution → iterative forward inference → static-only planning
+- ✅ **Kernel-based shape inference** — three-phase: dynamic dim substitution → forward inference with value propagation → static-only planning
 - ✅ **DOT graph visualization** (full, layers, summary views)
 - ✅ **Extensible kernel system** — users add operations via `OpKernel` trait
 - ✅ **Shader compilation** — WGSL → `naga::Module` via naga_oil at plan time
 - ✅ **Dynamic dimension resolution** at plan time
 - ✅ **GPU execution** with buffer management and compute dispatch
 - ✅ **End-to-end pipeline** verified
-- ✅ **108 tests passing**, 22 GPU tests skipped in CI
+- ✅ **101 tests passing**, 22 GPU tests skipped in CI
 
 ### Built-in Kernels
 
@@ -76,7 +76,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
 ### Adding Custom Operations
 
 ```rust
-use onyxia_planner::{OpKernel, PlanContext, Step, KernelRegistry, compile};
+use onyxia_planner::{OpKernel, InferenceContext, TensorValue, PlanContext, Step, KernelRegistry, compile};
 
 struct MyCustomKernel;
 
@@ -85,11 +85,18 @@ impl OpKernel for MyCustomKernel {
     
     fn infer_output_shapes(
         &self,
-        node: &Node,
-        input_shapes: &[TensorShape],
+        ctx: &InferenceContext<'_>,
     ) -> onyxia_planner::Result<Vec<TensorShape>> {
         // Define shape inference logic for this operation
-        Ok(vec![input_shapes[0].clone()])
+        Ok(vec![ctx.input_shapes[0].clone()])
+    }
+    
+    fn try_fold(
+        &self,
+        ctx: &InferenceContext<'_>,
+    ) -> onyxia_planner::Result<Vec<Option<TensorValue>>> {
+        // Optional: implement constant folding for compile-time evaluation
+        Ok(vec![None])
     }
     
     fn plan(&self, ctx: &mut PlanContext<'_>) -> onyxia_planner::Result<Vec<Step>> {
