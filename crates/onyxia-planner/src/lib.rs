@@ -25,6 +25,7 @@
 //! ```
 
 pub mod error;
+pub mod inference;
 pub mod kernel;
 pub mod kernels;
 pub mod plan;

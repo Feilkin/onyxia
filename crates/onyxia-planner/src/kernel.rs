@@ -5,6 +5,7 @@
 //! op_type strings to kernel implementations.
 
 use crate::error::{CodegenError, Result};
+use crate::inference::{InferenceContext, TensorValue};
 use crate::plan::{BufferRef, CompiledShader, ScratchBufferDesc, ShaderIndex, Step};
 use naga_oil::compose::{Composer, NagaModuleDescriptor, ShaderDefValue};
 use onyxia_onnx::{Graph, Node, TensorId, TensorInfo, TensorShape};
@@ -21,27 +22,42 @@ pub trait OpKernel: Send + Sync {
 
     /// Infer output tensor shapes for this operation.
     ///
-    /// Called during shape inference before planning. Given input shapes,
-    /// infer what the output shapes should be.
+    /// Called during shape inference before planning. Given input shapes and
+    /// (optionally) constant-folded input values, infer what the output shapes
+    /// should be.
     ///
     /// Input shapes are guaranteed to have no `Named` dimensions — Phase 1
     /// (dynamic dimension substitution) has already resolved them.
     ///
     /// # Arguments
     ///
-    /// * `graph` - The full graph (for accessing initializer data)
-    /// * `node` - The ONNX node being processed
-    /// * `input_shapes` - Shapes of input tensors (all `Static`, `Unknown`, or `Absent`)
+    /// * `ctx` - Inference context with node, input shapes, input values, graph
     ///
     /// # Returns
     ///
     /// A vector of output tensor shapes, one per output.
-    fn infer_output_shapes(
-        &self,
-        graph: &Graph,
-        node: &Node,
-        input_shapes: &[TensorShape],
-    ) -> Result<Vec<TensorShape>>;
+    fn infer_output_shapes(&self, ctx: &InferenceContext<'_>) -> Result<Vec<TensorShape>>;
+
+    /// Try to constant-fold this operation's outputs.
+    ///
+    /// Override this for shape-computing ops (Shape, Gather, Concat, etc.)
+    /// whose output values enable downstream data-dependent shape inference.
+    /// This is constant folding in the compiler sense: when all inputs are
+    /// known constants, compute the output at compile time.
+    ///
+    /// Default: no folding (returns `None` for all outputs).
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - Inference context with node, input shapes, input values, graph
+    ///
+    /// # Returns
+    ///
+    /// A vector of optional constant values, one per output. `None` means the
+    /// output is not a compile-time constant (or folding is not implemented).
+    fn try_fold(&self, ctx: &InferenceContext<'_>) -> Result<Vec<Option<TensorValue>>> {
+        Ok(vec![None; ctx.node.outputs.len()])
+    }
 
     /// Plan the GPU steps needed to execute this operation.
     ///
@@ -336,7 +352,7 @@ impl KernelRegistry {
 
 impl Default for KernelRegistry {
     fn default() -> Self {
-        Self::new()
+        Self::with_defaults()
     }
 }
 
@@ -369,15 +385,10 @@ mod tests {
             "dummy"
         }
 
-        fn infer_output_shapes(
-            &self,
-            _graph: &Graph,
-            _node: &Node,
-            input_shapes: &[TensorShape],
-        ) -> Result<Vec<TensorShape>> {
+        fn infer_output_shapes(&self, ctx: &crate::inference::InferenceContext<'_>) -> Result<Vec<TensorShape>> {
             // Dummy: output shape equals input shape
             Ok(vec![
-                input_shapes.get(0).cloned().unwrap_or(TensorShape::Unknown),
+                ctx.input_shapes.get(0).cloned().unwrap_or(TensorShape::Unknown),
             ])
         }
 
@@ -414,15 +425,10 @@ mod tests {
             "another"
         }
 
-        fn infer_output_shapes(
-            &self,
-            _graph: &Graph,
-            _node: &Node,
-            input_shapes: &[TensorShape],
-        ) -> Result<Vec<TensorShape>> {
+        fn infer_output_shapes(&self, ctx: &crate::inference::InferenceContext<'_>) -> Result<Vec<TensorShape>> {
             // Another dummy: output shape equals input shape
             Ok(vec![
-                input_shapes.get(0).cloned().unwrap_or(TensorShape::Unknown),
+                ctx.input_shapes.get(0).cloned().unwrap_or(TensorShape::Unknown),
             ])
         }
 

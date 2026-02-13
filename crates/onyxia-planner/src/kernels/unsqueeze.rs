@@ -1,9 +1,10 @@
 //! UnsqueezeKernel implementation for buffer-copy unsqueeze operations.
 
 use crate::error::Result;
+use crate::inference::{InferenceContext, TensorValue};
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::Step;
-use onyxia_onnx::{Node, TensorShape};
+use onyxia_onnx::TensorShape;
 
 /// Kernel for Unsqueeze operator (buffer copy).
 ///
@@ -19,23 +20,18 @@ impl OpKernel for UnsqueezeKernel {
         "Unsqueeze"
     }
 
-    fn infer_output_shapes(
-        &self,
-        graph: &onyxia_onnx::Graph,
-        node: &Node,
-        input_shapes: &[TensorShape],
-    ) -> Result<Vec<TensorShape>> {
+    fn infer_output_shapes(&self, ctx: &InferenceContext<'_>) -> Result<Vec<TensorShape>> {
         // Unsqueeze has 1 or 2 inputs depending on opset:
         // - Opset < 13: 1 input (data) + axes attribute
         // - Opset >= 13: 2 inputs (data, axes tensor)
-        if input_shapes.is_empty() {
+        if ctx.input_shapes.is_empty() {
             return Err(crate::error::CodegenError::InvalidShape(
                 "Unsqueeze requires at least one input".to_string(),
             ));
         }
 
         // Get input data shape
-        let data_shape = match &input_shapes[0] {
+        let data_shape = match &ctx.input_shapes[0] {
             TensorShape::Static(dims) => dims,
             TensorShape::Unknown => return Ok(vec![TensorShape::Unknown]),
             TensorShape::Absent => {
@@ -51,28 +47,23 @@ impl OpKernel for UnsqueezeKernel {
         };
 
         // Get axes - try attribute first (opset < 13), then second input (opset >= 13)
-        let axes: Vec<i64> = if node.has_attr("axes") {
+        let axes: Vec<i64> = if ctx.node.has_attr("axes") {
             // Opset < 13: axes from attribute
-            node.attr("axes").unwrap_or_else(|_| vec![])
-        } else if input_shapes.len() >= 2 && node.inputs.len() >= 2 {
-            // Opset >= 13: axes from second input (must be initializer)
-            let axes_tensor_name = &node.inputs[1];
-            if let Some(&axes_tensor_id) = graph.tensors.get(axes_tensor_name) {
-                if let Ok(axes_info) = graph.tensor(axes_tensor_id) {
-                    if let Some(initializer) = &axes_info.initializer {
-                        // Parse i64 axes from raw bytes
-                        parse_i64_array(initializer)
-                    } else {
-                        // Axes tensor exists but is not a constant - can't infer shape yet
-                        return Ok(vec![TensorShape::Unknown]);
-                    }
-                } else {
-                    // Axes tensor not in graph - can't infer shape yet
-                    return Ok(vec![TensorShape::Unknown]);
-                }
-            } else {
-                // Axes tensor not in graph - can't infer shape yet
+            ctx.node.attr("axes").unwrap_or_else(|_| vec![])
+        } else if ctx.input_shapes.len() >= 2 {
+            // Opset >= 13: axes from second input (must be constant)
+            let Some(axes_val) = ctx.input_value(1)? else {
+                // Axes tensor exists but is not a constant - can't infer shape yet
                 return Ok(vec![TensorShape::Unknown]);
+            };
+
+            match axes_val {
+                TensorValue::I64(v) => v.clone(),
+                _ => {
+                    return Err(crate::error::CodegenError::InvalidShape(
+                        "Unsqueeze axes input must be I64".to_string(),
+                    ));
+                }
             }
         } else {
             // No axes provided - can't infer shape yet
@@ -116,6 +107,13 @@ impl OpKernel for UnsqueezeKernel {
         Ok(vec![TensorShape::Static(output_shape)])
     }
 
+    fn try_fold(&self, ctx: &InferenceContext<'_>) -> Result<Vec<Option<TensorValue>>> {
+        // Unsqueeze doesn't change values, only shape metadata
+        // Return the input value unchanged if available
+        let value = ctx.input_value(0)?.cloned();
+        Ok(vec![value])
+    }
+
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
         // Unsqueeze: copy input 0 (data) to output 0
         // Input 1 (axes) is only used at plan time, not runtime
@@ -135,17 +133,10 @@ impl OpKernel for UnsqueezeKernel {
     }
 }
 
-/// Helper function to parse i64 array from raw bytes (little-endian).
-fn parse_i64_array(bytes: &[u8]) -> Vec<i64> {
-    bytes
-        .chunks_exact(8)
-        .map(|chunk| i64::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7]]))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::InferenceContext;
     use crate::plan::BufferRef;
     use onyxia_onnx::{DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
     use std::collections::HashMap;
@@ -356,7 +347,10 @@ mod tests {
         let input_shapes = vec![TensorShape::Static(vec![4])];
 
         let output_shapes = kernel
-            .infer_output_shapes(&graph, &node, &input_shapes)
+            .infer_output_shapes(&{
+            let input_values = vec![None; input_shapes.len()];
+            InferenceContext::new(&node, &graph, input_shapes.clone(), input_values)
+        })
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -400,8 +394,15 @@ mod tests {
             TensorShape::Static(vec![1]),
         ];
 
+        // Load constant values from initializers
+        let axes_tensor_id = *graph.tensors.get("axes").unwrap();
+        let axes_tensor = &graph.tensor_info[axes_tensor_id];
+        let axes_value = TensorValue::from_initializer(axes_tensor).unwrap();
+        let input_values = vec![None, axes_value];
+        
+        let ctx = InferenceContext::new(&node, &graph, input_shapes.clone(), input_values);
         let output_shapes = kernel
-            .infer_output_shapes(&graph, &node, &input_shapes)
+            .infer_output_shapes(&ctx)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);

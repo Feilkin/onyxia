@@ -1,6 +1,7 @@
 //! GroupQueryAttentionKernel implementation for fused multi-head attention with KV cache.
 
 use crate::error::{CodegenError, Result};
+use crate::inference::InferenceContext;
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, ScratchBufferDesc, Step};
 use naga_oil::compose::ShaderDefValue;
@@ -39,20 +40,15 @@ impl OpKernel for GroupQueryAttentionKernel {
         "GroupQueryAttention"
     }
 
-    fn infer_output_shapes(
-        &self,
-        _graph: &onyxia_onnx::Graph,
-        _node: &onyxia_onnx::Node,
-        input_shapes: &[TensorShape],
-    ) -> Result<Vec<TensorShape>> {
-        if input_shapes.len() < 7 {
+    fn infer_output_shapes(&self, ctx: &InferenceContext<'_>) -> Result<Vec<TensorShape>> {
+        if ctx.input_shapes.len() < 7 {
             return Err(CodegenError::InvalidShape(
                 "GroupQueryAttention requires at least 7 inputs".to_string(),
             ));
         }
 
         // Output 0: attention output, same shape as query input
-        let output_shape = input_shapes[0].clone();
+        let output_shape = ctx.input_shapes[0].clone();
 
         // Outputs 1 and 2 are present_key and present_value
         // We need to infer these from past_key/past_value + current key/value shapes
@@ -323,6 +319,7 @@ impl OpKernel for GroupQueryAttentionKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::InferenceContext;
     use onyxia_onnx::{AttributeValue, DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
 
     fn create_gqa_test_graph() -> (Graph, Node) {
@@ -477,7 +474,10 @@ mod tests {
 
         let graph = onyxia_onnx::Graph::new();
         let output_shapes = kernel
-            .infer_output_shapes(&graph, &node, &input_shapes)
+            .infer_output_shapes(&{
+            let input_values = vec![None; input_shapes.len()];
+            InferenceContext::new(&node, &graph, input_shapes.clone(), input_values)
+        })
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 3);

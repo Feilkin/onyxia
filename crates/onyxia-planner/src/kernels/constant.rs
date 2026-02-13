@@ -1,6 +1,7 @@
 //! ConstantKernel implementation for ONNX Constant nodes.
 
 use crate::error::Result;
+use crate::inference::{InferenceContext, TensorValue};
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::Step;
 use onyxia_onnx::TensorShape;
@@ -18,23 +19,42 @@ impl OpKernel for ConstantKernel {
         "Constant"
     }
 
-    fn infer_output_shapes(
-        &self,        _graph: &onyxia_onnx::Graph,        node: &onyxia_onnx::Node,
-        _input_shapes: &[TensorShape],
-    ) -> Result<Vec<TensorShape>> {
+    fn infer_output_shapes(&self, ctx: &InferenceContext<'_>) -> Result<Vec<TensorShape>> {
         // Constant nodes have no inputs. The output shape is already set
         // by the parser when it extracted the tensor from the node's "value" attribute.
-        // We just return it as-is.
-        if node.outputs.is_empty() {
+        if ctx.node.outputs.is_empty() {
             return Err(crate::error::CodegenError::InvalidShape(
                 "Constant node must have at least one output".to_string(),
             ));
         }
 
-        // The shape is already in the graph's tensor registry.
-        // Return Unknown here since the actual shape is already set during parsing.
-        // The shape inference system will use the existing shape from the tensor registry.
+        // Look up the shape from the tensor registry
+        let output_name = &ctx.node.outputs[0];
+        if let Some(&tensor_id) = ctx.graph.tensors.get(output_name) {
+            if let Ok(tensor_info) = ctx.graph.tensor(tensor_id) {
+                return Ok(vec![tensor_info.shape.clone()]);
+            }
+        }
+
         Ok(vec![TensorShape::Unknown])
+    }
+
+    fn try_fold(&self, ctx: &InferenceContext<'_>) -> Result<Vec<Option<TensorValue>>> {
+        // Return the constant tensor's value from its initializer
+        if ctx.node.outputs.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let output_name = &ctx.node.outputs[0];
+        if let Some(&tensor_id) = ctx.graph.tensors.get(output_name) {
+            if let Ok(tensor_info) = ctx.graph.tensor(tensor_id) {
+                if let Some(value) = TensorValue::from_initializer(tensor_info)? {
+                    return Ok(vec![Some(value)]);
+                }
+            }
+        }
+
+        Ok(vec![None])
     }
 
     fn plan(&self, _ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
@@ -47,6 +67,7 @@ impl OpKernel for ConstantKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::InferenceContext;
     use onyxia_onnx::{DataType, Graph, Node, TensorInfo, TensorKind};
     use std::collections::HashMap;
 
@@ -105,7 +126,9 @@ mod tests {
         let kernel = ConstantKernel;
         let graph = onyxia_onnx::Graph::new();
         let shapes = kernel
-            .infer_output_shapes(&graph, &node, &[])
+            .infer_output_shapes(&{
+            InferenceContext::new(&node, &graph, vec![], vec![])
+        })
             .expect("shape inference should succeed");
 
         // Should return one output shape (Unknown, since actual shape is in tensor registry)

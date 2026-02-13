@@ -1,6 +1,7 @@
 //! RotaryEmbeddingKernel implementation for Rotary Position Embedding (RoPE).
 
 use crate::error::Result;
+use crate::inference::InferenceContext;
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
@@ -28,19 +29,14 @@ impl OpKernel for RotaryEmbeddingKernel {
         "RotaryEmbedding"
     }
 
-    fn infer_output_shapes(
-        &self,
-        _graph: &onyxia_onnx::Graph,
-        _node: &onyxia_onnx::Node,
-        input_shapes: &[TensorShape],
-    ) -> Result<Vec<TensorShape>> {
+    fn infer_output_shapes(&self, ctx: &InferenceContext<'_>) -> Result<Vec<TensorShape>> {
         // Output shape = input shape (same tensor with rotated values)
-        if input_shapes.is_empty() {
+        if ctx.input_shapes.is_empty() {
             return Err(crate::error::CodegenError::InvalidShape(
                 "RotaryEmbedding requires at least one input".to_string(),
             ));
         }
-        Ok(vec![input_shapes[0].clone()])
+        Ok(vec![ctx.input_shapes[0].clone()])
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
@@ -137,6 +133,7 @@ impl OpKernel for RotaryEmbeddingKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::InferenceContext;
     use crate::plan::BufferRef;
     use onyxia_onnx::{AttributeValue, DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
     use std::collections::HashMap;
@@ -218,7 +215,10 @@ mod tests {
 
         let graph = onyxia_onnx::Graph::new();
         let output_shapes = kernel
-            .infer_output_shapes(&graph, &node, &input_shapes)
+            .infer_output_shapes(&{
+            let input_values = vec![None; input_shapes.len()];
+            InferenceContext::new(&node, &graph, input_shapes.clone(), input_values)
+        })
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);

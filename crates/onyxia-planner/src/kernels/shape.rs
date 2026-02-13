@@ -1,6 +1,7 @@
 //! ShapeKernel implementation for ONNX Shape nodes.
 
 use crate::error::{CodegenError, Result};
+use crate::inference::{InferenceContext, TensorValue};
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::Step;
 use onyxia_onnx::TensorShape;
@@ -21,19 +22,16 @@ impl OpKernel for ShapeKernel {
         "Shape"
     }
 
-    fn infer_output_shapes(
-        &self,        _graph: &onyxia_onnx::Graph,        node: &onyxia_onnx::Node,
-        input_shapes: &[TensorShape],
-    ) -> Result<Vec<TensorShape>> {
+    fn infer_output_shapes(&self, ctx: &InferenceContext<'_>) -> Result<Vec<TensorShape>> {
         // Shape takes one input and produces one 1D int64 output
-        if input_shapes.is_empty() {
+        if ctx.input_shapes.is_empty() {
             return Err(CodegenError::InvalidShape(
                 "Shape requires one input".to_string(),
             ));
         }
 
         // Extract static dimensions (Phase 1 already resolved Dynamic dims)
-        let resolved_dims = match &input_shapes[0] {
+        let resolved_dims = match &ctx.input_shapes[0] {
             TensorShape::Static(dims) => dims,
             TensorShape::Unknown => {
                 // Can't infer Shape output yet - input shape is unknown
@@ -52,7 +50,8 @@ impl OpKernel for ShapeKernel {
         };
 
         // Handle start/end attributes to slice the shape
-        let start: i64 = node
+        let start: i64 = ctx
+            .node
             .attributes
             .get("start")
             .and_then(|attr| {
@@ -64,7 +63,8 @@ impl OpKernel for ShapeKernel {
             })
             .unwrap_or(0);
 
-        let end: i64 = node
+        let end: i64 = ctx
+            .node
             .attributes
             .get("end")
             .and_then(|attr| {
@@ -86,6 +86,69 @@ impl OpKernel for ShapeKernel {
 
         // Output is a 1D int64 tensor with length = number of dimensions (or slice thereof)
         Ok(vec![TensorShape::Static(vec![output_len])])
+    }
+
+    fn try_fold(&self, ctx: &InferenceContext<'_>) -> Result<Vec<Option<TensorValue>>> {
+        // Return the input tensor's shape as constant I64 values
+        if ctx.input_shapes.is_empty() {
+            return Ok(vec![None]);
+        }
+
+        let resolved_dims = match &ctx.input_shapes[0] {
+            TensorShape::Static(dims) => dims,
+            _ => return Ok(vec![None]), // Can't fold if shape unknown
+        };
+
+        // Handle start/end attributes to slice the shape
+        let start: i64 = ctx
+            .node
+            .attributes
+            .get("start")
+            .and_then(|attr| {
+                if let onyxia_onnx::AttributeValue::Int(v) = attr {
+                    Some(*v)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+
+        let end: i64 = ctx
+            .node
+            .attributes
+            .get("end")
+            .and_then(|attr| {
+                if let onyxia_onnx::AttributeValue::Int(v) = attr {
+                    Some(*v)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(resolved_dims.len() as i64);
+
+        // Normalize negative indices
+        let rank = resolved_dims.len() as i64;
+        let start = if start < 0 {
+            (rank + start).max(0) as usize
+        } else {
+            start.min(rank) as usize
+        };
+        let end = if end < 0 {
+            (rank + end).max(0) as usize
+        } else {
+            end.min(rank) as usize
+        };
+
+        // Slice the shape dimensions
+        let shape_slice = if start <= end {
+            &resolved_dims[start..end]
+        } else {
+            &[]
+        };
+
+        // Convert to i64 values
+        let values: Vec<i64> = shape_slice.iter().map(|&dim| dim as i64).collect();
+        Ok(vec![Some(TensorValue::I64(values))])
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
@@ -155,6 +218,7 @@ impl OpKernel for ShapeKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::InferenceContext;
     use onyxia_onnx::{AttributeValue, DataType, Graph, Node, TensorInfo, TensorKind};
     use std::collections::HashMap;
 
@@ -311,7 +375,10 @@ mod tests {
         let kernel = ShapeKernel;
         let graph = onyxia_onnx::Graph::new();
         let output_shapes = kernel
-            .infer_output_shapes(&graph, &node, &input_shapes)
+            .infer_output_shapes(&{
+            let input_values = vec![None; input_shapes.len()];
+            InferenceContext::new(&node, &graph, input_shapes.clone(), input_values)
+        })
             .expect("shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);

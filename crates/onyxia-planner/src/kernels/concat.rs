@@ -1,6 +1,7 @@
 //! ConcatKernel implementation for tensor concatenation.
 
 use crate::error::Result;
+use crate::inference::{InferenceContext, TensorValue};
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::Step;
 use onyxia_onnx::TensorShape;
@@ -16,20 +17,15 @@ impl OpKernel for ConcatKernel {
         "Concat"
     }
 
-    fn infer_output_shapes(
-        &self,
-        _graph: &onyxia_onnx::Graph,
-        node: &onyxia_onnx::Node,
-        input_shapes: &[TensorShape],
-    ) -> Result<Vec<TensorShape>> {
-        if input_shapes.is_empty() {
+    fn infer_output_shapes(&self, ctx: &InferenceContext<'_>) -> Result<Vec<TensorShape>> {
+        if ctx.input_shapes.is_empty() {
             return Err(crate::error::CodegenError::InvalidShape(
                 "Concat requires at least one input".to_string(),
             ));
         }
 
         // Get the axis attribute (defaults to 0 if not specified)
-        let axis: i64 = node.attr("axis").unwrap_or(0);
+        let axis: i64 = ctx.node.attr("axis").unwrap_or(0);
 
         // For now, we only support axis=0 concatenation
         if axis != 0 {
@@ -43,7 +39,7 @@ impl OpKernel for ConcatKernel {
         let mut first_dims = Vec::new();
         let mut concat_dim_sum: usize = 0;
 
-        for (i, shape) in input_shapes.iter().enumerate() {
+        for (i, shape) in ctx.input_shapes.iter().enumerate() {
             let dims = match shape {
                 TensorShape::Static(dims) => dims,
                 TensorShape::Unknown => {
@@ -103,6 +99,72 @@ impl OpKernel for ConcatKernel {
         Ok(vec![TensorShape::Static(output_dims)])
     }
 
+    fn try_fold(&self, ctx: &InferenceContext<'_>) -> Result<Vec<Option<TensorValue>>> {
+        // If all input values are known, concatenate them
+        let axis: i64 = ctx.node.attr("axis").unwrap_or(0);
+
+        // Only support axis=0 for now
+        if axis != 0 {
+            return Ok(vec![None]);
+        }
+
+        // Check if all inputs have values
+        let mut all_values = Vec::new();
+        for i in 0..ctx.input_values.len() {
+            let Some(val) = ctx.input_value(i)? else {
+                return Ok(vec![None]);
+            };
+            all_values.push(val);
+        }
+
+        if all_values.is_empty() {
+            return Ok(vec![None]);
+        }
+
+        // Concatenate values based on type
+        let result = match all_values[0] {
+            TensorValue::I64(_) => {
+                let mut result = Vec::new();
+                for val in all_values {
+                    let Some(slice) = val.as_i64() else {
+                        return Err(crate::error::CodegenError::InvalidShape(
+                            "Concat: input types mismatch".to_string(),
+                        ));
+                    };
+                    result.extend_from_slice(slice);
+                }
+                TensorValue::I64(result)
+            }
+            TensorValue::I32(_) => {
+                let mut result = Vec::new();
+                for val in all_values {
+                    let Some(slice) = val.as_i32() else {
+                        return Err(crate::error::CodegenError::InvalidShape(
+                            "Concat: input types mismatch".to_string(),
+                        ));
+                    };
+                    result.extend_from_slice(slice);
+                }
+                TensorValue::I32(result)
+            }
+            TensorValue::F32(_) => {
+                let mut result = Vec::new();
+                for val in all_values {
+                    let Some(slice) = val.as_f32() else {
+                        return Err(crate::error::CodegenError::InvalidShape(
+                            "Concat: input types mismatch".to_string(),
+                        ));
+                    };
+                    result.extend_from_slice(slice);
+                }
+                TensorValue::F32(result)
+            }
+            _ => return Ok(vec![None]), // Other types not supported for constant folding
+        };
+        
+        Ok(vec![Some(result)])
+    }
+
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
         // Get the axis attribute
         let axis: i64 = ctx.node.attr("axis").unwrap_or(0);
@@ -149,8 +211,7 @@ impl OpKernel for ConcatKernel {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::plan::BufferRef;
+    use super::*;    use crate::inference::InferenceContext;    use crate::plan::BufferRef;
     use onyxia_onnx::{AttributeValue, DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
     use std::collections::HashMap;
 
@@ -333,10 +394,12 @@ mod tests {
             .insert("axis".to_string(), AttributeValue::Int(0i64));
 
         let input_shapes = vec![TensorShape::Static(vec![3]), TensorShape::Static(vec![4])];
+        let input_values = vec![None; input_shapes.len()];
 
         let graph = onyxia_onnx::Graph::new();
+        let ctx = InferenceContext::new(&node, &graph, input_shapes, input_values);
         let output_shapes = ConcatKernel
-            .infer_output_shapes(&graph, &node, &input_shapes)
+            .infer_output_shapes(&ctx)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -354,10 +417,12 @@ mod tests {
             TensorShape::Static(vec![2, 5]),
             TensorShape::Static(vec![3, 5]),
         ];
+        let input_values = vec![None; input_shapes.len()];
 
         let graph = onyxia_onnx::Graph::new();
+        let ctx = InferenceContext::new(&node, &graph, input_shapes, input_values);
         let output_shapes = ConcatKernel
-            .infer_output_shapes(&graph, &node, &input_shapes)
+            .infer_output_shapes(&ctx)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -375,9 +440,11 @@ mod tests {
             TensorShape::Static(vec![2, 5]),
             TensorShape::Static(vec![3, 7]),
         ];
+        let input_values = vec![None; input_shapes.len()];
 
         let graph = onyxia_onnx::Graph::new();
-        let result = ConcatKernel.infer_output_shapes(&graph, &node, &input_shapes);
+        let ctx = InferenceContext::new(&node, &graph, input_shapes, input_values);
+        let result = ConcatKernel.infer_output_shapes(&ctx);
 
         assert!(result.is_err());
     }

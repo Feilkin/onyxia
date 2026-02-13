@@ -5,6 +5,7 @@
 //! quantization (4-bit weights) for efficient LLM inference.
 
 use crate::error::Result;
+use crate::inference::InferenceContext;
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
@@ -29,20 +30,17 @@ impl OpKernel for MatMulNBitsKernel {
         "MatMulNBits"
     }
 
-    fn infer_output_shapes(
-        &self,        _graph: &onyxia_onnx::Graph,        node: &onyxia_onnx::Node,
-        input_shapes: &[TensorShape],
-    ) -> Result<Vec<TensorShape>> {
+    fn infer_output_shapes(&self, ctx: &InferenceContext<'_>) -> Result<Vec<TensorShape>> {
         // MatMulNBits: [M, K] × quantized[N, ...] -> [M, N]
         // N and K are provided as attributes
-        if input_shapes.is_empty() {
+        if ctx.input_shapes.is_empty() {
             return Err(crate::error::CodegenError::InvalidShape(
                 "MatMulNBits requires at least one input (activations)".to_string(),
             ));
         }
 
         // Extract static dimensions (Phase 1 already resolved Dynamic dims)
-        let a_dims = match &input_shapes[0] {
+        let a_dims = match &ctx.input_shapes[0] {
             TensorShape::Static(dims) => dims,
             TensorShape::Unknown | TensorShape::Absent => return Ok(vec![TensorShape::Unknown]),
             TensorShape::Dynamic(_) => {
@@ -60,7 +58,8 @@ impl OpKernel for MatMulNBitsKernel {
         }
 
         // Read N from attributes (output dimension)
-        let n = node
+        let n = ctx
+            .node
             .attr::<i64>("N")
             .map_err(|e| crate::error::CodegenError::OnnxError(e))? as usize;
 
@@ -199,6 +198,7 @@ impl OpKernel for MatMulNBitsKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::InferenceContext;
     use crate::plan::BufferRef;
     use onyxia_onnx::{AttributeValue, DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
     use std::collections::HashMap;
@@ -448,7 +448,10 @@ mod tests {
         let kernel = MatMulNBitsKernel;
         let graph = onyxia_onnx::Graph::new();
         let output_shapes = kernel
-            .infer_output_shapes(&graph, &node, &input_shapes)
+            .infer_output_shapes(&{
+            let input_values = vec![None; input_shapes.len()];
+            InferenceContext::new(&node, &graph, input_shapes.clone(), input_values)
+        })
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);

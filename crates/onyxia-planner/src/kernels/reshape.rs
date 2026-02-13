@@ -1,9 +1,10 @@
 //! ReshapeKernel implementation for buffer-copy reshape operations.
 
 use crate::error::Result;
+use crate::inference::{InferenceContext, TensorValue};
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::Step;
-use onyxia_onnx::{Node, TensorShape};
+use onyxia_onnx::TensorShape;
 
 /// Kernel for Reshape operator (buffer copy).
 ///
@@ -19,22 +20,17 @@ impl OpKernel for ReshapeKernel {
         "Reshape"
     }
 
-    fn infer_output_shapes(
-        &self,
-        graph: &onyxia_onnx::Graph,
-        node: &Node,
-        input_shapes: &[TensorShape],
-    ) -> Result<Vec<TensorShape>> {
+    fn infer_output_shapes(&self, ctx: &InferenceContext<'_>) -> Result<Vec<TensorShape>> {
         // Reshape has 2 inputs: data (input 0) and shape (input 1)
         // Shape input should be a constant tensor or have static shape
-        if input_shapes.len() < 2 {
+        if ctx.input_shapes.len() < 2 {
             return Err(crate::error::CodegenError::InvalidShape(
                 "Reshape requires 2 inputs: data and shape".to_string(),
             ));
         }
 
         // Get input data shape
-        let data_shape = match &input_shapes[0] {
+        let data_shape = match &ctx.input_shapes[0] {
             TensorShape::Static(dims) => dims,
             TensorShape::Unknown => return Ok(vec![TensorShape::Unknown]),
             TensorShape::Absent => {
@@ -49,37 +45,21 @@ impl OpKernel for ReshapeKernel {
             }
         };
 
-        // Check if node has shape input
-        if node.inputs.len() < 2 {
-            // Shape not provided - can't infer
+        // Get the target shape from the second input value
+        let Some(target_shape_val) = ctx.input_value(1)? else {
+            // Shape is not a constant - we can't infer the output shape
             return Ok(vec![TensorShape::Unknown]);
-        }
+        };
 
-        // Get the target shape from the second input (must be initializer)
-        let shape_tensor_name = &node.inputs[1];
-        let shape_tensor_id = match graph.tensors.get(shape_tensor_name) {
-            Some(&id) => id,
-            None => {
-                // Shape tensor not found - might be computed later
-                return Ok(vec![TensorShape::Unknown]);
+        // Parse i64 shape from the value
+        let target_shape = match target_shape_val {
+            TensorValue::I64(v) => v.as_slice(),
+            _ => {
+                return Err(crate::error::CodegenError::InvalidShape(
+                    "Reshape shape input must be I64".to_string(),
+                ));
             }
         };
-
-        let shape_info = match graph.tensor(shape_tensor_id) {
-            Ok(info) => info,
-            Err(_) => return Ok(vec![TensorShape::Unknown]),
-        };
-
-        let initializer = match &shape_info.initializer {
-            Some(init) => init,
-            None => {
-                // Shape is not a constant - we can't infer the output shape
-                return Ok(vec![TensorShape::Unknown]);
-            }
-        };
-
-        // Parse i64 shape from raw bytes
-        let target_shape = parse_i64_array(initializer);
 
         // Handle -1 dimension (infer from total size)
         let total_elements: usize = data_shape.iter().product();
@@ -133,6 +113,13 @@ impl OpKernel for ReshapeKernel {
         Ok(vec![TensorShape::Static(output_shape)])
     }
 
+    fn try_fold(&self, ctx: &InferenceContext<'_>) -> Result<Vec<Option<TensorValue>>> {
+        // Reshape doesn't change values, only shape metadata
+        // Return the input value unchanged if available
+        let value = ctx.input_value(0)?.cloned();
+        Ok(vec![value])
+    }
+
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
         // Reshape: copy input 0 (data) to output 0
         // Input 1 (shape) is only used at plan time, not runtime
@@ -152,21 +139,10 @@ impl OpKernel for ReshapeKernel {
     }
 }
 
-/// Helper function to parse i64 array from raw bytes (little-endian).
-fn parse_i64_array(bytes: &[u8]) -> Vec<i64> {
-    bytes
-        .chunks_exact(8)
-        .map(|chunk| {
-            i64::from_le_bytes([
-                chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
-            ])
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::InferenceContext;
     use crate::plan::BufferRef;
     use onyxia_onnx::{DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
     use std::collections::HashMap;
@@ -397,8 +373,15 @@ mod tests {
             TensorShape::Static(vec![2]), // shape input
         ];
 
+        // Load constant values from initializers
+        let shape_tensor_id = *graph.tensors.get("target_shape").unwrap();
+        let shape_tensor = &graph.tensor_info[shape_tensor_id];
+        let shape_value = TensorValue::from_initializer(shape_tensor).unwrap();
+        let input_values = vec![None, shape_value];
+        
+        let ctx = InferenceContext::new(&node, &graph, input_shapes.clone(), input_values);
         let output_shapes = kernel
-            .infer_output_shapes(&graph, &node, &input_shapes)
+            .infer_output_shapes(&ctx)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -536,25 +519,24 @@ mod tests {
         graph.inputs = vec!["input_ids".to_string(), "position_ids".to_string()];
         graph.outputs = vec!["reshape_output".to_string()];
 
-        // Test shape inference on the Reshape node
-        let kernel = ReshapeKernel;
-        let input_shapes = vec![
-            TensorShape::Static(vec![1, 64]), // position_ids
-            TensorShape::Unknown,             // concat_output (computed at runtime)
-        ];
-
-        let output_shapes = kernel
-            .infer_output_shapes(&graph, &reshape_node, &input_shapes)
-            .expect("Shape inference should succeed");
-
-        assert_eq!(output_shapes.len(), 1);
+        // Test shape inference on the Reshape node using the full shape inference pipeline
+        // This will perform constant folding through Shape → Gather → Unsqueeze → Concat chain
+        use crate::kernel::KernelRegistry;
+        use crate::shape_inference::infer_shapes;
+        
+        let registry = KernelRegistry::default();
+        infer_shapes(&mut graph, &registry).expect("Shape inference should succeed");
+        
+        // Check the final reshape output shape
+        let reshape_output = graph.tensors.get("reshape_output").unwrap();
+        let output_shape = &graph.tensor_info[*reshape_output].shape;
 
         // Expected output shape: position_ids is [1, 64] = 64 elements
         // Target shape [-1, 64] with 64 elements means: -1 = 64/64 = 1
         // So output should be [1, 64]
         //
-        // Currently fails because we don't have constant folding to evaluate
-        // the Shape → Gather → Unsqueeze → Concat chain.
-        assert_eq!(output_shapes[0], TensorShape::Static(vec![1, 64]));
+        // With constant folding, the Shape → Gather → Unsqueeze → Concat chain
+        // should evaluate to [-1, 64] at compile time.
+        assert_eq!(output_shape, &TensorShape::Static(vec![1, 64]));
     }
 }

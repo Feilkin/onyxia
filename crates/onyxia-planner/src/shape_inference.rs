@@ -6,16 +6,18 @@
 //! from the user-provided `dynamic_dimensions` map. After this phase, no Named
 //! dimensions remain in the graph.
 //!
-//! ## Phase 2: Iterative Forward Shape Inference
+//! ## Phase 2: Forward Shape and Value Inference
 //!
-//! Runs multiple forward passes over the graph, using kernel-defined
-//! `infer_output_shapes` rules, until shapes converge (fixed-point).
-//! This handles cascading dependencies where one node's output shape
-//! depends on another node's not-yet-inferred output.
+//! Runs a single forward pass over the graph in topological order, using
+//! kernel-defined `infer_output_shapes` and `try_fold` rules. Propagates both
+//! shapes and constant values (for data-dependent shape inference like Reshape
+//! reading a computed shape tensor).
 
 use crate::error::{CodegenError, Result};
+use crate::inference::{InferenceContext, TensorValue};
 use crate::kernel::KernelRegistry;
-use onyxia_onnx::{Dimension, Graph, TensorShape};
+use crate::scheduler::Scheduler;
+use onyxia_onnx::{Dimension, Graph, TensorId, TensorShape};
 use std::collections::HashMap;
 use tracing::{debug, warn};
 
@@ -64,139 +66,177 @@ pub fn resolve_dynamic_dimensions(
     Ok(())
 }
 
-/// Phase 2: Iterative forward shape inference using kernel-defined rules.
+/// Phase 2: Forward shape and value inference using kernel-defined rules.
 ///
-/// Runs multiple passes over the graph's nodes, calling each kernel's
-/// `infer_output_shapes` to resolve `Unknown` shapes from known inputs.
-/// Iterates until no new shapes are inferred (fixed-point convergence).
+/// Runs a single forward pass over the graph's nodes in topological order,
+/// calling each kernel's `infer_output_shapes` and `try_fold` to resolve
+/// `Unknown` shapes and propagate constant values.
 ///
 /// Must be called **after** [`resolve_dynamic_dimensions`] — all shapes are
 /// guaranteed to be either `Static`, `Unknown`, or `Absent` (no `Named` dims).
 pub fn infer_shapes(graph: &mut Graph, registry: &KernelRegistry) -> Result<()> {
-    const MAX_ITERATIONS: usize = 20;
-
     debug!(
-        "Phase 2: Starting iterative shape inference ({} nodes, {} tensors)",
+        "Phase 2: Starting forward shape and value inference ({} nodes, {} tensors)",
         graph.nodes.len(),
         graph.tensor_info.len()
     );
 
-    for iteration in 0..MAX_ITERATIONS {
-        let mut changed = false;
+    // Build topological ordering
+    let scheduler = Scheduler::new(graph.clone());
+    let order = scheduler.schedule()?;
 
-        for node_idx in 0..graph.nodes.len() {
-            let node = &graph.nodes[node_idx];
+    debug!("Topological order computed: {} nodes", order.len());
 
-            // Collect input shapes
-            let mut input_shapes = Vec::new();
-            let mut has_missing_input = false;
-            let mut has_unknown_non_optional = false;
+    // Initialize value map with initializers
+    let mut value_map: HashMap<TensorId, TensorValue> = HashMap::new();
 
-            for (input_idx, input_name) in node.inputs.iter().enumerate() {
-                if input_name.is_empty() {
-                    input_shapes.push(TensorShape::Absent);
-                    continue;
-                }
+    for (tensor_id, tensor_info) in graph.tensor_info.iter().enumerate() {
+        if let Some(value) = TensorValue::from_initializer(tensor_info)? {
+            value_map.insert(tensor_id, value);
+            debug!(
+                tensor = tensor_info.name.as_str(),
+                tensor_id = tensor_id,
+                "Initialized constant tensor value"
+            );
+        }
+    }
 
-                if let Some(&tensor_id) = graph.tensors.get(input_name) {
-                    let tensor_info = &graph.tensor_info[tensor_id];
-                    let shape = tensor_info.shape.clone();
+    // Forward pass: infer shapes and fold values
+    for &node_idx in &order {
+        let node = &graph.nodes[node_idx];
 
-                    if matches!(shape, TensorShape::Unknown) {
-                        has_unknown_non_optional = true;
-                    }
+        // Collect input shapes and values
+        let mut input_shapes = Vec::new();
+        let mut input_values = Vec::new();
+        let mut has_missing_input = false;
 
-                    input_shapes.push(shape);
-                } else {
-                    debug!(
-                        node = node.name.as_str(),
-                        op_type = node.op_type.as_str(),
-                        input_idx = input_idx,
-                        missing_input = input_name.as_str(),
-                        "Skipping shape inference: missing input tensor"
-                    );
-                    has_missing_input = true;
-                    break;
-                }
-            }
-
-            if has_missing_input {
+        for (input_idx, input_name) in node.inputs.iter().enumerate() {
+            if input_name.is_empty() {
+                // Absent (optional) input
+                input_shapes.push(TensorShape::Absent);
+                input_values.push(None);
                 continue;
             }
 
-            // Skip nodes whose non-optional inputs are still Unknown
-            if has_unknown_non_optional {
+            if let Some(&tensor_id) = graph.tensors.get(input_name) {
+                let tensor_info = &graph.tensor_info[tensor_id];
+                input_shapes.push(tensor_info.shape.clone());
+                input_values.push(value_map.get(&tensor_id).cloned());
+            } else {
+                debug!(
+                    node = node.name.as_str(),
+                    op_type = node.op_type.as_str(),
+                    input_idx = input_idx,
+                    missing_input = input_name.as_str(),
+                    "Skipping inference: missing input tensor"
+                );
+                has_missing_input = true;
+                break;
+            }
+        }
+
+        if has_missing_input {
+            continue;
+        }
+
+        // Look up kernel
+        let kernel = match registry.get(&node.op_type) {
+            Some(k) => k,
+            None => {
+                warn!(
+                    node = node.name.as_str(),
+                    op_type = node.op_type.as_str(),
+                    "No kernel registered for operator, cannot infer shape"
+                );
                 continue;
             }
+        };
 
-            // Look up kernel
-            let kernel = match registry.get(&node.op_type) {
-                Some(k) => k,
-                None => {
-                    if iteration == 0 {
-                        warn!(
-                            node = node.name.as_str(),
-                            op_type = node.op_type.as_str(),
-                            "No kernel registered for operator, cannot infer shape"
-                        );
-                    }
-                    continue;
-                }
-            };
+        // Build inference context and perform inference
+        let (output_shapes, output_values) = {
+            let ctx = InferenceContext::new(node, graph, input_shapes, input_values);
 
-            // Infer output shapes (no dynamic_dimensions — Phase 1 already resolved them)
-            let output_shapes = match kernel.infer_output_shapes(graph, node, &input_shapes) {
+            // Infer output shapes
+            let shapes = match kernel.infer_output_shapes(&ctx) {
                 Ok(shapes) => shapes,
                 Err(e) => {
-                    if iteration == 0 {
-                        warn!(
-                            node = node.name.as_str(),
-                            op_type = node.op_type.as_str(),
-                            error = %e,
-                            "Failed to infer output shapes"
-                        );
-                    }
+                    warn!(
+                        node = node.name.as_str(),
+                        op_type = node.op_type.as_str(),
+                        error = %e,
+                        "Failed to infer output shapes"
+                    );
                     continue;
                 }
             };
 
-            if output_shapes.len() != node.outputs.len() {
+            if shapes.len() != node.outputs.len() {
                 warn!(
                     node = node.name.as_str(),
                     op_type = node.op_type.as_str(),
                     expected = node.outputs.len(),
-                    got = output_shapes.len(),
+                    got = shapes.len(),
                     "Kernel returned wrong number of output shapes"
                 );
                 continue;
             }
 
-            // Apply inferred shapes — only update Unknown → known
-            for (output_name, output_shape) in node.outputs.iter().zip(output_shapes.iter()) {
-                if let Some(&tensor_id) = graph.tensors.get(output_name) {
-                    let tensor_info = &mut graph.tensor_info[tensor_id];
-
-                    if matches!(tensor_info.shape, TensorShape::Unknown)
-                        && !matches!(output_shape, TensorShape::Unknown)
-                    {
-                        tensor_info.shape = output_shape.clone();
-                        changed = true;
-                        debug!(
-                            node = node.name.as_str(),
-                            op_type = node.op_type.as_str(),
-                            output = output_name.as_str(),
-                            shape = ?output_shape,
-                            iteration = iteration,
-                            "Inferred output shape"
-                        );
-                    }
+            // Try constant folding
+            let values = match kernel.try_fold(&ctx) {
+                Ok(values) => values,
+                Err(e) => {
+                    debug!(
+                        node = node.name.as_str(),
+                        op_type = node.op_type.as_str(),
+                        error = %e,
+                        "Constant folding failed (non-fatal)"
+                    );
+                    vec![None; node.outputs.len()]
                 }
+            };
+
+            if values.len() != node.outputs.len() {
+                warn!(
+                    node = node.name.as_str(),
+                    op_type = node.op_type.as_str(),
+                    expected = node.outputs.len(),
+                    got = values.len(),
+                    "Kernel returned wrong number of output values from try_fold"
+                );
+                continue;
+            }
+
+            (shapes, values)
+        };
+
+        // Apply inferred shapes (ctx is now dropped)
+        for (output_name, output_shape) in node.outputs.iter().zip(output_shapes.iter()) {
+            if let Some(&tensor_id) = graph.tensors.get(output_name) {
+                let tensor_info = &mut graph.tensor_info[tensor_id];
+                tensor_info.shape = output_shape.clone();
+                debug!(
+                    node = node.name.as_str(),
+                    op_type = node.op_type.as_str(),
+                    output = output_name.as_str(),
+                    shape = ?output_shape,
+                    "Inferred output shape"
+                );
             }
         }
 
-        if !changed {
-            debug!("Phase 2: converged after {} iteration(s)", iteration + 1);
-            break;
+        // Store folded values
+        for (output_name, output_value) in node.outputs.iter().zip(output_values.iter()) {
+            if let Some(value) = output_value {
+                if let Some(&tensor_id) = graph.tensors.get(output_name) {
+                    value_map.insert(tensor_id, value.clone());
+                    debug!(
+                        node = node.name.as_str(),
+                        op_type = node.op_type.as_str(),
+                        output = output_name.as_str(),
+                        "Folded output to constant value"
+                    );
+                }
+            }
         }
     }
 

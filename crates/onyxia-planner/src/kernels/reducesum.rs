@@ -1,6 +1,7 @@
 //! ReduceSumKernel implementation for sum reduction along axes.
 
 use crate::error::Result;
+use crate::inference::InferenceContext;
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
@@ -18,20 +19,15 @@ impl OpKernel for ReduceSumKernel {
         "ReduceSum"
     }
 
-    fn infer_output_shapes(
-        &self,
-        _graph: &onyxia_onnx::Graph,
-        node: &onyxia_onnx::Node,
-        input_shapes: &[TensorShape],
-    ) -> Result<Vec<TensorShape>> {
-        if input_shapes.is_empty() {
+    fn infer_output_shapes(&self, ctx: &InferenceContext<'_>) -> Result<Vec<TensorShape>> {
+        if ctx.input_shapes.is_empty() {
             return Err(crate::error::CodegenError::InvalidShape(
                 "ReduceSum requires at least one input".to_string(),
             ));
         }
 
         // Get input shape (Phase 1 already resolved Dynamic dims)
-        let input_dims = match &input_shapes[0] {
+        let input_dims = match &ctx.input_shapes[0] {
             TensorShape::Static(dims) => dims,
             TensorShape::Unknown => return Ok(vec![TensorShape::Unknown]),
             TensorShape::Absent => {
@@ -51,7 +47,7 @@ impl OpKernel for ReduceSumKernel {
         // - From second input (optional, for opset 18+)
         // - From "axes" attribute (for older opsets)
         // - Empty means reduce all axes
-        let axes: Vec<i64> = if input_shapes.len() > 1 {
+        let axes: Vec<i64> = if ctx.input_shapes.len() > 1 {
             // Axes from second input - for now, we don't support this at plan time
             // (would need to read initializer data)
             return Err(crate::error::CodegenError::UnsupportedOp(
@@ -59,14 +55,14 @@ impl OpKernel for ReduceSumKernel {
             ));
         } else {
             // Try to get axes from attribute
-            node.attr("axes").unwrap_or_else(|_| {
+            ctx.node.attr("axes").unwrap_or_else(|_| {
                 // Default: reduce all axes
                 (0..input_dims.len() as i64).collect()
             })
         };
 
         // Get keepdims (defaults to 1 in ONNX)
-        let keepdims: i64 = node.attr("keepdims").unwrap_or(1);
+        let keepdims: i64 = ctx.node.attr("keepdims").unwrap_or(1);
 
         // Compute output shape
         let mut output_dims = Vec::new();
@@ -181,6 +177,7 @@ impl OpKernel for ReduceSumKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::InferenceContext;
     use crate::plan::BufferRef;
     use onyxia_onnx::{AttributeValue, DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
     use std::collections::HashMap;
@@ -279,7 +276,10 @@ mod tests {
 
         let graph = onyxia_onnx::Graph::new();
         let output_shapes = ReduceSumKernel
-            .infer_output_shapes(&graph, &node, &input_shapes)
+            .infer_output_shapes(&{
+            let input_values = vec![None; input_shapes.len()];
+            InferenceContext::new(&node, &graph, input_shapes.clone(), input_values)
+        })
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -298,7 +298,10 @@ mod tests {
 
         let graph = onyxia_onnx::Graph::new();
         let output_shapes = ReduceSumKernel
-            .infer_output_shapes(&graph, &node, &input_shapes)
+            .infer_output_shapes(&{
+            let input_values = vec![None; input_shapes.len()];
+            InferenceContext::new(&node, &graph, input_shapes.clone(), input_values)
+        })
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -317,7 +320,10 @@ mod tests {
 
         let graph = onyxia_onnx::Graph::new();
         let output_shapes = ReduceSumKernel
-            .infer_output_shapes(&graph, &node, &input_shapes)
+            .infer_output_shapes(&{
+            let input_values = vec![None; input_shapes.len()];
+            InferenceContext::new(&node, &graph, input_shapes.clone(), input_values)
+        })
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);

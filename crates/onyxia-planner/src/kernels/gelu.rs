@@ -1,6 +1,7 @@
 //! GeluKernel implementation for GELU activation function.
 
 use crate::error::Result;
+use crate::inference::InferenceContext;
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
@@ -19,19 +20,14 @@ impl OpKernel for GeluKernel {
         "Gelu"
     }
 
-    fn infer_output_shapes(
-        &self,
-        _graph: &onyxia_onnx::Graph,
-        _node: &onyxia_onnx::Node,
-        input_shapes: &[TensorShape],
-    ) -> Result<Vec<TensorShape>> {
+    fn infer_output_shapes(&self, ctx: &InferenceContext<'_>) -> Result<Vec<TensorShape>> {
         // Gelu is a unary operation: output shape equals input shape
-        if input_shapes.is_empty() {
+        if ctx.input_shapes.is_empty() {
             return Err(crate::error::CodegenError::InvalidShape(
                 "Gelu requires one input".to_string(),
             ));
         }
-        Ok(vec![input_shapes[0].clone()])
+        Ok(vec![ctx.input_shapes[0].clone()])
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {

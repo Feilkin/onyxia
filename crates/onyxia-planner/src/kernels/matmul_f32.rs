@@ -1,6 +1,7 @@
 //! MatMulF32Kernel implementation for f32 matrix multiplication.
 
 use crate::error::Result;
+use crate::inference::InferenceContext;
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
@@ -22,21 +23,16 @@ impl OpKernel for MatMulF32Kernel {
         "MatMulF32"
     }
 
-    fn infer_output_shapes(
-        &self,
-        _graph: &onyxia_onnx::Graph,
-        _node: &onyxia_onnx::Node,
-        input_shapes: &[TensorShape],
-    ) -> Result<Vec<TensorShape>> {
+    fn infer_output_shapes(&self, ctx: &InferenceContext<'_>) -> Result<Vec<TensorShape>> {
         // MatMul: [M, K] × [K, N] -> [M, N]
-        if input_shapes.len() < 2 {
+        if ctx.input_shapes.len() < 2 {
             return Err(crate::error::CodegenError::InvalidShape(
                 "MatMul requires two inputs".to_string(),
             ));
         }
 
         // Extract static dimensions (Phase 1 already resolved Dynamic dims)
-        let a_dims = match &input_shapes[0] {
+        let a_dims = match &ctx.input_shapes[0] {
             TensorShape::Static(dims) => dims,
             TensorShape::Unknown | TensorShape::Absent => return Ok(vec![TensorShape::Unknown]),
             TensorShape::Dynamic(_) => {
@@ -46,7 +42,7 @@ impl OpKernel for MatMulF32Kernel {
             }
         };
 
-        let b_dims = match &input_shapes[1] {
+        let b_dims = match &ctx.input_shapes[1] {
             TensorShape::Static(dims) => dims,
             TensorShape::Unknown | TensorShape::Absent => return Ok(vec![TensorShape::Unknown]),
             TensorShape::Dynamic(_) => {

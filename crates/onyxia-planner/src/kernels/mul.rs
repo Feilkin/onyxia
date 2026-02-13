@@ -1,6 +1,7 @@
 //! MulKernel implementation for elementwise multiplication.
 
 use crate::error::Result;
+use crate::inference::{infer_elementwise_broadcast, InferenceContext};
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
@@ -18,19 +19,8 @@ impl OpKernel for MulKernel {
         "Mul"
     }
 
-    fn infer_output_shapes(
-        &self,
-        _graph: &onyxia_onnx::Graph,
-        _node: &onyxia_onnx::Node,
-        input_shapes: &[TensorShape],
-    ) -> Result<Vec<TensorShape>> {
-        // For elementwise multiplication, output shape is the broadcast result
-        if input_shapes.is_empty() {
-            return Err(crate::error::CodegenError::InvalidShape(
-                "Mul requires at least one input".to_string(),
-            ));
-        }
-        Ok(vec![input_shapes[0].clone()])
+    fn infer_output_shapes(&self, ctx: &InferenceContext<'_>) -> Result<Vec<TensorShape>> {
+        infer_elementwise_broadcast(ctx)
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {

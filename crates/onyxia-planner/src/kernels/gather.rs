@@ -1,6 +1,7 @@
 //! GatherKernel implementation for embedding lookup and tensor indexing.
 
 use crate::error::Result;
+use crate::inference::{InferenceContext, TensorValue};
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
@@ -23,23 +24,18 @@ impl OpKernel for GatherKernel {
         "Gather"
     }
 
-    fn infer_output_shapes(
-        &self,
-        _graph: &onyxia_onnx::Graph,
-        node: &onyxia_onnx::Node,
-        input_shapes: &[TensorShape],
-    ) -> Result<Vec<TensorShape>> {
-        if input_shapes.len() < 2 {
+    fn infer_output_shapes(&self, ctx: &InferenceContext<'_>) -> Result<Vec<TensorShape>> {
+        if ctx.input_shapes.len() < 2 {
             return Err(crate::error::CodegenError::InvalidShape(
                 "Gather requires 2 inputs (data and indices)".to_string(),
             ));
         }
 
         // Get axis (defaults to 0 per ONNX spec)
-        let axis: i64 = node.attr("axis").unwrap_or(0);
+        let axis: i64 = ctx.node.attr("axis").unwrap_or(0);
 
         // Extract static dimensions (Phase 1 already resolved Dynamic dims)
-        let data_shape = match &input_shapes[0] {
+        let data_shape = match &ctx.input_shapes[0] {
             TensorShape::Static(dims) => dims,
             TensorShape::Unknown | TensorShape::Absent => return Ok(vec![TensorShape::Unknown]),
             TensorShape::Dynamic(_) => {
@@ -49,7 +45,7 @@ impl OpKernel for GatherKernel {
             }
         };
 
-        let indices_shape = match &input_shapes[1] {
+        let indices_shape = match &ctx.input_shapes[1] {
             TensorShape::Static(dims) => dims,
             TensorShape::Unknown | TensorShape::Absent => return Ok(vec![TensorShape::Unknown]),
             TensorShape::Dynamic(_) => {
@@ -80,6 +76,65 @@ impl OpKernel for GatherKernel {
         output_shape.extend_from_slice(&data_shape[normalized_axis + 1..]);
 
         Ok(vec![TensorShape::Static(output_shape)])
+    }
+
+    fn try_fold(&self, ctx: &InferenceContext<'_>) -> Result<Vec<Option<TensorValue>>> {
+        // If both data and indices are known, gather at compile time
+        let Some(data_val) = ctx.input_value(0)? else {
+            return Ok(vec![None]);
+        };
+        let Some(indices_val) = ctx.input_value(1)? else {
+            return Ok(vec![None]);
+        };
+
+        let axis: i64 = ctx.node.attr("axis").unwrap_or(0);
+
+        // For axis=0 and 1D data, simple indexing
+        if axis == 0 {
+            let TensorShape::Static(ref data_shape) = ctx.input_shapes[0] else {
+                return Ok(vec![None]);
+            };
+
+            // Only support 1D data for now (e.g., selecting scalars from a list)
+            if data_shape.len() == 1 {
+                let result = match (data_val, indices_val) {
+                    (TensorValue::I64(data), TensorValue::I64(indices)) => {
+                        let mut result = Vec::new();
+                        for &idx in indices {
+                            let idx_usize = idx as usize;
+                            if idx_usize >= data.len() {
+                                return Err(crate::error::CodegenError::InvalidShape(format!(
+                                    "Gather index {} out of bounds for data length {}",
+                                    idx,
+                                    data.len()
+                                )));
+                            }
+                            result.push(data[idx_usize]);
+                        }
+                        TensorValue::I64(result)
+                    }
+                    (TensorValue::I32(data), TensorValue::I64(indices)) => {
+                        let mut result = Vec::new();
+                        for &idx in indices {
+                            let idx_usize = idx as usize;
+                            if idx_usize >= data.len() {
+                                return Err(crate::error::CodegenError::InvalidShape(format!(
+                                    "Gather index {} out of bounds for data length {}",
+                                    idx,
+                                    data.len()
+                                )));
+                            }
+                            result.push(data[idx_usize]);
+                        }
+                        TensorValue::I32(result)
+                    }
+                    _ => return Ok(vec![None]),
+                };
+                return Ok(vec![Some(result)]);
+            }
+        }
+
+        Ok(vec![None])
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
@@ -156,6 +211,7 @@ impl OpKernel for GatherKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::InferenceContext;
     use crate::plan::BufferRef;
     use onyxia_onnx::{DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
     use std::collections::HashMap;
@@ -281,10 +337,12 @@ mod tests {
             TensorShape::Static(vec![4, 3]), // data
             TensorShape::Static(vec![2]),    // indices
         ];
+        let input_values = vec![None; input_shapes.len()];
 
         let graph = onyxia_onnx::Graph::new();
+        let ctx = InferenceContext::new(&node, &graph, input_shapes, input_values);
         let output_shapes = GatherKernel
-            .infer_output_shapes(&graph, &node, &input_shapes)
+            .infer_output_shapes(&ctx)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -300,10 +358,12 @@ mod tests {
             TensorShape::Static(vec![262144, 640]), // vocab × hidden
             TensorShape::Static(vec![8, 32]),       // batch × seq
         ];
+        let input_values = vec![None; input_shapes.len()];
 
         let graph = onyxia_onnx::Graph::new();
+        let ctx = InferenceContext::new(&node, &graph, input_shapes, input_values);
         let output_shapes = GatherKernel
-            .infer_output_shapes(&graph, &node, &input_shapes)
+            .infer_output_shapes(&ctx)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -322,10 +382,12 @@ mod tests {
             TensorShape::Static(vec![4, 5, 3]), // data
             TensorShape::Static(vec![2]),       // indices
         ];
+        let input_values = vec![None; input_shapes.len()];
 
         let graph = onyxia_onnx::Graph::new();
+        let ctx = InferenceContext::new(&node_with_axis, &graph, input_shapes, input_values);
         let output_shapes = GatherKernel
-            .infer_output_shapes(&graph, &node_with_axis, &input_shapes)
+            .infer_output_shapes(&ctx)
             .expect("Shape inference should succeed");
 
         // axis=-2 → axis=1 (for rank 3)

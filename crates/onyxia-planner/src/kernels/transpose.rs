@@ -1,6 +1,7 @@
 //! TransposeKernel implementation for tensor dimension permutation.
 
 use crate::error::Result;
+use crate::inference::InferenceContext;
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
@@ -21,20 +22,15 @@ impl OpKernel for TransposeKernel {
         "Transpose"
     }
 
-    fn infer_output_shapes(
-        &self,
-        _graph: &onyxia_onnx::Graph,
-        node: &onyxia_onnx::Node,
-        input_shapes: &[TensorShape],
-    ) -> Result<Vec<TensorShape>> {
-        if input_shapes.is_empty() {
+    fn infer_output_shapes(&self, ctx: &InferenceContext<'_>) -> Result<Vec<TensorShape>> {
+        if ctx.input_shapes.is_empty() {
             return Err(crate::error::CodegenError::InvalidShape(
                 "Transpose requires at least one input".to_string(),
             ));
         }
 
         // Extract static dimensions (Phase 1 already resolved Dynamic dims)
-        let input_dims = match &input_shapes[0] {
+        let input_dims = match &ctx.input_shapes[0] {
             TensorShape::Static(dims) => dims,
             TensorShape::Unknown | TensorShape::Absent => {
                 return Ok(vec![TensorShape::Unknown]);
@@ -49,7 +45,7 @@ impl OpKernel for TransposeKernel {
         let rank = input_dims.len();
 
         // Read perm attribute (optional)
-        let perm: Option<Vec<i64>> = node.attr("perm").ok();
+        let perm: Option<Vec<i64>> = ctx.node.attr("perm").ok();
         let perm = perm.unwrap_or_else(|| (0..rank as i64).rev().collect());
 
         // Validate perm
@@ -174,6 +170,7 @@ fn compute_strides(shape: &[usize]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::InferenceContext;
     use crate::plan::BufferRef;
     use onyxia_onnx::{DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
     use std::collections::HashMap;
@@ -191,7 +188,10 @@ mod tests {
 
         let graph = onyxia_onnx::Graph::new();
         let output_shapes = kernel
-            .infer_output_shapes(&graph, &node, &input_shapes)
+            .infer_output_shapes(&{
+            let input_values = vec![None; input_shapes.len()];
+            InferenceContext::new(&node, &graph, input_shapes.clone(), input_values)
+        })
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -211,7 +211,10 @@ mod tests {
 
         let graph = onyxia_onnx::Graph::new();
         let output_shapes = kernel
-            .infer_output_shapes(&graph, &node, &input_shapes)
+            .infer_output_shapes(&{
+            let input_values = vec![None; input_shapes.len()];
+            InferenceContext::new(&node, &graph, input_shapes.clone(), input_values)
+        })
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -227,7 +230,10 @@ mod tests {
 
         let graph = onyxia_onnx::Graph::new();
         let output_shapes = kernel
-            .infer_output_shapes(&graph, &node, &input_shapes)
+            .infer_output_shapes(&{
+            let input_values = vec![None; input_shapes.len()];
+            InferenceContext::new(&node, &graph, input_shapes.clone(), input_values)
+        })
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
