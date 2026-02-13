@@ -48,6 +48,52 @@ enum Commands {
         #[arg(short = 'd', long = "dynamic-dim")]
         dynamic_dims: Vec<String>,
     },
+    /// Run an ONNX model for text generation
+    RunModel {
+        /// Path to the ONNX model file
+        #[arg(value_name = "MODEL")]
+        model: PathBuf,
+
+        /// Path to the tokenizer directory (containing tokenizer.json)
+        #[arg(short, long, value_name = "TOKENIZER")]
+        tokenizer: PathBuf,
+
+        /// Text prompt for generation
+        #[arg(short, long)]
+        prompt: String,
+
+        /// Maximum number of tokens to generate
+        #[arg(long, default_value = "100")]
+        max_tokens: usize,
+
+        /// Temperature for sampling (0.0 = greedy, 1.0 = no scaling, >1.0 = more random)
+        #[arg(long, default_value = "0.7")]
+        temperature: f32,
+
+        /// Top-K sampling: keep only top K tokens (0 = disabled)
+        #[arg(long, default_value = "0")]
+        top_k: usize,
+
+        /// Top-P (nucleus) sampling: cumulative probability threshold (0.0 = disabled, 1.0 = all)
+        #[arg(long, default_value = "0.0")]
+        top_p: f32,
+
+        /// Random seed for reproducible generation (omit for non-deterministic)
+        #[arg(long)]
+        seed: Option<u64>,
+
+        /// Maximum sequence length for KV cache allocation
+        #[arg(long, default_value = "2048")]
+        max_seq_len: usize,
+
+        /// Number of transformer layers (for KV cache discovery)
+        #[arg(long, default_value = "26")]
+        num_layers: usize,
+
+        /// Disable streaming output (print all at once instead of token-by-token)
+        #[arg(long)]
+        no_stream: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -68,6 +114,33 @@ fn main() -> Result<()> {
             dynamic_dims,
         } => {
             cmd_inspect(model, dynamic_dims)?;
+        }
+        Commands::RunModel {
+            model,
+            tokenizer,
+            prompt,
+            max_tokens,
+            temperature,
+            top_k,
+            top_p,
+            seed,
+            max_seq_len,
+            num_layers,
+            no_stream,
+        } => {
+            pollster::block_on(cmd_run_model(
+                model,
+                tokenizer,
+                prompt,
+                max_tokens,
+                temperature,
+                top_k,
+                top_p,
+                seed,
+                max_seq_len,
+                num_layers,
+                !no_stream,
+            ))?;
         }
     }
 
@@ -400,6 +473,119 @@ fn cmd_inspect(model_path: PathBuf, dynamic_dim_args: Vec<String>) -> Result<()>
             println!("     Outputs: {:?}", node.outputs);
         }
     }
+
+    Ok(())
+}
+
+/// Run an ONNX model for text generation.
+#[allow(clippy::too_many_arguments)]
+async fn cmd_run_model(
+    model_path: PathBuf,
+    tokenizer_path: PathBuf,
+    prompt: String,
+    max_tokens: usize,
+    temperature: f32,
+    top_k: usize,
+    top_p: f32,
+    seed: Option<u64>,
+    max_seq_len: usize,
+    num_layers: usize,
+    stream: bool,
+) -> Result<()> {
+    use onyxia_cli::generate::{generate, print_stats};
+    use onyxia_cli::llm::{LlmConfig, LlmSession};
+    use onyxia_cli::sampling::SamplingConfig;
+    use onyxia_cli::tokenizer::Tokenizer;
+
+    println!("Loading model from {}...", model_path.display());
+
+    // Load and parse ONNX model
+    let mut model = onyxia_onnx::load_and_parse_model(&model_path)
+        .with_context(|| format!("Failed to load model from {}", model_path.display()))?;
+
+    // Set up dynamic dimensions - use max sequence length so buffers can handle variable inputs
+    let mut dynamic_dims = std::collections::HashMap::new();
+    dynamic_dims.insert("batch_size".to_string(), 1);
+    dynamic_dims.insert("sequence_length".to_string(), max_seq_len); // Max length for buffer allocation
+    dynamic_dims.insert("total_sequence_length".to_string(), max_seq_len);
+    dynamic_dims.insert("past_sequence_length".to_string(), 0);
+    dynamic_dims.insert("num_attention_heads".to_string(), 4);
+    dynamic_dims.insert("num_key_value_heads".to_string(), 1);
+    dynamic_dims.insert("head_dim".to_string(), 256);
+
+    // Resolve dynamic dimensions and infer shapes
+    let registry = onyxia_planner::KernelRegistry::with_defaults();
+    onyxia_planner::resolve_dynamic_dimensions(&mut model, &dynamic_dims)
+        .with_context(|| "Failed to resolve dynamic dimensions")?;
+    onyxia_planner::infer_shapes(&mut model, &registry)
+        .with_context(|| "Failed to infer shapes")?;
+
+    println!("Compiling execution plan...");
+
+    // Compile model to execution plan
+    let plan = onyxia_planner::compile(&model, &registry, &dynamic_dims)
+        .with_context(|| "Failed to compile model")?;
+
+    println!("Initializing GPU runtime...");
+
+    // Create runtime and load plan
+    let runtime = onyxia_runtime::Runtime::new()
+        .await
+        .with_context(|| "Failed to create GPU runtime")?;
+    let executor = runtime
+        .load_model(plan)
+        .await
+        .with_context(|| "Failed to load execution plan")?;
+
+    // Create LLM session
+    let llm_config = LlmConfig {
+        max_seq_len,
+        num_layers,
+    };
+    let mut session = LlmSession::new(executor, &llm_config);
+
+    println!("Loading tokenizer from {}...", tokenizer_path.display());
+
+    // Load tokenizer (expects path to directory containing tokenizer.json)
+    let tokenizer_file = tokenizer_path.join("tokenizer.json");
+    let tokenizer = Tokenizer::from_file(&tokenizer_file)
+        .with_context(|| format!("Failed to load tokenizer from {}", tokenizer_file.display()))?;
+
+    // Get EOS token ID (default to 1 for Gemma)
+    let eos_token_id = tokenizer.eos_token_id() as u32;
+
+    // Set up sampling config
+    let sampling_config = SamplingConfig {
+        temperature,
+        top_k,
+        top_p,
+        seed,
+    };
+
+    println!("\n{}", "=".repeat(50));
+    println!("Prompt: {}", prompt);
+    println!("{}", "=".repeat(50));
+    println!("Generating...\n");
+
+    // Generate text
+    let (generated_text, stats) = generate(
+        &mut session,
+        &tokenizer,
+        &prompt,
+        max_tokens,
+        &sampling_config,
+        stream,
+        eos_token_id,
+    )
+    .with_context(|| "Generation failed")?;
+
+    // Print output if not streaming
+    if !stream {
+        println!("{}", generated_text);
+    }
+
+    // Print statistics
+    print_stats(&stats);
 
     Ok(())
 }
