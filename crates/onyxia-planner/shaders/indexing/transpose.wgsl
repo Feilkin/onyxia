@@ -21,6 +21,7 @@
 struct ImmediateConstants {
     rank: u32,              // Number of dimensions
     num_elements: u32,      // Total elements in tensor
+    dispatch_size_x: u32,   // Number of workgroups in X dimension (for multi-dimensional dispatch)
     input_strides: array<u32, 6>,   // Strides for input tensor (row-major)
     output_strides: array<u32, 6>,  // Strides for output tensor (row-major)
     perm: array<u32, 6>,            // Permutation array (perm[i] = which input dim maps to output dim i)
@@ -37,7 +38,12 @@ var<immediate> params: ImmediateConstants;
 
 @compute @workgroup_size(WG_SIZE, 1, 1)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let tid = global_id.x;
+    // Calculate thread ID for multi-dimensional dispatch
+    // global_id.x: 0 to (dispatch_size_x * WG_SIZE - 1)
+    // global_id.y: 0 to (dispatch_size_y - 1)
+    // global_id.z: 0 to (dispatch_size_z - 1)
+    let threads_per_row = params.dispatch_size_x * WG_SIZE;
+    let tid = global_id.x + global_id.y * threads_per_row + global_id.z * threads_per_row * 65535u;
     
     // Bounds check
     if (tid >= params.num_elements) {

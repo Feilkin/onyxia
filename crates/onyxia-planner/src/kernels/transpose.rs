@@ -92,7 +92,23 @@ impl OpKernel for TransposeKernel {
 
         // Configure workgroup size
         let workgroup_size: u32 = 256;
-        let num_workgroups = (num_elements as u32 + workgroup_size - 1) / workgroup_size;
+        let total_workgroups = (num_elements as u32 + workgroup_size - 1) / workgroup_size;
+
+        // WebGPU limit: each dispatch dimension must be <= 65535
+        // Distribute workgroups across X, Y (and Z if needed) dimensions
+        const MAX_DISPATCH_DIM: u32 = 65535;
+        let (workgroups_x, workgroups_y, workgroups_z) = if total_workgroups <= MAX_DISPATCH_DIM {
+            (total_workgroups, 1, 1)
+        } else {
+            let workgroups_y = (total_workgroups + MAX_DISPATCH_DIM - 1) / MAX_DISPATCH_DIM;
+            if workgroups_y <= MAX_DISPATCH_DIM {
+                (MAX_DISPATCH_DIM, workgroups_y, 1)
+            } else {
+                // Very large tensors: use all 3 dimensions
+                let workgroups_z = (workgroups_y + MAX_DISPATCH_DIM - 1) / MAX_DISPATCH_DIM;
+                (MAX_DISPATCH_DIM, MAX_DISPATCH_DIM, workgroups_z)
+            }
+        };
 
         // Prepare shader definitions
         let mut shader_defs = HashMap::new();
@@ -116,6 +132,9 @@ impl OpKernel for TransposeKernel {
 
         // num_elements (u32)
         immediates_data.extend_from_slice(&(num_elements as u32).to_le_bytes());
+
+        // dispatch_size_x (u32) - needed for multi-dimensional dispatch thread ID calculation
+        immediates_data.extend_from_slice(&workgroups_x.to_le_bytes());
 
         // input_strides (6 x u32, pad with 0)
         for i in 0..6 {
@@ -152,7 +171,7 @@ impl OpKernel for TransposeKernel {
                     read_only: false,
                 },
             ],
-            workgroups: [num_workgroups, 1, 1],
+            workgroups: [workgroups_x, workgroups_y, workgroups_z],
             immediates: Some(immediates_data),
         }])
     }
@@ -326,8 +345,8 @@ mod tests {
                 assert!(immediates.is_some());
                 let imm = immediates.as_ref().unwrap();
 
-                // Check structure: rank + num_elements + 6 strides + 6 strides + 6 perm = 20 u32 = 80 bytes
-                assert_eq!(imm.len(), 80);
+                // Check structure: rank + num_elements + dispatch_size_x + 6 strides + 6 strides + 6 perm = 21 u32 = 84 bytes
+                assert_eq!(imm.len(), 84);
 
                 // Decode first two values
                 let rank = u32::from_le_bytes([imm[0], imm[1], imm[2], imm[3]]);
@@ -419,7 +438,7 @@ mod tests {
                 // Verify immediates structure
                 assert!(immediates.is_some());
                 let imm = immediates.as_ref().unwrap();
-                assert_eq!(imm.len(), 80);
+                assert_eq!(imm.len(), 84);
 
                 let rank = u32::from_le_bytes([imm[0], imm[1], imm[2], imm[3]]);
                 let num_elements = u32::from_le_bytes([imm[4], imm[5], imm[6], imm[7]]);
