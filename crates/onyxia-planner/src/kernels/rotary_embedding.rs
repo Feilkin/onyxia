@@ -72,25 +72,51 @@ impl OpKernel for RotaryEmbeddingKernel {
                 let seq = input_shape[1] as u32;
                 let hidden = input_shape[2] as u32;
 
-                // If num_heads is provided, use it; otherwise we can't proceed
-                if num_heads_attr <= 0 {
-                    return Err(crate::error::CodegenError::InvalidShape(format!(
-                        "RotaryEmbedding with 3D input [batch, seq, hidden] requires num_heads attribute, got shape {:?}",
-                        input_shape
-                    )));
-                }
+                // Try to infer head_dim from cos_cache shape if num_heads not provided
+                let num_heads = if num_heads_attr <= 0 {
+                    // cos_cache is input 2, with shape [max_seq, head_dim/2]
+                    if ctx.node.inputs.len() < 3 {
+                        return Err(crate::error::CodegenError::InvalidShape(
+                            "RotaryEmbedding with 3D input requires cos_cache input to infer dimensions".to_string(),
+                        ));
+                    }
+
+                    let cos_cache_info = ctx.input_info(2)?;
+                    let cos_cache_shape = ctx.static_shape(&cos_cache_info.shape)?;
+
+                    if cos_cache_shape.len() != 2 {
+                        return Err(crate::error::CodegenError::InvalidShape(format!(
+                            "RotaryEmbedding: cos_cache should be 2D [max_seq, head_dim/2], got {:?}",
+                            cos_cache_shape
+                        )));
+                    }
+
+                    let head_dim = (cos_cache_shape[1] * 2) as u32;
+
+                    // Compute num_heads from hidden and head_dim
+                    if hidden % head_dim != 0 {
+                        return Err(crate::error::CodegenError::InvalidShape(format!(
+                            "RotaryEmbedding: hidden dimension {} is not divisible by inferred head_dim {}",
+                            hidden, head_dim
+                        )));
+                    }
+
+                    hidden / head_dim
+                } else {
+                    num_heads_attr as u32
+                };
 
                 // Compute head_dim from hidden dimension
-                let head_dim = hidden / (num_heads_attr as u32);
+                let head_dim = hidden / num_heads;
 
-                if hidden != (num_heads_attr as u32) * head_dim {
+                if hidden != num_heads * head_dim {
                     return Err(crate::error::CodegenError::InvalidShape(format!(
                         "RotaryEmbedding: hidden dimension {} is not divisible by num_heads {}",
-                        hidden, num_heads_attr
+                        hidden, num_heads
                     )));
                 }
 
-                (batch, seq, num_heads_attr as u32, head_dim)
+                (batch, seq, num_heads, head_dim)
             }
             _ => {
                 return Err(crate::error::CodegenError::InvalidShape(format!(
