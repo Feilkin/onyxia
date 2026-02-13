@@ -6,6 +6,16 @@ use std::collections::HashMap;
 
 #[test]
 fn test_compile_gemma_model() {
+    // Initialize tracing subscriber with timing
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_file(false)
+        .with_line_number(false)
+        .with_timer(tracing_subscriber::fmt::time::uptime())
+        .try_init();
+
     // Load the quantized Gemma model
     let model_path = "../../models/gemma-3-270m-it-ONNX/onnx/model_q4.onnx";
 
@@ -15,11 +25,21 @@ fn test_compile_gemma_model() {
         return;
     }
 
-    let graph = match load_and_parse_model(model_path) {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("Failed to load and parse model: {}", e);
-            return;
+    let graph = {
+        let _span = tracing::info_span!("load_and_parse_model").entered();
+        match load_and_parse_model(model_path) {
+            Ok(g) => {
+                tracing::info!(
+                    num_nodes = g.nodes.len(),
+                    num_tensors = g.tensor_info.len(),
+                    "model loaded"
+                );
+                g
+            }
+            Err(e) => {
+                eprintln!("Failed to load and parse model: {}", e);
+                return;
+            }
         }
     };
 
@@ -41,6 +61,13 @@ fn test_compile_gemma_model() {
     // Compile the model - this should succeed with all shape inference implemented
     let plan = compile(&graph, &registry, &dynamic_dimensions)
         .expect("Model compilation should succeed with shape inference for all operators");
+
+    tracing::info!(
+        num_operations = plan.operations.len(),
+        num_tensors = plan.tensors.all().len(),
+        num_shaders = plan.shaders.len(),
+        "compilation test complete"
+    );
 
     // Should have many tensors (weights, intermediates)
     assert!(

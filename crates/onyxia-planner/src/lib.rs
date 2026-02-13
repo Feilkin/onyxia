@@ -82,6 +82,7 @@ use scheduler::Scheduler;
 /// # Ok(())
 /// # }
 /// ```
+#[tracing::instrument(skip_all, fields(num_nodes = graph.nodes.len(), num_tensors = graph.tensor_info.len()))]
 pub fn compile(
     graph: &Graph,
     registry: &KernelRegistry,
@@ -90,124 +91,143 @@ pub fn compile(
     use onyxia_onnx::TensorShape;
 
     // Phase 1: Substitute all Dynamic(Named(...)) → Static using dynamic_dimensions
-    let mut graph = graph.clone();
-    shape_inference::resolve_dynamic_dimensions(&mut graph, dynamic_dimensions)?;
+    let mut graph = {
+        let _span = tracing::debug_span!("resolve_dynamic_dimensions").entered();
+        let mut g = graph.clone();
+        shape_inference::resolve_dynamic_dimensions(&mut g, dynamic_dimensions)?;
+        g
+    };
 
     // Phase 2: Iterative forward shape inference using kernel-defined rules
-    shape_inference::infer_shapes(&mut graph, registry)?;
+    {
+        let _span = tracing::debug_span!("shape_inference").entered();
+        shape_inference::infer_shapes(&mut graph, registry)?;
+    }
 
     // Step 1: Run scheduler to get topologically ordered node IDs
-    let scheduler = Scheduler::new(graph.clone());
-    let ordered_nodes = scheduler.schedule()?;
+    let ordered_nodes = {
+        let _span = tracing::debug_span!("scheduling").entered();
+        let scheduler = Scheduler::new(graph.clone());
+        scheduler.schedule()?
+    };
 
     // Step 2: Create shared Vec<CompiledShader> for deduplication
     let mut shaders = Vec::new();
 
     // Step 3: Validate all tensor shapes are Static, build resolved tensor registry
-    let mut resolved_tensors = TensorRegistry::new();
-    let mut tensor_id_map = std::collections::HashMap::new();
+    let (resolved_tensors, tensor_id_map) = {
+        let _span = tracing::debug_span!("validate_tensor_shapes").entered();
+        let mut resolved_tensors = TensorRegistry::new();
+        let mut tensor_id_map = std::collections::HashMap::new();
 
-    for (orig_id, info) in graph.tensor_info.iter().enumerate() {
-        match &info.shape {
-            TensorShape::Static(_) => {}
-            TensorShape::Absent => {
-                // Optional input not provided — skip, it doesn't actually exist
-                continue;
+        for (orig_id, info) in graph.tensor_info.iter().enumerate() {
+            match &info.shape {
+                TensorShape::Static(_) => {}
+                TensorShape::Absent => {
+                    // Optional input not provided — skip, it doesn't actually exist
+                    continue;
+                }
+                TensorShape::Unknown => {
+                    return Err(CodegenError::InvalidShape(format!(
+                        "Tensor '{}' has unknown shape — shape inference failed for this operation",
+                        info.name
+                    )));
+                }
+                TensorShape::Dynamic(_) => {
+                    return Err(CodegenError::InvalidShape(format!(
+                        "Tensor '{}' still has Dynamic shape after Phase 1 — this is a bug",
+                        info.name
+                    )));
+                }
             }
-            TensorShape::Unknown => {
-                return Err(CodegenError::InvalidShape(format!(
-                    "Tensor '{}' has unknown shape — shape inference failed for this operation",
-                    info.name
-                )));
-            }
-            TensorShape::Dynamic(_) => {
-                return Err(CodegenError::InvalidShape(format!(
-                    "Tensor '{}' still has Dynamic shape after Phase 1 — this is a bug",
-                    info.name
-                )));
-            }
+
+            let resolved_info = onyxia_onnx::TensorInfo {
+                name: info.name.clone(),
+                dtype: info.dtype,
+                shape: info.shape.clone(),
+                kind: info.kind,
+                initializer: info.initializer.clone(),
+            };
+
+            let new_id = resolved_tensors.add(resolved_info);
+            tensor_id_map.insert(orig_id, new_id);
         }
-
-        let resolved_info = onyxia_onnx::TensorInfo {
-            name: info.name.clone(),
-            dtype: info.dtype,
-            shape: info.shape.clone(),
-            kind: info.kind,
-            initializer: info.initializer.clone(),
-        };
-
-        let new_id = resolved_tensors.add(resolved_info);
-        tensor_id_map.insert(orig_id, new_id);
-    }
+        (resolved_tensors, tensor_id_map)
+    };
 
     // Step 4: For each node in scheduled order, plan operations
-    let mut operations = Vec::new();
+    let operations = {
+        let _span =
+            tracing::debug_span!("plan_operations", num_ops = ordered_nodes.len()).entered();
+        let mut ops = Vec::new();
 
-    for &node_id in &ordered_nodes {
-        let node = &graph.nodes[node_id];
+        for &node_id in &ordered_nodes {
+            let node = &graph.nodes[node_id];
 
-        // Look up kernel by op_type
-        let kernel = registry
-            .get(&node.op_type)
-            .ok_or_else(|| CodegenError::UnsupportedOp(node.op_type.clone()))?;
+            // Look up kernel by op_type
+            let kernel = registry
+                .get(&node.op_type)
+                .ok_or_else(|| CodegenError::UnsupportedOp(node.op_type.clone()))?;
 
-        // Resolve input tensor names → IDs
-        let input_ids: Vec<_> = node
-            .inputs
-            .iter()
-            .filter(|name| !name.is_empty()) // Skip empty inputs (optional inputs in ONNX)
-            .map(|name| {
-                let orig_id = graph.tensor_id(name)?;
-                tensor_id_map
-                    .get(&orig_id)
-                    .copied()
-                    .ok_or_else(|| OnnxError::MissingTensor(name.clone()).into())
-            })
-            .collect::<Result<_>>()?;
+            // Resolve input tensor names → IDs
+            let input_ids: Vec<_> = node
+                .inputs
+                .iter()
+                .filter(|name| !name.is_empty()) // Skip empty inputs (optional inputs in ONNX)
+                .map(|name| {
+                    let orig_id = graph.tensor_id(name)?;
+                    tensor_id_map
+                        .get(&orig_id)
+                        .copied()
+                        .ok_or_else(|| OnnxError::MissingTensor(name.clone()).into())
+                })
+                .collect::<Result<_>>()?;
 
-        // Resolve output tensor names → IDs
-        let output_ids: Vec<_> = node
-            .outputs
-            .iter()
-            .filter(|name| !name.is_empty()) // Skip empty outputs
-            .map(|name| {
-                let orig_id = graph.tensor_id(name)?;
-                tensor_id_map
-                    .get(&orig_id)
-                    .copied()
-                    .ok_or_else(|| OnnxError::MissingTensor(name.clone()).into())
-            })
-            .collect::<Result<_>>()?;
+            // Resolve output tensor names → IDs
+            let output_ids: Vec<_> = node
+                .outputs
+                .iter()
+                .filter(|name| !name.is_empty()) // Skip empty outputs
+                .map(|name| {
+                    let orig_id = graph.tensor_id(name)?;
+                    tensor_id_map
+                        .get(&orig_id)
+                        .copied()
+                        .ok_or_else(|| OnnxError::MissingTensor(name.clone()).into())
+                })
+                .collect::<Result<_>>()?;
 
-        // Construct PlanContext
-        let mut ctx = PlanContext::new(
-            node,
-            &graph,
-            &input_ids,
-            &output_ids,
-            dynamic_dimensions,
-            &mut shaders,
-        );
+            // Construct PlanContext
+            let mut ctx = PlanContext::new(
+                node,
+                &graph,
+                &input_ids,
+                &output_ids,
+                dynamic_dimensions,
+                &mut shaders,
+            );
 
-        // Call kernel.plan() → get Vec<Step>
-        let steps = kernel.plan(&mut ctx)?;
+            // Call kernel.plan() → get Vec<Step>
+            let steps = kernel.plan(&mut ctx)?;
 
-        // Build PlannedOp from the node + steps + scratch buffers
-        let planned_op = PlannedOp {
-            name: if node.name.is_empty() {
-                format!("{}_{}", node.op_type, node_id)
-            } else {
-                node.name.clone()
-            },
-            op_type: node.op_type.clone(),
-            inputs: input_ids.clone(),
-            outputs: output_ids.clone(),
-            steps,
-            scratch_buffers: ctx.scratch_buffers,
-        };
+            // Build PlannedOp from the node + steps + scratch buffers
+            let planned_op = PlannedOp {
+                name: if node.name.is_empty() {
+                    format!("{}_{}", node.op_type, node_id)
+                } else {
+                    node.name.clone()
+                },
+                op_type: node.op_type.clone(),
+                inputs: input_ids.clone(),
+                outputs: output_ids.clone(),
+                steps,
+                scratch_buffers: ctx.scratch_buffers,
+            };
 
-        operations.push(planned_op);
-    }
+            ops.push(planned_op);
+        }
+        ops
+    };
 
     // Step 5: Map input/output names to resolved IDs
     let inputs: Vec<_> = graph
@@ -248,6 +268,12 @@ pub fn compile(
             producer: graph.metadata.producer_name.clone(),
         },
     };
+
+    tracing::debug!(
+        num_operations = plan.operations.len(),
+        num_shaders = plan.shaders.len(),
+        "compilation complete"
+    );
 
     Ok(plan)
 }
