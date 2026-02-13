@@ -436,6 +436,13 @@ impl PlanExecutor {
         Ok(())
     }
 
+    /// Get a reference to the execution plan.
+    ///
+    /// This provides access to the plan's tensor registry and other metadata.
+    pub fn plan(&self) -> &ExecutionPlan {
+        &self.plan
+    }
+
     /// Execute the plan but only download the specified outputs to CPU.
     ///
     /// All outputs are still computed on GPU, but only the named ones are

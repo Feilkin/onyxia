@@ -74,9 +74,10 @@ impl LlmSession {
                 format!(
                     "Prefill execution failed (prompt_len={}, inputs={:?})",
                     prompt_len,
-                    inputs.iter().map(|(name, tensor)| {
-                        format!("{}:{:?}", name, tensor.shape())
-                    }).collect::<Vec<_>>()
+                    inputs
+                        .iter()
+                        .map(|(name, tensor)| { format!("{}:{:?}", name, tensor.shape()) })
+                        .collect::<Vec<_>>()
                 )
             })?;
 
@@ -127,9 +128,10 @@ impl LlmSession {
                     "Decode execution failed (token={}, past_seq_len={}, inputs={:?})",
                     token_id,
                     self.past_seq_len,
-                    inputs.iter().map(|(name, tensor)| {
-                        format!("{}:{:?}", name, tensor.shape())
-                    }).collect::<Vec<_>>()
+                    inputs
+                        .iter()
+                        .map(|(name, tensor)| { format!("{}:{:?}", name, tensor.shape()) })
+                        .collect::<Vec<_>>()
                 )
             })?;
 
@@ -207,25 +209,32 @@ fn create_decode_inputs(token_id: i64, past_seq_len: usize) -> Vec<(&'static str
 /// Matches patterns like:
 /// - Output: `present.{N}.key`, `present.{N}.value`
 /// - Input: `past_key_values.{N}.key`, `past_key_values.{N}.value`
-fn discover_kv_pairs(_executor: &PlanExecutor) -> Vec<(String, String)> {
-    // This is a placeholder implementation - would need access to tensor names
-    // In a real implementation, we'd query executor.plan.tensors to find matching names
-    // For now, generate expected pairs based on common patterns
+fn discover_kv_pairs(executor: &PlanExecutor) -> Vec<(String, String)> {
     let mut pairs = Vec::new();
+    let plan = executor.plan();
 
-    // Try to discover by scanning common patterns
-    // Would need to expose plan.tensors through executor for proper implementation
-    for layer in 0..100 {
-        // Arbitrary upper limit
-        let present_key = format!("present.{}.key", layer);
-        let present_value = format!("present.{}.value", layer);
-        let past_key = format!("past_key_values.{}.key", layer);
-        let past_value = format!("past_key_values.{}.value", layer);
+    // Scan all tensors to find present.* outputs
+    for tensor in plan.tensors.all() {
+        let name = &tensor.name;
 
-        // In real impl, check if these tensors exist in the plan
-        // For now, just add them all - the executor will error if they don't exist
-        pairs.push((present_key, past_key));
-        pairs.push((present_value, past_value));
+        // Look for tensors with pattern "present.{layer}.{type}"
+        if name.starts_with("present.") {
+            // Extract the layer number and type (key or value)
+            // Example: "present.0.key" -> layer=0, type="key"
+            let parts: Vec<&str> = name.split('.').collect();
+            if parts.len() == 3 && parts[0] == "present" {
+                let layer = parts[1];
+                let kv_type = parts[2]; // "key" or "value"
+
+                // Construct the corresponding past_key_values name
+                let past_name = format!("past_key_values.{}.{}", layer, kv_type);
+
+                // Verify that the past tensor exists in the plan
+                if plan.tensors.find_by_name(&past_name).is_some() {
+                    pairs.push((name.clone(), past_name));
+                }
+            }
+        }
     }
 
     pairs
