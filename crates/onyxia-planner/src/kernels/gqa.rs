@@ -43,7 +43,6 @@ impl OpKernel for GroupQueryAttentionKernel {
         &self,
         _node: &onyxia_onnx::Node,
         input_shapes: &[TensorShape],
-        _dynamic_dimensions: &HashMap<String, usize>,
     ) -> Result<Vec<TensorShape>> {
         if input_shapes.len() < 7 {
             return Err(CodegenError::InvalidShape(
@@ -71,7 +70,7 @@ impl OpKernel for GroupQueryAttentionKernel {
 
         // Get query shape: [batch, seq_len, num_heads * head_dim]
         let query_info = ctx.input_info(0)?;
-        let query_shape = ctx.resolve_shape(&query_info.shape)?;
+        let query_shape = ctx.static_shape(&query_info.shape)?;
 
         if query_shape.len() != 3 {
             return Err(CodegenError::InvalidShape(format!(
@@ -97,7 +96,7 @@ impl OpKernel for GroupQueryAttentionKernel {
 
         // Get past_key shape: [batch, kv_num_heads, past_seq_len, head_dim]
         let past_key_info = ctx.input_info(3)?;
-        let past_key_shape = ctx.resolve_shape(&past_key_info.shape)?;
+        let past_key_shape = ctx.static_shape(&past_key_info.shape)?;
 
         if past_key_shape.len() != 4 {
             return Err(CodegenError::InvalidShape(format!(
@@ -474,10 +473,9 @@ mod tests {
             seqlens_shape,
             total_seq_shape,
         ];
-        let dynamic_dimensions = HashMap::new();
 
         let output_shapes = kernel
-            .infer_output_shapes(&node, &input_shapes, &dynamic_dimensions)
+            .infer_output_shapes(&node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 3);
@@ -490,7 +488,7 @@ mod tests {
         let (graph, node) = create_gqa_test_graph();
         let input_ids = vec![0, 1, 2, 3, 4, 5, 6];
         let output_ids = vec![7, 8, 9];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -532,7 +530,7 @@ mod tests {
 
         let input_ids = vec![0, 1, 2, 3, 4, 5, 6];
         let output_ids = vec![7, 8, 9];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -660,7 +658,7 @@ mod tests {
 
         let input_ids = vec![0, 1, 2, 3, 4, 5, 6];
         let output_ids = vec![7, 8, 9];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(

@@ -22,7 +22,6 @@ impl OpKernel for CastKernel {
         &self,
         _node: &onyxia_onnx::Node,
         input_shapes: &[TensorShape],
-        _dynamic_dimensions: &HashMap<String, usize>,
     ) -> Result<Vec<TensorShape>> {
         // Cast preserves shape, only changes data type
         if input_shapes.is_empty() {
@@ -56,7 +55,7 @@ impl OpKernel for CastKernel {
         }
 
         // Calculate number of elements based on output shape
-        let output_shape = ctx.resolve_shape(&output_info.shape)?;
+        let output_shape = ctx.static_shape(&output_info.shape)?;
         let num_elements: usize = output_shape.iter().product();
 
         // Determine which shader variant to use
@@ -185,7 +184,7 @@ mod tests {
 
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -246,7 +245,7 @@ mod tests {
 
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -280,7 +279,7 @@ mod tests {
 
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -310,7 +309,7 @@ mod tests {
 
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -365,7 +364,7 @@ mod tests {
 
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -401,7 +400,7 @@ mod tests {
 
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -434,7 +433,7 @@ mod tests {
 
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(

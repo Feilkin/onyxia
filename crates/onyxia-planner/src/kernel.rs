@@ -7,7 +7,7 @@
 use crate::error::{CodegenError, Result};
 use crate::plan::{BufferRef, CompiledShader, ScratchBufferDesc, ShaderIndex, Step};
 use naga_oil::compose::{Composer, NagaModuleDescriptor, ShaderDefValue};
-use onyxia_onnx::{Dimension, Graph, Node, TensorId, TensorInfo, TensorShape};
+use onyxia_onnx::{Graph, Node, TensorId, TensorInfo, TensorShape};
 use std::collections::HashMap;
 
 /// Trait for mapping an ONNX node to GPU execution steps.
@@ -24,11 +24,13 @@ pub trait OpKernel: Send + Sync {
     /// Called during shape inference before planning. Given input shapes,
     /// infer what the output shapes should be.
     ///
+    /// Input shapes are guaranteed to have no `Named` dimensions — Phase 1
+    /// (dynamic dimension substitution) has already resolved them.
+    ///
     /// # Arguments
     ///
     /// * `node` - The ONNX node being processed
-    /// * `input_shapes` - Shapes of input tensors
-    /// * `dynamic_dimensions` - Concrete values for dynamic dimensions
+    /// * `input_shapes` - Shapes of input tensors (all `Static`, `Unknown`, or `Absent`)
     ///
     /// # Returns
     ///
@@ -37,7 +39,6 @@ pub trait OpKernel: Send + Sync {
         &self,
         node: &Node,
         input_shapes: &[TensorShape],
-        dynamic_dimensions: &HashMap<String, usize>,
     ) -> Result<Vec<TensorShape>>;
 
     /// Plan the GPU steps needed to execute this operation.
@@ -140,45 +141,29 @@ impl<'a> PlanContext<'a> {
             .map_err(|e| CodegenError::OnnxError(e))
     }
 
-    /// Resolve a tensor shape to concrete dimensions.
+    /// Get static dimensions from a tensor shape.
     ///
-    /// Named dimensions are looked up in dynamic_dimensions.
-    /// Static dimensions are returned as-is.
+    /// By the time `plan()` is called, all shapes must be `Static` — Phase 1
+    /// resolved dynamic dimensions and Phase 2 inferred unknown shapes.
     ///
-    /// # Arguments
+    /// # Errors
     ///
-    /// * `shape` - The tensor shape to resolve
-    ///
-    /// # Returns
-    ///
-    /// A vector of concrete dimension sizes, or an error if a named dimension
-    /// is not found in dynamic_dimensions.
-    pub fn resolve_shape(&self, shape: &TensorShape) -> Result<Vec<usize>> {
+    /// Returns an error if the shape is not `Static`.
+    pub fn static_shape(&self, shape: &TensorShape) -> Result<Vec<usize>> {
         match shape {
             TensorShape::Static(dims) => Ok(dims.clone()),
-            TensorShape::Dynamic(dims) => {
-                let mut resolved = Vec::with_capacity(dims.len());
-                for dim in dims {
-                    match dim {
-                        Dimension::Static(size) => resolved.push(*size),
-                        Dimension::Named(name) => {
-                            let size = self.dynamic_dimensions.get(name).ok_or_else(|| {
-                                CodegenError::InvalidShape(format!(
-                                    "Dynamic dimension '{}' not provided",
-                                    name
-                                ))
-                            })?;
-                            resolved.push(*size);
-                        }
-                    }
-                }
-                Ok(resolved)
-            }
+            TensorShape::Dynamic(_) => Err(CodegenError::InvalidShape(
+                "Shape is still Dynamic at plan time — \
+                 dynamic dimension resolution failed"
+                    .to_string(),
+            )),
             TensorShape::Unknown => Err(CodegenError::InvalidShape(
-                "Cannot resolve unknown shape".to_string(),
+                "Shape is still Unknown at plan time — \
+                 shape inference may have failed"
+                    .to_string(),
             )),
             TensorShape::Absent => Err(CodegenError::InvalidShape(
-                "Cannot resolve absent optional input shape".to_string(),
+                "Cannot get shape of absent optional input".to_string(),
             )),
         }
     }
@@ -386,7 +371,6 @@ mod tests {
             &self,
             _node: &Node,
             input_shapes: &[TensorShape],
-            _dynamic_dimensions: &HashMap<String, usize>,
         ) -> Result<Vec<TensorShape>> {
             // Dummy: output shape equals input shape
             Ok(vec![
@@ -431,7 +415,6 @@ mod tests {
             &self,
             _node: &Node,
             input_shapes: &[TensorShape],
-            _dynamic_dimensions: &HashMap<String, usize>,
         ) -> Result<Vec<TensorShape>> {
             // Another dummy: output shape equals input shape
             Ok(vec![
@@ -503,7 +486,7 @@ mod tests {
 
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         // Plan the operation
@@ -570,7 +553,7 @@ mod tests {
 
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         // Plan with dummy kernel
@@ -628,7 +611,7 @@ mod tests {
 
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let ctx = PlanContext::for_test(
@@ -655,12 +638,12 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_shape_static() {
+    fn test_static_shape_static() {
         let graph = create_test_graph();
         let node = Node::new("Test");
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let ctx = PlanContext::for_test(
@@ -674,22 +657,18 @@ mod tests {
 
         let shape = TensorShape::Static(vec![1, 2, 3]);
         let resolved = ctx
-            .resolve_shape(&shape)
+            .static_shape(&shape)
             .expect("Should resolve static shape");
         assert_eq!(resolved, vec![1, 2, 3]);
     }
 
     #[test]
-    fn test_resolve_shape_dynamic() {
+    fn test_static_shape_rejects_dynamic() {
         let graph = create_test_graph();
         let node = Node::new("Test");
         let input_ids = vec![0];
         let output_ids = vec![1];
-
-        let mut dynamic_dimensions = HashMap::new();
-        dynamic_dimensions.insert("batch".to_string(), 4);
-        dynamic_dimensions.insert("seq".to_string(), 128);
-
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let ctx = PlanContext::for_test(
@@ -701,55 +680,21 @@ mod tests {
             &mut shaders,
         );
 
-        let shape = TensorShape::Dynamic(vec![
-            Dimension::Named("batch".to_string()),
-            Dimension::Static(16),
-            Dimension::Named("seq".to_string()),
-        ]);
-
-        let resolved = ctx
-            .resolve_shape(&shape)
-            .expect("Should resolve dynamic shape");
-        assert_eq!(resolved, vec![4, 16, 128]);
-    }
-
-    #[test]
-    fn test_resolve_shape_missing_dynamic() {
-        let graph = create_test_graph();
-        let node = Node::new("Test");
-        let input_ids = vec![0];
-        let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new(); // Empty - missing "batch"
-        let mut shaders = Vec::new();
-
-        let ctx = PlanContext::for_test(
-            &node,
-            &graph,
-            &input_ids,
-            &output_ids,
-            &dynamic_dimensions,
-            &mut shaders,
+        let shape = TensorShape::Dynamic(vec![onyxia_onnx::Dimension::Named("batch".to_string())]);
+        let result = ctx.static_shape(&shape);
+        assert!(
+            result.is_err(),
+            "Dynamic shapes should be rejected at plan time"
         );
-
-        let shape = TensorShape::Dynamic(vec![Dimension::Named("batch".to_string())]);
-
-        let result = ctx.resolve_shape(&shape);
-        assert!(result.is_err());
-        match result {
-            Err(CodegenError::InvalidShape(msg)) => {
-                assert!(msg.contains("Dynamic dimension 'batch' not provided"));
-            }
-            _ => panic!("Expected InvalidShape error"),
-        }
     }
 
     #[test]
-    fn test_resolve_shape_unknown() {
+    fn test_static_shape_unknown() {
         let graph = create_test_graph();
         let node = Node::new("Test");
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let ctx = PlanContext::for_test(
@@ -762,11 +707,11 @@ mod tests {
         );
 
         let shape = TensorShape::Unknown;
-        let result = ctx.resolve_shape(&shape);
+        let result = ctx.static_shape(&shape);
         assert!(result.is_err());
         match result {
             Err(CodegenError::InvalidShape(msg)) => {
-                assert!(msg.contains("Cannot resolve unknown shape"));
+                assert!(msg.contains("Unknown"));
             }
             _ => panic!("Expected InvalidShape error"),
         }
@@ -778,7 +723,7 @@ mod tests {
         let node = Node::new("Test");
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -818,7 +763,7 @@ mod tests {
         let node = Node::new("Test");
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(

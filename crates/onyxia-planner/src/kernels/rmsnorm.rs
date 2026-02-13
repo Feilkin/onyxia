@@ -22,7 +22,6 @@ impl OpKernel for RmsNormKernel {
         &self,
         _node: &onyxia_onnx::Node,
         input_shapes: &[TensorShape],
-        _dynamic_dimensions: &HashMap<String, usize>,
     ) -> Result<Vec<TensorShape>> {
         // RMSNorm normalizes over the last dimension: output shape equals input shape
         if input_shapes.is_empty() {
@@ -39,7 +38,7 @@ impl OpKernel for RmsNormKernel {
 
         // Get input shape: [batch, seq_len, hidden_dim]
         let input_info = ctx.input_info(0)?;
-        let input_shape = ctx.resolve_shape(&input_info.shape)?;
+        let input_shape = ctx.static_shape(&input_info.shape)?;
 
         // Validate input shape
         if input_shape.len() < 2 {
@@ -162,7 +161,7 @@ mod tests {
 
         let input_ids = vec![0, 1];
         let output_ids = vec![2];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -239,7 +238,7 @@ mod tests {
 
         let input_ids = vec![0, 1];
         let output_ids = vec![2];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -305,7 +304,7 @@ mod tests {
 
         let input_ids = vec![0, 1];
         let output_ids = vec![2];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(

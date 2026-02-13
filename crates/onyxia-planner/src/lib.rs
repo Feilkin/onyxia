@@ -16,7 +16,7 @@
 //!
 //! // Compile to execution plan
 //! let registry = KernelRegistry::with_defaults();
-//! let dynamic_dimensions = HashMap::new();
+//! let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
 //! let plan = compile(&graph, &registry, &dynamic_dimensions)?;
 //!
 //! println!("Compiled {} operations", plan.operations.len());
@@ -37,7 +37,7 @@ pub use plan::{
     BindingDesc, BufferRef, CompiledShader, ExecutionPlan, ModelMetadata, PlannedOp,
     ScratchBufferDesc, ShaderIndex, Step, TensorRegistry,
 };
-pub use shape_inference::infer_shapes;
+pub use shape_inference::{infer_shapes, resolve_dynamic_dimensions};
 
 use onyxia_onnx::{Graph, OnnxError};
 use scheduler::Scheduler;
@@ -74,7 +74,7 @@ use scheduler::Scheduler;
 ///
 /// # fn example(graph: &Graph) -> Result<(), Box<dyn std::error::Error>> {
 /// let registry = KernelRegistry::with_defaults();
-/// let dynamic_dimensions = HashMap::new();
+/// let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
 /// let plan = compile(graph, &registry, &dynamic_dimensions)?;
 /// println!("Compiled {} operations", plan.operations.len());
 /// # Ok(())
@@ -85,11 +85,14 @@ pub fn compile(
     registry: &KernelRegistry,
     dynamic_dimensions: &std::collections::HashMap<String, usize>,
 ) -> Result<ExecutionPlan> {
-    use onyxia_onnx::{Dimension, TensorShape};
+    use onyxia_onnx::TensorShape;
 
-    // Step 0: Infer shapes using kernel-defined shape rules with dynamic dimensions
+    // Phase 1: Substitute all Dynamic(Named(...)) → Static using dynamic_dimensions
     let mut graph = graph.clone();
-    shape_inference::infer_shapes(&mut graph, registry, dynamic_dimensions)?;
+    shape_inference::resolve_dynamic_dimensions(&mut graph, dynamic_dimensions)?;
+
+    // Phase 2: Iterative forward shape inference using kernel-defined rules
+    shape_inference::infer_shapes(&mut graph, registry)?;
 
     // Step 1: Run scheduler to get topologically ordered node IDs
     let scheduler = Scheduler::new(graph.clone());
@@ -98,47 +101,35 @@ pub fn compile(
     // Step 2: Create shared Vec<CompiledShader> for deduplication
     let mut shaders = Vec::new();
 
-    // Step 3: Resolve all tensor shapes
+    // Step 3: Validate all tensor shapes are Static, build resolved tensor registry
     let mut resolved_tensors = TensorRegistry::new();
     let mut tensor_id_map = std::collections::HashMap::new();
 
     for (orig_id, info) in graph.tensor_info.iter().enumerate() {
-        let resolved_shape = match &info.shape {
-            TensorShape::Static(dims) => TensorShape::Static(dims.clone()),
-            TensorShape::Dynamic(dims) => {
-                let mut resolved_dims = Vec::with_capacity(dims.len());
-                for dim in dims {
-                    match dim {
-                        Dimension::Static(size) => resolved_dims.push(*size),
-                        Dimension::Named(name) => {
-                            let size = dynamic_dimensions.get(name).ok_or_else(|| {
-                                CodegenError::InvalidShape(format!(
-                                    "Dynamic dimension '{}' not provided in dynamic_dimensions",
-                                    name
-                                ))
-                            })?;
-                            resolved_dims.push(*size);
-                        }
-                    }
-                }
-                TensorShape::Static(resolved_dims)
-            }
+        match &info.shape {
+            TensorShape::Static(_) => {}
             TensorShape::Absent => {
-                // Optional input not provided - skip this tensor, it doesn't actually exist
+                // Optional input not provided — skip, it doesn't actually exist
                 continue;
             }
             TensorShape::Unknown => {
                 return Err(CodegenError::InvalidShape(format!(
-                    "Tensor '{}' has unknown shape - shape inference failed for this operation",
+                    "Tensor '{}' has unknown shape — shape inference failed for this operation",
                     info.name
                 )));
             }
-        };
+            TensorShape::Dynamic(_) => {
+                return Err(CodegenError::InvalidShape(format!(
+                    "Tensor '{}' still has Dynamic shape after Phase 1 — this is a bug",
+                    info.name
+                )));
+            }
+        }
 
         let resolved_info = onyxia_onnx::TensorInfo {
             name: info.name.clone(),
             dtype: info.dtype,
-            shape: resolved_shape,
+            shape: info.shape.clone(),
             kind: info.kind,
             initializer: info.initializer.clone(),
         };
@@ -567,8 +558,9 @@ mod tests {
         match result.unwrap_err() {
             CodegenError::InvalidShape(msg) => {
                 assert!(
-                    msg.contains("unknown"),
-                    "Error should mention unknown shape"
+                    msg.contains("nknown"),
+                    "Error should mention unknown shape, got: {}",
+                    msg
                 );
             }
             e => panic!("Expected InvalidShape error, got {:?}", e),

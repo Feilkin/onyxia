@@ -4,7 +4,6 @@ use crate::error::{CodegenError, Result};
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::Step;
 use onyxia_onnx::TensorShape;
-use std::collections::HashMap;
 
 /// Kernel for ONNX Shape operator.
 ///
@@ -26,7 +25,6 @@ impl OpKernel for ShapeKernel {
         &self,
         node: &onyxia_onnx::Node,
         input_shapes: &[TensorShape],
-        dynamic_dimensions: &HashMap<String, usize>,
     ) -> Result<Vec<TensorShape>> {
         // Shape takes one input and produces one 1D int64 output
         if input_shapes.is_empty() {
@@ -35,29 +33,9 @@ impl OpKernel for ShapeKernel {
             ));
         }
 
-        // Resolve input shape to get rank
-        let input_shape = &input_shapes[0];
-        let resolved_dims = match input_shape {
-            TensorShape::Static(dims) => dims.clone(),
-            TensorShape::Dynamic(dims) => {
-                // Resolve dynamic dimensions
-                let mut resolved = Vec::with_capacity(dims.len());
-                for dim in dims {
-                    match dim {
-                        onyxia_onnx::Dimension::Static(size) => resolved.push(*size),
-                        onyxia_onnx::Dimension::Named(name) => {
-                            let size = dynamic_dimensions.get(name).ok_or_else(|| {
-                                CodegenError::InvalidShape(format!(
-                                    "Dynamic dimension '{}' not provided",
-                                    name
-                                ))
-                            })?;
-                            resolved.push(*size);
-                        }
-                    }
-                }
-                resolved
-            }
+        // Extract static dimensions (Phase 1 already resolved Dynamic dims)
+        let resolved_dims = match &input_shapes[0] {
+            TensorShape::Static(dims) => dims,
             TensorShape::Unknown => {
                 return Err(CodegenError::InvalidShape(
                     "Cannot infer Shape output for unknown input shape".to_string(),
@@ -66,6 +44,11 @@ impl OpKernel for ShapeKernel {
             TensorShape::Absent => {
                 return Err(CodegenError::InvalidShape(
                     "Cannot get shape of absent optional input".to_string(),
+                ));
+            }
+            TensorShape::Dynamic(_) => {
+                return Err(CodegenError::InvalidShape(
+                    "Unexpected Dynamic shape after dimension resolution".to_string(),
                 ));
             }
         };
@@ -109,7 +92,7 @@ impl OpKernel for ShapeKernel {
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
         let input_info = ctx.input_info(0)?;
-        let shape = ctx.resolve_shape(&input_info.shape)?;
+        let shape = ctx.static_shape(&input_info.shape)?;
 
         // Handle start/end attributes to slice the shape
         let start: i64 = ctx
@@ -174,7 +157,8 @@ impl OpKernel for ShapeKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use onyxia_onnx::{AttributeValue, DataType, Dimension, Graph, Node, TensorInfo, TensorKind};
+    use onyxia_onnx::{AttributeValue, DataType, Graph, Node, TensorInfo, TensorKind};
+    use std::collections::HashMap;
 
     #[test]
     fn test_shape_kernel_static() {
@@ -209,7 +193,7 @@ mod tests {
         let mut shaders = Vec::new();
         let input_ids = [input_id];
         let output_ids = [output_id];
-        let dynamic_dims = HashMap::new();
+        let dynamic_dims: HashMap<String, usize> = HashMap::new();
         let mut ctx = PlanContext::for_test(
             &node,
             &graph,
@@ -253,74 +237,6 @@ mod tests {
     }
 
     #[test]
-    fn test_shape_kernel_dynamic() {
-        // Create a graph with a dynamic shape [batch, sequence, 768]
-        let mut graph = Graph::new();
-
-        let input_id = graph.add_tensor(TensorInfo {
-            name: "input".to_string(),
-            dtype: DataType::F32,
-            shape: TensorShape::Dynamic(vec![
-                Dimension::Named("batch".to_string()),
-                Dimension::Named("sequence".to_string()),
-                Dimension::Static(768),
-            ]),
-            kind: TensorKind::Input,
-            initializer: None,
-        });
-
-        let output_id = graph.add_tensor(TensorInfo {
-            name: "shape_out".to_string(),
-            dtype: DataType::I64,
-            shape: TensorShape::Static(vec![3]),
-            kind: TensorKind::Intermediate,
-            initializer: None,
-        });
-
-        let node = Node {
-            name: "Shape_0".to_string(),
-            op_type: "Shape".to_string(),
-            inputs: vec!["input".to_string()],
-            outputs: vec!["shape_out".to_string()],
-            attributes: HashMap::new(),
-            domain: String::new(),
-        };
-
-        let dynamic_dimensions =
-            HashMap::from([("batch".to_string(), 2), ("sequence".to_string(), 1024)]);
-
-        let mut shaders = Vec::new();
-        let input_ids = [input_id];
-        let output_ids = [output_id];
-        let mut ctx = PlanContext::for_test(
-            &node,
-            &graph,
-            &input_ids,
-            &output_ids,
-            &dynamic_dimensions,
-            &mut shaders,
-        );
-
-        let kernel = ShapeKernel;
-        let steps = kernel.plan(&mut ctx).expect("plan should succeed");
-
-        // Verify WriteBuffer step with resolved dimensions
-        assert_eq!(steps.len(), 1);
-
-        if let Step::WriteBuffer { data, .. } = &steps[0] {
-            assert_eq!(data.len(), 24, "Should have 24 bytes (3 * 8)");
-
-            let dim0 = i64::from_le_bytes(data[0..8].try_into().unwrap());
-            let dim1 = i64::from_le_bytes(data[8..16].try_into().unwrap());
-            let dim2 = i64::from_le_bytes(data[16..24].try_into().unwrap());
-
-            assert_eq!(dim0, 2, "Batch dimension should be resolved to 2");
-            assert_eq!(dim1, 1024, "Sequence dimension should be resolved to 1024");
-            assert_eq!(dim2, 768, "Static dimension should be 768");
-        }
-    }
-
-    #[test]
     fn test_shape_kernel_with_start_end() {
         // Test Shape with start=1, end=3 to get middle dimensions
         let mut graph = Graph::new();
@@ -357,7 +273,7 @@ mod tests {
         let mut shaders = Vec::new();
         let input_ids = [input_id];
         let output_ids = [output_id];
-        let dynamic_dims = HashMap::new();
+        let dynamic_dims: HashMap<String, usize> = HashMap::new();
         let mut ctx = PlanContext::for_test(
             &node,
             &graph,
@@ -396,7 +312,7 @@ mod tests {
 
         let kernel = ShapeKernel;
         let output_shapes = kernel
-            .infer_output_shapes(&node, &input_shapes, &HashMap::new())
+            .infer_output_shapes(&node, &input_shapes)
             .expect("shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);

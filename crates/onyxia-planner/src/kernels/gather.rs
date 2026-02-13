@@ -4,7 +4,7 @@ use crate::error::Result;
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
-use onyxia_onnx::{Dimension, TensorShape};
+use onyxia_onnx::TensorShape;
 use std::collections::HashMap;
 
 /// Kernel for Gather operation (ONNX Gather operator).
@@ -27,7 +27,6 @@ impl OpKernel for GatherKernel {
         &self,
         node: &onyxia_onnx::Node,
         input_shapes: &[TensorShape],
-        dynamic_dimensions: &HashMap<String, usize>,
     ) -> Result<Vec<TensorShape>> {
         if input_shapes.len() < 2 {
             return Err(crate::error::CodegenError::InvalidShape(
@@ -38,29 +37,25 @@ impl OpKernel for GatherKernel {
         // Get axis (defaults to 0 per ONNX spec)
         let axis: i64 = node.attr("axis").unwrap_or(0);
 
-        // Resolve data and indices shapes
+        // Extract static dimensions (Phase 1 already resolved Dynamic dims)
         let data_shape = match &input_shapes[0] {
-            TensorShape::Static(dims) => dims.clone(),
-            TensorShape::Dynamic(dims) => dims
-                .iter()
-                .map(|d| match d {
-                    Dimension::Static(s) => *s,
-                    Dimension::Named(name) => dynamic_dimensions.get(name).copied().unwrap_or(0),
-                })
-                .collect(),
+            TensorShape::Static(dims) => dims,
             TensorShape::Unknown | TensorShape::Absent => return Ok(vec![TensorShape::Unknown]),
+            TensorShape::Dynamic(_) => {
+                return Err(crate::error::CodegenError::InvalidShape(
+                    "Unexpected Dynamic shape after dimension resolution".to_string(),
+                ));
+            }
         };
 
         let indices_shape = match &input_shapes[1] {
-            TensorShape::Static(dims) => dims.clone(),
-            TensorShape::Dynamic(dims) => dims
-                .iter()
-                .map(|d| match d {
-                    Dimension::Static(s) => *s,
-                    Dimension::Named(name) => dynamic_dimensions.get(name).copied().unwrap_or(0),
-                })
-                .collect(),
+            TensorShape::Static(dims) => dims,
             TensorShape::Unknown | TensorShape::Absent => return Ok(vec![TensorShape::Unknown]),
+            TensorShape::Dynamic(_) => {
+                return Err(crate::error::CodegenError::InvalidShape(
+                    "Unexpected Dynamic shape after dimension resolution".to_string(),
+                ));
+            }
         };
 
         // Normalize negative axis
@@ -80,7 +75,7 @@ impl OpKernel for GatherKernel {
         // Output shape: data[:axis] + indices + data[axis+1:]
         let mut output_shape = Vec::new();
         output_shape.extend_from_slice(&data_shape[..normalized_axis]);
-        output_shape.extend_from_slice(&indices_shape);
+        output_shape.extend_from_slice(indices_shape);
         output_shape.extend_from_slice(&data_shape[normalized_axis + 1..]);
 
         Ok(vec![TensorShape::Static(output_shape)])
@@ -92,7 +87,7 @@ impl OpKernel for GatherKernel {
 
         // Get data shape
         let data_info = ctx.input_info(0)?;
-        let data_shape = ctx.resolve_shape(&data_info.shape)?;
+        let data_shape = ctx.static_shape(&data_info.shape)?;
 
         // Normalize negative axis
         let normalized_axis = if axis < 0 {
@@ -103,7 +98,7 @@ impl OpKernel for GatherKernel {
 
         // Get output shape and calculate total elements
         let output_info = ctx.output_info(0)?;
-        let output_shape = ctx.resolve_shape(&output_info.shape)?;
+        let output_shape = ctx.static_shape(&output_info.shape)?;
         let num_elements: usize = output_shape.iter().product();
 
         // Calculate inner_dim: product of data.shape[axis+1:]
@@ -210,7 +205,7 @@ mod tests {
 
         let input_ids = vec![0, 1];
         let output_ids = vec![2];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -286,10 +281,8 @@ mod tests {
             TensorShape::Static(vec![2]),    // indices
         ];
 
-        let dynamic_dimensions = HashMap::new();
-
         let output_shapes = GatherKernel
-            .infer_output_shapes(&node, &input_shapes, &dynamic_dimensions)
+            .infer_output_shapes(&node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -306,10 +299,8 @@ mod tests {
             TensorShape::Static(vec![8, 32]),       // batch × seq
         ];
 
-        let dynamic_dimensions = HashMap::new();
-
         let output_shapes = GatherKernel
-            .infer_output_shapes(&node, &input_shapes, &dynamic_dimensions)
+            .infer_output_shapes(&node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -329,10 +320,8 @@ mod tests {
             TensorShape::Static(vec![2]),       // indices
         ];
 
-        let dynamic_dimensions = HashMap::new();
-
         let output_shapes = GatherKernel
-            .infer_output_shapes(&node_with_axis, &input_shapes, &dynamic_dimensions)
+            .infer_output_shapes(&node_with_axis, &input_shapes)
             .expect("Shape inference should succeed");
 
         // axis=-2 → axis=1 (for rank 3)
@@ -350,7 +339,7 @@ mod tests {
 
         let input_ids = vec![0, 1];
         let output_ids = vec![2];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(

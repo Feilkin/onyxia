@@ -4,7 +4,7 @@ use crate::error::Result;
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
-use onyxia_onnx::{Dimension, TensorShape};
+use onyxia_onnx::TensorShape;
 use std::collections::HashMap;
 
 /// Kernel for sum-reducing a tensor along specified axes (ONNX ReduceSum operator).
@@ -22,7 +22,6 @@ impl OpKernel for ReduceSumKernel {
         &self,
         node: &onyxia_onnx::Node,
         input_shapes: &[TensorShape],
-        dynamic_dimensions: &HashMap<String, usize>,
     ) -> Result<Vec<TensorShape>> {
         if input_shapes.is_empty() {
             return Err(crate::error::CodegenError::InvalidShape(
@@ -30,32 +29,18 @@ impl OpKernel for ReduceSumKernel {
             ));
         }
 
-        // Get input shape
+        // Get input shape (Phase 1 already resolved Dynamic dims)
         let input_dims = match &input_shapes[0] {
-            TensorShape::Static(dims) => dims.clone(),
-            TensorShape::Dynamic(dims) => {
-                let mut resolved = Vec::new();
-                for dim in dims {
-                    let resolved_dim = match dim {
-                        Dimension::Static(s) => *s,
-                        Dimension::Named(name) => dynamic_dimensions
-                            .get(name)
-                            .copied()
-                            .ok_or_else(|| {
-                                crate::error::CodegenError::InvalidShape(format!(
-                                    "Cannot resolve dynamic dimension '{}'",
-                                    name
-                                ))
-                            })?,
-                    };
-                    resolved.push(resolved_dim);
-                }
-                resolved
-            }
+            TensorShape::Static(dims) => dims,
             TensorShape::Unknown => return Ok(vec![TensorShape::Unknown]),
             TensorShape::Absent => {
                 return Err(crate::error::CodegenError::InvalidShape(
                     "ReduceSum input is absent".to_string(),
+                ))
+            }
+            TensorShape::Dynamic(_) => {
+                return Err(crate::error::CodegenError::InvalidShape(
+                    "Unexpected Dynamic shape after dimension resolution".to_string(),
                 ))
             }
         };
@@ -120,10 +105,10 @@ impl OpKernel for ReduceSumKernel {
 
         // Get input and output shapes
         let input_info = ctx.input_info(0)?;
-        let input_shape = ctx.resolve_shape(&input_info.shape)?;
+        let input_shape = ctx.static_shape(&input_info.shape)?;
 
         let output_info = ctx.output_info(0)?;
-        let output_shape = ctx.resolve_shape(&output_info.shape)?;
+        let output_shape = ctx.static_shape(&output_info.shape)?;
 
         // Normalize negative axis
         let rank = input_shape.len() as i64;
@@ -231,7 +216,7 @@ mod tests {
 
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = crate::kernel::PlanContext::for_test(
@@ -290,10 +275,9 @@ mod tests {
             .insert("keepdims".to_string(), AttributeValue::Int(1i64));
 
         let input_shapes = vec![TensorShape::Static(vec![4, 8])];
-        let dynamic_dimensions = HashMap::new();
 
         let output_shapes = ReduceSumKernel
-            .infer_output_shapes(&node, &input_shapes, &dynamic_dimensions)
+            .infer_output_shapes(&node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -309,10 +293,9 @@ mod tests {
             .insert("keepdims".to_string(), AttributeValue::Int(0i64));
 
         let input_shapes = vec![TensorShape::Static(vec![4, 8])];
-        let dynamic_dimensions = HashMap::new();
 
         let output_shapes = ReduceSumKernel
-            .infer_output_shapes(&node, &input_shapes, &dynamic_dimensions)
+            .infer_output_shapes(&node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -328,10 +311,9 @@ mod tests {
             .insert("keepdims".to_string(), AttributeValue::Int(1i64));
 
         let input_shapes = vec![TensorShape::Static(vec![2, 8, 3])];
-        let dynamic_dimensions = HashMap::new();
 
         let output_shapes = ReduceSumKernel
-            .infer_output_shapes(&node, &input_shapes, &dynamic_dimensions)
+            .infer_output_shapes(&node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);

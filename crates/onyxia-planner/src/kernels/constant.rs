@@ -4,7 +4,6 @@ use crate::error::Result;
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::Step;
 use onyxia_onnx::TensorShape;
-use std::collections::HashMap;
 
 /// Kernel for ONNX Constant operator.
 ///
@@ -23,7 +22,6 @@ impl OpKernel for ConstantKernel {
         &self,
         node: &onyxia_onnx::Node,
         _input_shapes: &[TensorShape],
-        _dynamic_dimensions: &HashMap<String, usize>,
     ) -> Result<Vec<TensorShape>> {
         // Constant nodes have no inputs. The output shape is already set
         // by the parser when it extracted the tensor from the node's "value" attribute.
@@ -51,6 +49,7 @@ impl OpKernel for ConstantKernel {
 mod tests {
     use super::*;
     use onyxia_onnx::{DataType, Graph, Node, TensorInfo, TensorKind};
+    use std::collections::HashMap;
 
     #[test]
     fn test_constant_kernel_empty_steps() {
@@ -78,7 +77,7 @@ mod tests {
 
         let mut shaders = Vec::new();
         let output_ids = [output_id];
-        let dynamic_dims = HashMap::new();
+        let dynamic_dims: HashMap<String, usize> = HashMap::new();
         let mut ctx =
             PlanContext::for_test(&node, &graph, &[], &output_ids, &dynamic_dims, &mut shaders);
 
@@ -106,7 +105,7 @@ mod tests {
 
         let kernel = ConstantKernel;
         let shapes = kernel
-            .infer_output_shapes(&node, &[], &HashMap::new())
+            .infer_output_shapes(&node, &[])
             .expect("shape inference should succeed");
 
         // Should return one output shape (Unknown, since actual shape is in tensor registry)

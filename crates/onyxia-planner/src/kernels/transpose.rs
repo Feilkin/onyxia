@@ -25,7 +25,6 @@ impl OpKernel for TransposeKernel {
         &self,
         node: &onyxia_onnx::Node,
         input_shapes: &[TensorShape],
-        dynamic_dimensions: &HashMap<String, usize>,
     ) -> Result<Vec<TensorShape>> {
         if input_shapes.is_empty() {
             return Err(crate::error::CodegenError::InvalidShape(
@@ -33,22 +32,16 @@ impl OpKernel for TransposeKernel {
             ));
         }
 
-        let input_shape = &input_shapes[0];
-
-        // Resolve input shape to concrete dimensions
-        let input_dims = match input_shape {
-            TensorShape::Static(dims) => dims.clone(),
-            TensorShape::Dynamic(dims) => dims
-                .iter()
-                .map(|d| match d {
-                    onyxia_onnx::Dimension::Static(s) => *s,
-                    onyxia_onnx::Dimension::Named(name) => {
-                        dynamic_dimensions.get(name).copied().unwrap_or(0)
-                    }
-                })
-                .collect(),
+        // Extract static dimensions (Phase 1 already resolved Dynamic dims)
+        let input_dims = match &input_shapes[0] {
+            TensorShape::Static(dims) => dims,
             TensorShape::Unknown | TensorShape::Absent => {
                 return Ok(vec![TensorShape::Unknown]);
+            }
+            TensorShape::Dynamic(_) => {
+                return Err(crate::error::CodegenError::InvalidShape(
+                    "Unexpected Dynamic shape after dimension resolution".to_string(),
+                ));
             }
         };
 
@@ -76,10 +69,10 @@ impl OpKernel for TransposeKernel {
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
         // Get input and output shapes
         let input_info = ctx.input_info(0)?;
-        let input_shape = ctx.resolve_shape(&input_info.shape)?;
+        let input_shape = ctx.static_shape(&input_info.shape)?;
 
         let output_info = ctx.output_info(0)?;
-        let output_shape = ctx.resolve_shape(&output_info.shape)?;
+        let output_shape = ctx.static_shape(&output_info.shape)?;
 
         let rank = input_shape.len();
         let num_elements: usize = output_shape.iter().product();
@@ -194,10 +187,9 @@ mod tests {
         );
 
         let input_shapes = vec![TensorShape::Static(vec![4, 8])];
-        let dynamic_dimensions = HashMap::new();
 
         let output_shapes = kernel
-            .infer_output_shapes(&node, &input_shapes, &dynamic_dimensions)
+            .infer_output_shapes(&node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -214,10 +206,9 @@ mod tests {
         );
 
         let input_shapes = vec![TensorShape::Static(vec![2, 3, 4])];
-        let dynamic_dimensions = HashMap::new();
 
         let output_shapes = kernel
-            .infer_output_shapes(&node, &input_shapes, &dynamic_dimensions)
+            .infer_output_shapes(&node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -230,10 +221,9 @@ mod tests {
         let node = Node::new("Transpose"); // No perm attribute
 
         let input_shapes = vec![TensorShape::Static(vec![2, 3, 4])];
-        let dynamic_dimensions = HashMap::new();
 
         let output_shapes = kernel
-            .infer_output_shapes(&node, &input_shapes, &dynamic_dimensions)
+            .infer_output_shapes(&node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -281,7 +271,7 @@ mod tests {
 
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -385,7 +375,7 @@ mod tests {
 
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(

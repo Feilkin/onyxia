@@ -96,7 +96,9 @@ fn cmd_inspect(model_path: PathBuf) -> Result<()> {
     // Infer shapes for analysis using planner's kernel-based inference
     let registry = onyxia_planner::KernelRegistry::with_defaults();
     let dynamic_dims = std::collections::HashMap::new(); // Empty for inspection
-    onyxia_planner::infer_shapes(&mut model, &registry, &dynamic_dims)
+    onyxia_planner::resolve_dynamic_dimensions(&mut model, &dynamic_dims)
+        .with_context(|| "Failed to resolve dynamic dimensions")?;
+    onyxia_planner::infer_shapes(&mut model, &registry)
         .with_context(|| "Failed to infer shapes")?;
 
     println!("Model: {}", model.metadata.name);

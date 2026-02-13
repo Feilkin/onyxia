@@ -23,7 +23,6 @@ impl OpKernel for GeluKernel {
         &self,
         _node: &onyxia_onnx::Node,
         input_shapes: &[TensorShape],
-        _dynamic_dimensions: &HashMap<String, usize>,
     ) -> Result<Vec<TensorShape>> {
         // Gelu is a unary operation: output shape equals input shape
         if input_shapes.is_empty() {
@@ -37,7 +36,7 @@ impl OpKernel for GeluKernel {
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
         // Get output shape and calculate total elements
         let output_info = ctx.output_info(0)?;
-        let output_shape = ctx.resolve_shape(&output_info.shape)?;
+        let output_shape = ctx.static_shape(&output_info.shape)?;
         let num_elements: usize = output_shape.iter().product();
 
         // Configure workgroup size
@@ -124,7 +123,7 @@ mod tests {
 
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -208,7 +207,7 @@ mod tests {
 
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(

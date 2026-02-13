@@ -3,8 +3,7 @@
 use crate::error::Result;
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::Step;
-use onyxia_onnx::{Dimension, TensorShape};
-use std::collections::HashMap;
+use onyxia_onnx::TensorShape;
 
 /// Kernel for concatenating multiple tensors along an axis (ONNX Concat operator).
 ///
@@ -21,7 +20,6 @@ impl OpKernel for ConcatKernel {
         &self,
         node: &onyxia_onnx::Node,
         input_shapes: &[TensorShape],
-        dynamic_dimensions: &HashMap<String, usize>,
     ) -> Result<Vec<TensorShape>> {
         if input_shapes.is_empty() {
             return Err(crate::error::CodegenError::InvalidShape(
@@ -40,43 +38,26 @@ impl OpKernel for ConcatKernel {
             )));
         }
 
-        // All inputs must have static or dynamic shapes (not Unknown)
+        // All inputs must have Static shapes (Phase 1 resolved Dynamic dims)
         let mut first_dims = Vec::new();
         let mut concat_dim_sum: usize = 0;
 
         for (i, shape) in input_shapes.iter().enumerate() {
             let dims = match shape {
-                TensorShape::Static(dims) => dims.clone(),
-                TensorShape::Dynamic(dims) => {
-                    // Resolve dynamic dimensions
-                    let mut resolved = Vec::new();
-                    for dim in dims {
-                        let resolved_dim = match dim {
-                            Dimension::Static(s) => *s,
-                            Dimension::Named(name) => {
-                                dynamic_dimensions.get(name).copied().ok_or_else(|| {
-                                    crate::error::CodegenError::InvalidShape(format!(
-                                        "Cannot resolve dynamic dimension '{}'",
-                                        name
-                                    ))
-                                })?
-                            }
-                        };
-                        resolved.push(resolved_dim);
-                    }
-                    resolved
-                }
+                TensorShape::Static(dims) => dims,
                 TensorShape::Unknown => {
-                    return Err(crate::error::CodegenError::InvalidShape(format!(
-                        "Concat input {} has unknown shape",
-                        i
-                    )));
+                    return Ok(vec![TensorShape::Unknown]);
                 }
                 TensorShape::Absent => {
                     return Err(crate::error::CodegenError::InvalidShape(format!(
                         "Concat input {} is absent (optional input not provided)",
                         i
                     )));
+                }
+                TensorShape::Dynamic(_) => {
+                    return Err(crate::error::CodegenError::InvalidShape(
+                        "Unexpected Dynamic shape after dimension resolution".to_string(),
+                    ));
                 }
             };
 
@@ -146,7 +127,7 @@ impl OpKernel for ConcatKernel {
 
         for i in 0..num_inputs {
             let input_info = ctx.input_info(i)?;
-            let input_shape = ctx.resolve_shape(&input_info.shape)?;
+            let input_shape = ctx.static_shape(&input_info.shape)?;
             let element_count: usize = input_shape.iter().product();
             let bytes = (element_count * input_info.dtype.size()) as u64;
 
@@ -211,7 +192,7 @@ mod tests {
 
         let input_ids = vec![0, 1];
         let output_ids = vec![2];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = crate::kernel::PlanContext::for_test(
@@ -302,7 +283,7 @@ mod tests {
 
         let input_ids = vec![0, 1, 2];
         let output_ids = vec![3];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = crate::kernel::PlanContext::for_test(
@@ -352,10 +333,8 @@ mod tests {
 
         let input_shapes = vec![TensorShape::Static(vec![3]), TensorShape::Static(vec![4])];
 
-        let dynamic_dimensions = HashMap::new();
-
         let output_shapes = ConcatKernel
-            .infer_output_shapes(&node, &input_shapes, &dynamic_dimensions)
+            .infer_output_shapes(&node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -374,10 +353,8 @@ mod tests {
             TensorShape::Static(vec![3, 5]),
         ];
 
-        let dynamic_dimensions = HashMap::new();
-
         let output_shapes = ConcatKernel
-            .infer_output_shapes(&node, &input_shapes, &dynamic_dimensions)
+            .infer_output_shapes(&node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -396,9 +373,7 @@ mod tests {
             TensorShape::Static(vec![3, 7]),
         ];
 
-        let dynamic_dimensions = HashMap::new();
-
-        let result = ConcatKernel.infer_output_shapes(&node, &input_shapes, &dynamic_dimensions);
+        let result = ConcatKernel.infer_output_shapes(&node, &input_shapes);
 
         assert!(result.is_err());
     }

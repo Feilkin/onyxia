@@ -22,7 +22,6 @@ impl OpKernel for SubKernel {
         &self,
         _node: &onyxia_onnx::Node,
         input_shapes: &[TensorShape],
-        _dynamic_dimensions: &HashMap<String, usize>,
     ) -> Result<Vec<TensorShape>> {
         // For elementwise subtraction, output shape is the broadcast result
         // For now, assume same shapes (broadcasting handled by shader)
@@ -37,7 +36,7 @@ impl OpKernel for SubKernel {
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
         // Get output shape and calculate total elements
         let output_info = ctx.output_info(0)?;
-        let output_shape = ctx.resolve_shape(&output_info.shape)?;
+        let output_shape = ctx.static_shape(&output_info.shape)?;
         let num_elements: usize = output_shape.iter().product();
 
         // Configure workgroup size
@@ -60,11 +59,11 @@ impl OpKernel for SubKernel {
 
         // Get input shapes for immediate data
         let input_a_info = ctx.input_info(0)?;
-        let input_a_shape = ctx.resolve_shape(&input_a_info.shape)?;
+        let input_a_shape = ctx.static_shape(&input_a_info.shape)?;
         let a_size: u32 = input_a_shape.iter().product::<usize>() as u32;
 
         let input_b_info = ctx.input_info(1)?;
-        let input_b_shape = ctx.resolve_shape(&input_b_info.shape)?;
+        let input_b_shape = ctx.static_shape(&input_b_info.shape)?;
         let b_size: u32 = input_b_shape.iter().product::<usize>() as u32;
 
         // Encode immediate data (must match ImmediateConstants struct in shader)
@@ -147,7 +146,7 @@ mod tests {
 
         let input_ids = vec![0, 1];
         let output_ids = vec![2];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -233,7 +232,7 @@ mod tests {
 
         let input_ids = vec![0, 1];
         let output_ids = vec![2];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -294,7 +293,7 @@ mod tests {
 
         let input_ids = vec![0, 1];
         let output_ids = vec![2];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -311,79 +310,6 @@ mod tests {
         match &steps[0] {
             Step::Dispatch { workgroups, .. } => {
                 // 1024 elements / 256 = 4 workgroups
-                assert_eq!(*workgroups, [4, 1, 1]);
-            }
-            _ => panic!("Expected Dispatch step"),
-        }
-    }
-
-    #[test]
-    fn test_sub_kernel_dynamic_shape() {
-        let mut graph = Graph::new();
-
-        use onyxia_onnx::Dimension;
-
-        // Create tensors with dynamic shape
-        graph.add_tensor(TensorInfo {
-            name: "a".to_string(),
-            dtype: DataType::F32,
-            shape: TensorShape::Dynamic(vec![
-                Dimension::Named("batch".to_string()),
-                Dimension::Static(128),
-            ]),
-            kind: TensorKind::Input,
-            initializer: None,
-        });
-
-        graph.add_tensor(TensorInfo {
-            name: "b".to_string(),
-            dtype: DataType::F32,
-            shape: TensorShape::Dynamic(vec![
-                Dimension::Named("batch".to_string()),
-                Dimension::Static(128),
-            ]),
-            kind: TensorKind::Input,
-            initializer: None,
-        });
-
-        graph.add_tensor(TensorInfo {
-            name: "c".to_string(),
-            dtype: DataType::F32,
-            shape: TensorShape::Dynamic(vec![
-                Dimension::Named("batch".to_string()),
-                Dimension::Static(128),
-            ]),
-            kind: TensorKind::Output,
-            initializer: None,
-        });
-
-        let mut node = Node::new("Sub");
-        node.inputs = vec!["a".to_string(), "b".to_string()];
-        node.outputs = vec!["c".to_string()];
-
-        let input_ids = vec![0, 1];
-        let output_ids = vec![2];
-
-        // Provide dynamic dimension values
-        let mut dynamic_dimensions = HashMap::new();
-        dynamic_dimensions.insert("batch".to_string(), 8);
-
-        let mut shaders = Vec::new();
-
-        let mut ctx = PlanContext::for_test(
-            &node,
-            &graph,
-            &input_ids,
-            &output_ids,
-            &dynamic_dimensions,
-            &mut shaders,
-        );
-
-        let steps = SubKernel.plan(&mut ctx).expect("Planning should succeed");
-
-        match &steps[0] {
-            Step::Dispatch { workgroups, .. } => {
-                // 8 * 128 = 1024 elements → 4 workgroups
                 assert_eq!(*workgroups, [4, 1, 1]);
             }
             _ => panic!("Expected Dispatch step"),
@@ -426,7 +352,7 @@ mod tests {
 
         let input_ids = vec![0, 1];
         let output_ids = vec![2];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -458,7 +384,7 @@ mod tests {
 
         let input_ids = vec![0, 1];
         let output_ids = vec![2];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         // Plan twice with same context

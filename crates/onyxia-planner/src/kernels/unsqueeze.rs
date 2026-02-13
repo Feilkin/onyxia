@@ -4,7 +4,6 @@ use crate::error::Result;
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::Step;
 use onyxia_onnx::{Node, TensorShape};
-use std::collections::HashMap;
 
 /// Kernel for Unsqueeze operator (buffer copy).
 ///
@@ -24,7 +23,6 @@ impl OpKernel for UnsqueezeKernel {
         &self,
         _node: &Node,
         input_shapes: &[TensorShape],
-        _dynamic_dimensions: &HashMap<String, usize>,
     ) -> Result<Vec<TensorShape>> {
         // Unsqueeze has 1 or 2 inputs depending on opset:
         // - Opset < 13: 1 input (data) + axes attribute
@@ -45,7 +43,7 @@ impl OpKernel for UnsqueezeKernel {
         // Input 1 (axes) is only used at plan time, not runtime
 
         let input_info = ctx.input_info(0)?;
-        let shape = ctx.resolve_shape(&input_info.shape)?;
+        let shape = ctx.static_shape(&input_info.shape)?;
         let element_count: usize = shape.iter().product();
         let bytes = element_count * input_info.dtype.size();
 
@@ -111,7 +109,7 @@ mod tests {
 
         let input_ids = vec![0, 1];
         let output_ids = vec![2];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -182,7 +180,7 @@ mod tests {
             let node = Node::new("Unsqueeze");
             let input_ids = vec![0, 1];
             let output_ids = vec![2];
-            let dynamic_dimensions = HashMap::new();
+            let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
             let mut shaders = Vec::new();
 
             let mut ctx = PlanContext::for_test(
@@ -233,7 +231,7 @@ mod tests {
             let node = Node::new("Unsqueeze");
             let input_ids = vec![0, 1];
             let output_ids = vec![2];
-            let dynamic_dimensions = HashMap::new();
+            let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
             let mut shaders = Vec::new();
 
             let mut ctx = PlanContext::for_test(
@@ -265,10 +263,9 @@ mod tests {
             TensorShape::Static(vec![4]),
             TensorShape::Static(vec![1]), // axes input
         ];
-        let dynamic_dimensions = HashMap::new();
 
         let output_shapes = kernel
-            .infer_output_shapes(&node, &input_shapes, &dynamic_dimensions)
+            .infer_output_shapes(&node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -301,7 +298,7 @@ mod tests {
 
         let input_ids = vec![0];
         let output_ids = vec![1];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(

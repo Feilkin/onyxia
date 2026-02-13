@@ -31,24 +31,37 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
 ### What Works
 
 - ✅ **ONNX parsing** with stable Graph API
-- ✅ **Kernel-based shape inference** — each operation defines its own shape logic via `infer_output_shapes()`
+- ✅ **Kernel-based shape inference** — three-phase: dynamic dim substitution → iterative forward inference → static-only planning
 - ✅ **DOT graph visualization** (full, layers, summary views)
 - ✅ **Extensible kernel system** — users add operations via `OpKernel` trait
 - ✅ **Shader compilation** — WGSL → `naga::Module` via naga_oil at plan time
 - ✅ **Dynamic dimension resolution** at plan time
 - ✅ **GPU execution** with buffer management and compute dispatch
 - ✅ **End-to-end pipeline** verified
-- ✅ **53 tests passing**, 8 GPU tests skipped in CI
+- ✅ **108 tests passing**, 22 GPU tests skipped in CI
 
 ### Built-in Kernels
 
 | Kernel | ONNX Op | Category |
 |--------|---------|----------|
 | `AddKernel` | Add | Elementwise |
+| `SubKernel` | Sub | Elementwise |
 | `MulKernel` | Mul | Elementwise |
 | `GeluKernel` | Gelu | Activation |
-| `RmsNormKernel` | RmsNorm | Normalization |
+| `RmsNormKernel` | SimplifiedLayerNormalization | Normalization |
 | `MatMulF32Kernel` | MatMul | Matrix multiplication |
+| `MatMulNBitsKernel` | MatMulNBits | Quantized matmul |
+| `CastKernel` | Cast | Type conversion |
+| `ConstantKernel` | Constant | Metadata |
+| `ShapeKernel` | Shape | Metadata |
+| `ReshapeKernel` | Reshape | Shape manipulation |
+| `UnsqueezeKernel` | Unsqueeze | Shape manipulation |
+| `TransposeKernel` | Transpose | Shape manipulation |
+| `ConcatKernel` | Concat | Shape manipulation |
+| `GatherKernel` | Gather | Indexing |
+| `ReduceSumKernel` | ReduceSum | Reduction |
+| `RotaryEmbeddingKernel` | RotaryEmbedding | Attention |
+| `GroupQueryAttentionKernel` | GroupQueryAttention | Attention |
 
 ### What's Next
 
@@ -74,7 +87,6 @@ impl OpKernel for MyCustomKernel {
         &self,
         node: &Node,
         input_shapes: &[TensorShape],
-        dynamic_dimensions: &HashMap<String, usize>,
     ) -> onyxia_planner::Result<Vec<TensorShape>> {
         // Define shape inference logic for this operation
         Ok(vec![input_shapes[0].clone()])

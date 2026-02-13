@@ -40,7 +40,7 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in 3 main stag
 ### onyxia-planner
 
 **Responsibilities:**
-- **Kernel-based shape inference** — each `OpKernel` implements `infer_output_shapes()` for its operation
+- **Kernel-based shape inference** — each `OpKernel` implements `infer_output_shapes()` for its operation, called iteratively until convergence
 - Schedule operations (topological sort with `petgraph`)
 - Resolve all dynamic dimensions to static shapes at plan time
 - Compile WGSL shaders to `naga::Module` using `naga_oil` (the only crate that touches WGSL)
@@ -53,15 +53,19 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in 3 main stag
 - `PlannedOp`: One ONNX node → name, op_type, inputs, outputs, steps, scratch buffers
 - `Step`: Dispatch (shader + bindings + workgroups), CopyBuffer, WriteBuffer
 - `CompiledShader`: label + `naga::Module` + entry point name
-- `OpKernel` trait: `plan(&self, ctx: &mut PlanContext) -> Result<Vec<Step>>` and `infer_output_shapes(&self, node, input_shapes, dynamic_dimensions) -> Result<Vec<TensorShape>>`
+- `OpKernel` trait: `plan(&self, ctx: &mut PlanContext) -> Result<Vec<Step>>` and `infer_output_shapes(&self, node, input_shapes) -> Result<Vec<TensorShape>>`
 - `KernelRegistry`: Maps op_type strings to `Box<dyn OpKernel>`
 - `PlanContext`: Gives kernels access to node info, tensor shapes, shader compilation, scratch allocation
 
-**Built-in Kernels:**
-- `AddKernel`, `MulKernel` (elementwise)
-- `GeluKernel` (activation)
-- `RmsNormKernel` (normalization)
-- `MatMulF32Kernel` (matrix multiplication)
+**Built-in Kernels (19):**
+- Elementwise: `AddKernel`, `SubKernel`, `MulKernel`
+- Activation: `GeluKernel`
+- Normalization: `RmsNormKernel`
+- Matrix math: `MatMulF32Kernel`, `MatMulNBitsKernel`
+- Metadata: `ConstantKernel`, `ShapeKernel`, `CastKernel`
+- Shape manipulation: `ReshapeKernel`, `UnsqueezeKernel`, `TransposeKernel`, `ConcatKernel`
+- Indexing/reduction: `GatherKernel`, `ReduceSumKernel`
+- Attention: `RotaryEmbeddingKernel`, `GroupQueryAttentionKernel`
 
 ### onyxia-runtime
 
@@ -99,7 +103,6 @@ pub trait OpKernel: Send + Sync {
         &self,
         node: &Node,
         input_shapes: &[TensorShape],
-        dynamic_dimensions: &HashMap<String, usize>,
     ) -> Result<Vec<TensorShape>>;
     
     // Planning: generate GPU execution steps
@@ -154,6 +157,7 @@ Each crate has a **single, well-defined responsibility**:
 | WGSL preprocessing (naga_oil) | onyxia-planner |
 | Shader def resolution | onyxia-planner |
 | Dynamic dimension resolution | onyxia-planner |
+| Three-phase shape inference | onyxia-planner |
 | Pipeline/buffer materialization | onyxia-runtime |
 | GPU dispatch & data transfer | onyxia-runtime |
 
@@ -196,11 +200,18 @@ let next_token = sample_top_k(outputs["logits"], k=50);
 var<workgroup> tile: array<f32, #{TILE_SIZE} * #{BLOCK_SIZE}>;
 ```
 
-### 6. Dynamic Shape Resolution at Plan Time
+### 6. Three-Phase Shape Resolution at Plan Time
 
-**ONNX models use symbolic dimensions** (e.g., `[batch, sequence, 768]`).
+**ONNX models use symbolic dimensions** (e.g., `[batch, sequence, 768]`). Onyxia resolves them through a three-phase process at plan time:
 
-**Onyxia resolves them at plan time:**
+**Phase 1 — Dynamic Dimension Substitution:**
+Replace all `Dynamic(Named(...))` dimensions with concrete `Static` values from the user-provided `dynamic_dimensions` map. After this phase, no `Named` dimensions remain.
+
+**Phase 2 — Iterative Forward Shape Inference:**
+Run multiple forward passes over the graph, calling each kernel's `infer_output_shapes()` to resolve `Unknown` shapes from known inputs. Iterates until convergence (fixed-point). This handles cascading dependencies where one node's output shape depends on another node's not-yet-inferred output.
+
+**Phase 3 — Planning (Static Only):**
+All shapes must be `Static` before planning. Kernels call `ctx.static_shape()` which only accepts `TensorShape::Static` — any remaining `Dynamic` or `Unknown` shapes are errors.
 
 ```rust
 let dynamic_dimensions = HashMap::from([
@@ -208,7 +219,7 @@ let dynamic_dimensions = HashMap::from([
     ("sequence".to_string(), 8192),
 ]);
 
-// All Dynamic shapes → Static. Shaders compiled with concrete sizes.
+// Phase 1: Named dims → Static, Phase 2: iterative inference, Phase 3: plan
 let plan = compile(&graph, &registry, &dynamic_dimensions)?;
 
 // Runtime receives only static shapes — no dimension resolution needed.
@@ -290,15 +301,14 @@ outputs ←───────────────────────
 ### Phase 2: Planner and Kernel System ✅ COMPLETED
 - [x] ExecutionPlan types: Step, PlannedOp, BufferRef, CompiledShader, TensorRegistry
 - [x] Topological scheduling with petgraph
-- [x] Kernel-based shape inference — each OpKernel implements `infer_output_shapes()`
+- [x] Three-phase shape inference: dynamic dim substitution → iterative forward inference → static-only planning
 - [x] `OpKernel` trait and `KernelRegistry` for extensible operation mapping
-- [x] `PlanContext` with shader compilation, shape resolution, scratch allocation
+- [x] `PlanContext` with shader compilation, `static_shape()`, scratch allocation
 - [x] `compile()` entry point with integrated shape inference
-- [x] Dynamic dimension resolution at plan time
+- [x] Dynamic dimension resolution at plan time (Phase 1 of shape inference)
 - [x] Shader deduplication
-- [x] WGSL shaders: add, mul, gelu, rmsnorm, matmul_f32
-- [x] Built-in kernels: AddKernel, MulKernel, GeluKernel, RmsNormKernel, MatMulF32Kernel
-- [x] Error handling and unit tests
+- [x] 19 built-in kernels covering all Gemma 3 270m ops
+- [x] Error handling and unit tests (108 tests)
 
 ### Phase 3: Runtime Execution ✅ COMPLETED
 - [x] wgpu device setup with deferred creation
@@ -344,7 +354,7 @@ outputs ←───────────────────────
 ## Testing Strategy
 
 ### Unit Tests
-- 53 passing across all crates
+- 108 passing across all crates
 - Programmatic graph construction, no model files needed
 
 ### Integration Tests

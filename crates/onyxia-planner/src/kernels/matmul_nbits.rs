@@ -8,7 +8,7 @@ use crate::error::Result;
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
-use onyxia_onnx::{Dimension, TensorShape};
+use onyxia_onnx::TensorShape;
 use std::collections::HashMap;
 
 /// Kernel for N-bit quantized matrix multiplication (ONNX MatMulNBits operator).
@@ -33,7 +33,6 @@ impl OpKernel for MatMulNBitsKernel {
         &self,
         node: &onyxia_onnx::Node,
         input_shapes: &[TensorShape],
-        _dynamic_dimensions: &HashMap<String, usize>,
     ) -> Result<Vec<TensorShape>> {
         // MatMulNBits: [M, K] × quantized[N, ...] -> [M, N]
         // N and K are provided as attributes
@@ -43,19 +42,15 @@ impl OpKernel for MatMulNBitsKernel {
             ));
         }
 
-        let a_shape = &input_shapes[0];
-
-        // Extract M from activation shape
-        let a_dims = match a_shape {
-            TensorShape::Static(dims) => dims.clone(),
-            TensorShape::Dynamic(dims) => dims
-                .iter()
-                .map(|d| match d {
-                    Dimension::Static(s) => *s,
-                    Dimension::Named(_) => 0, // Will be resolved later
-                })
-                .collect(),
+        // Extract static dimensions (Phase 1 already resolved Dynamic dims)
+        let a_dims = match &input_shapes[0] {
+            TensorShape::Static(dims) => dims,
             TensorShape::Unknown | TensorShape::Absent => return Ok(vec![TensorShape::Unknown]),
+            TensorShape::Dynamic(_) => {
+                return Err(crate::error::CodegenError::InvalidShape(
+                    "Unexpected Dynamic shape after dimension resolution".to_string(),
+                ));
+            }
         };
 
         if a_dims.len() < 2 {
@@ -78,7 +73,7 @@ impl OpKernel for MatMulNBitsKernel {
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
         // Get input shapes
         let a_info = ctx.input_info(0)?;
-        let a_shape = ctx.resolve_shape(&a_info.shape)?;
+        let a_shape = ctx.static_shape(&a_info.shape)?;
 
         // Validate shape
         if a_shape.len() < 2 {
@@ -314,7 +309,7 @@ mod tests {
 
         let input_ids = vec![0, 1, 2, 3];
         let output_ids = vec![4];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -399,7 +394,7 @@ mod tests {
 
         let input_ids = vec![0, 1, 2];
         let output_ids = vec![4];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -453,7 +448,7 @@ mod tests {
 
         let kernel = MatMulNBitsKernel;
         let output_shapes = kernel
-            .infer_output_shapes(&node, &input_shapes, &HashMap::new())
+            .infer_output_shapes(&node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);

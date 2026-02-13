@@ -22,7 +22,6 @@ impl OpKernel for MulKernel {
         &self,
         _node: &onyxia_onnx::Node,
         input_shapes: &[TensorShape],
-        _dynamic_dimensions: &HashMap<String, usize>,
     ) -> Result<Vec<TensorShape>> {
         // For elementwise multiplication, output shape is the broadcast result
         if input_shapes.is_empty() {
@@ -36,7 +35,7 @@ impl OpKernel for MulKernel {
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
         // Get output shape and calculate total elements
         let output_info = ctx.output_info(0)?;
-        let output_shape = ctx.resolve_shape(&output_info.shape)?;
+        let output_shape = ctx.static_shape(&output_info.shape)?;
         let num_elements: usize = output_shape.iter().product();
 
         // Configure workgroup size
@@ -59,11 +58,11 @@ impl OpKernel for MulKernel {
 
         // Get input shapes for immediate data
         let input_a_info = ctx.input_info(0)?;
-        let input_a_shape = ctx.resolve_shape(&input_a_info.shape)?;
+        let input_a_shape = ctx.static_shape(&input_a_info.shape)?;
         let a_size: u32 = input_a_shape.iter().product::<usize>() as u32;
 
         let input_b_info = ctx.input_info(1)?;
-        let input_b_shape = ctx.resolve_shape(&input_b_info.shape)?;
+        let input_b_shape = ctx.static_shape(&input_b_info.shape)?;
         let b_size: u32 = input_b_shape.iter().product::<usize>() as u32;
 
         // Encode immediate data (must match ImmediateConstants struct in shader)
@@ -146,7 +145,7 @@ mod tests {
 
         let input_ids = vec![0, 1];
         let output_ids = vec![2];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
@@ -235,7 +234,7 @@ mod tests {
 
         let input_ids = vec![0, 1];
         let output_ids = vec![2];
-        let dynamic_dimensions = HashMap::new();
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
         let mut shaders = Vec::new();
 
         let mut ctx = PlanContext::for_test(
