@@ -42,6 +42,29 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 }
 #endif
 
+// I64 → I32 conversion
+// WGSL doesn't support i64 natively, so we read as pairs of u32
+#ifdef CAST_I64_TO_I32
+@group(0) @binding(0) var<storage, read> input_u32: array<u32>;  // I64 stored as u32 pairs
+@group(0) @binding(1) var<storage, read_write> output: array<i32>;
+
+@compute @workgroup_size(WG_SIZE, 1, 1)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let idx = global_id.x;
+    
+    if (idx >= params.num_elements) {
+        return;
+    }
+    
+    // Read low 32 bits of i64 (stored at idx*2)
+    // Assuming values fit in i32 range
+    let low_bits = input_u32[idx * 2u];
+    
+    // Convert to i32 (truncates to lower 32 bits)
+    output[idx] = i32(low_bits);
+}
+#endif
+
 // F32 → F16 conversion
 #ifdef CAST_F32_TO_F16
 // Note: WGSL f16 requires enable directive and native support

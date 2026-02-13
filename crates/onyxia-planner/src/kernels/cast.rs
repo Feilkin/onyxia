@@ -64,7 +64,9 @@ impl OpKernel for CastKernel {
             if expected_dtype != target_dtype {
                 tracing::warn!(
                     "Cast node '{}' has 'to' attribute ({:?}) that doesn't match output tensor dtype ({:?}). Using output dtype.",
-                    ctx.node.name, expected_dtype, target_dtype
+                    ctx.node.name,
+                    expected_dtype,
+                    target_dtype
                 );
             }
         }
@@ -89,6 +91,7 @@ impl OpKernel for CastKernel {
         // Determine which shader variant to use
         let (shader_label, shader_def) = match (source_dtype, target_dtype) {
             (DataType::I64, DataType::F32) => ("cast_i64_to_f32", "CAST_I64_TO_F32"),
+            (DataType::I64, DataType::I32) => ("cast_i64_to_i32", "CAST_I64_TO_I32"),
             (DataType::I32, DataType::F32) => ("cast_i32_to_f32", "CAST_I32_TO_F32"),
             (DataType::F32, DataType::I32) => ("cast_f32_to_i32", "CAST_F32_TO_I32"),
             (DataType::F32, DataType::F16) => ("cast_f32_to_f16", "CAST_F32_TO_F16"),
