@@ -20,6 +20,7 @@ impl OpKernel for MulKernel {
 
     fn infer_output_shapes(
         &self,
+        _graph: &onyxia_onnx::Graph,
         _node: &onyxia_onnx::Node,
         input_shapes: &[TensorShape],
     ) -> Result<Vec<TensorShape>> {

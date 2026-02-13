@@ -19,8 +19,7 @@ impl OpKernel for ConstantKernel {
     }
 
     fn infer_output_shapes(
-        &self,
-        node: &onyxia_onnx::Node,
+        &self,        _graph: &onyxia_onnx::Graph,        node: &onyxia_onnx::Node,
         _input_shapes: &[TensorShape],
     ) -> Result<Vec<TensorShape>> {
         // Constant nodes have no inputs. The output shape is already set
@@ -104,8 +103,9 @@ mod tests {
         };
 
         let kernel = ConstantKernel;
+        let graph = onyxia_onnx::Graph::new();
         let shapes = kernel
-            .infer_output_shapes(&node, &[])
+            .infer_output_shapes(&graph, &node, &[])
             .expect("shape inference should succeed");
 
         // Should return one output shape (Unknown, since actual shape is in tensor registry)

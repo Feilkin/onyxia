@@ -30,6 +30,7 @@ impl OpKernel for RotaryEmbeddingKernel {
 
     fn infer_output_shapes(
         &self,
+        _graph: &onyxia_onnx::Graph,
         _node: &onyxia_onnx::Node,
         input_shapes: &[TensorShape],
     ) -> Result<Vec<TensorShape>> {
@@ -215,8 +216,9 @@ mod tests {
             TensorShape::Static(vec![8192, 128]),    // sin_cache
         ];
 
+        let graph = onyxia_onnx::Graph::new();
         let output_shapes = kernel
-            .infer_output_shapes(&node, &input_shapes)
+            .infer_output_shapes(&graph, &node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);

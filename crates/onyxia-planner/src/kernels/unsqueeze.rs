@@ -21,7 +21,8 @@ impl OpKernel for UnsqueezeKernel {
 
     fn infer_output_shapes(
         &self,
-        _node: &Node,
+        graph: &onyxia_onnx::Graph,
+        node: &Node,
         input_shapes: &[TensorShape],
     ) -> Result<Vec<TensorShape>> {
         // Unsqueeze has 1 or 2 inputs depending on opset:
@@ -33,9 +34,86 @@ impl OpKernel for UnsqueezeKernel {
             ));
         }
 
-        // For now, we rely on the global shape inference pass to determine output shape
-        // The actual shape computation with axes is handled elsewhere
-        Ok(vec![TensorShape::Unknown])
+        // Get input data shape
+        let data_shape = match &input_shapes[0] {
+            TensorShape::Static(dims) => dims,
+            TensorShape::Unknown => return Ok(vec![TensorShape::Unknown]),
+            TensorShape::Absent => {
+                return Err(crate::error::CodegenError::InvalidShape(
+                    "Unsqueeze data input is absent".to_string(),
+                ));
+            }
+            TensorShape::Dynamic(_) => {
+                return Err(crate::error::CodegenError::InvalidShape(
+                    "Unexpected Dynamic shape after dimension resolution".to_string(),
+                ));
+            }
+        };
+
+        // Get axes - try attribute first (opset < 13), then second input (opset >= 13)
+        let axes: Vec<i64> = if node.has_attr("axes") {
+            // Opset < 13: axes from attribute
+            node.attr("axes").unwrap_or_else(|_| vec![])
+        } else if input_shapes.len() >= 2 && node.inputs.len() >= 2 {
+            // Opset >= 13: axes from second input (must be initializer)
+            let axes_tensor_name = &node.inputs[1];
+            if let Some(&axes_tensor_id) = graph.tensors.get(axes_tensor_name) {
+                if let Ok(axes_info) = graph.tensor(axes_tensor_id) {
+                    if let Some(initializer) = &axes_info.initializer {
+                        // Parse i64 axes from raw bytes
+                        parse_i64_array(initializer)
+                    } else {
+                        // Axes tensor exists but is not a constant - can't infer shape yet
+                        return Ok(vec![TensorShape::Unknown]);
+                    }
+                } else {
+                    // Axes tensor not in graph - can't infer shape yet
+                    return Ok(vec![TensorShape::Unknown]);
+                }
+            } else {
+                // Axes tensor not in graph - can't infer shape yet
+                return Ok(vec![TensorShape::Unknown]);
+            }
+        } else {
+            // No axes provided - can't infer shape yet
+            return Ok(vec![TensorShape::Unknown]);
+        };
+
+        // Compute output shape by inserting 1s at specified axes
+        let output_rank = data_shape.len() + axes.len();
+        let mut output_shape = Vec::new();
+        
+        // Convert negative axes to positive and sort
+        let mut normalized_axes: Vec<usize> = axes
+            .iter()
+            .map(|&axis| {
+                if axis < 0 {
+                    (output_rank as i64 + axis) as usize
+                } else {
+                    axis as usize
+                }
+            })
+            .collect();
+        normalized_axes.sort_unstable();
+
+        let mut data_idx = 0;
+        let mut axes_idx = 0;
+        
+        for out_idx in 0..output_rank {
+            if axes_idx < normalized_axes.len() && out_idx == normalized_axes[axes_idx] {
+                // Insert a 1 at this position
+                output_shape.push(1);
+                axes_idx += 1;
+            } else {
+                // Copy from input shape
+                if data_idx < data_shape.len() {
+                    output_shape.push(data_shape[data_idx]);
+                    data_idx += 1;
+                }
+            }
+        }
+
+        Ok(vec![TensorShape::Static(output_shape)])
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
@@ -55,6 +133,14 @@ impl OpKernel for UnsqueezeKernel {
             size: bytes as u64,
         }])
     }
+}
+
+/// Helper function to parse i64 array from raw bytes (little-endian).
+fn parse_i64_array(bytes: &[u8]) -> Vec<i64> {
+    bytes
+        .chunks_exact(8)
+        .map(|chunk| i64::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7]]))
+        .collect()
 }
 
 #[cfg(test)]
@@ -264,8 +350,9 @@ mod tests {
             TensorShape::Static(vec![1]), // axes input
         ];
 
+        let graph = onyxia_onnx::Graph::new();
         let output_shapes = kernel
-            .infer_output_shapes(&node, &input_shapes)
+            .infer_output_shapes(&graph, &node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);

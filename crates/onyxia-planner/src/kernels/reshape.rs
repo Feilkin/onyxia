@@ -21,31 +21,113 @@ impl OpKernel for ReshapeKernel {
 
     fn infer_output_shapes(
         &self,
-        _node: &Node,
+        graph: &onyxia_onnx::Graph,
+        node: &Node,
         input_shapes: &[TensorShape],
     ) -> Result<Vec<TensorShape>> {
         // Reshape has 2 inputs: data (input 0) and shape (input 1)
         // Shape input should be a constant tensor or have static shape
-        if input_shapes.is_empty() {
-            return Err(crate::error::CodegenError::InvalidShape(
-                "Reshape requires at least one input".to_string(),
-            ));
-        }
-
-        // Get the shape tensor to determine output shape
         if input_shapes.len() < 2 {
             return Err(crate::error::CodegenError::InvalidShape(
                 "Reshape requires 2 inputs: data and shape".to_string(),
             ));
         }
 
-        // For now, we need shape inference to be handled elsewhere
-        // The output shape should already be inferred by the shape inference pass
-        // Here we just validate and return Unknown if we can't determine it
+        // Get input data shape
+        let data_shape = match &input_shapes[0] {
+            TensorShape::Static(dims) => dims,
+            TensorShape::Unknown => return Ok(vec![TensorShape::Unknown]),
+            TensorShape::Absent => {
+                return Err(crate::error::CodegenError::InvalidShape(
+                    "Reshape data input is absent".to_string(),
+                ));
+            }
+            TensorShape::Dynamic(_) => {
+                return Err(crate::error::CodegenError::InvalidShape(
+                    "Unexpected Dynamic shape after dimension resolution".to_string(),
+                ));
+            }
+        };
 
-        // Try to get the shape from the node's output tensor info if available
-        // This is set during the global shape inference pass
-        Ok(vec![TensorShape::Unknown])
+        // Check if node has shape input
+        if node.inputs.len() < 2 {
+            // Shape not provided - can't infer
+            return Ok(vec![TensorShape::Unknown]);
+        }
+
+        // Get the target shape from the second input (must be initializer)
+        let shape_tensor_name = &node.inputs[1];
+        let shape_tensor_id = match graph.tensors.get(shape_tensor_name) {
+            Some(&id) => id,
+            None => {
+                // Shape tensor not found - might be computed later
+                return Ok(vec![TensorShape::Unknown]);
+            }
+        };
+
+        let shape_info = match graph.tensor(shape_tensor_id) {
+            Ok(info) => info,
+            Err(_) => return Ok(vec![TensorShape::Unknown]),
+        };
+
+        let initializer = match &shape_info.initializer {
+            Some(init) => init,
+            None => {
+                // Shape is not a constant - we can't infer the output shape
+                return Ok(vec![TensorShape::Unknown]);
+            }
+        };
+
+        // Parse i64 shape from raw bytes
+        let target_shape = parse_i64_array(initializer);
+                    
+                    // Handle -1 dimension (infer from total size)
+                    let total_elements: usize = data_shape.iter().product();
+                    let mut output_shape = Vec::new();
+                    let mut infer_dim = None;
+                    let mut known_product: i64 = 1;
+                    
+                    for (idx, &dim) in target_shape.iter().enumerate() {
+                        if dim == -1 {
+                            if infer_dim.is_some() {
+                                return Err(crate::error::CodegenError::InvalidShape(
+                                    "Reshape can have at most one -1 dimension".to_string(),
+                                ));
+                            }
+                            infer_dim = Some(idx);
+                            output_shape.push(0); // Placeholder
+                        } else if dim == 0 {
+                            // 0 means "copy from input shape"
+                            if idx < data_shape.len() {
+                                output_shape.push(data_shape[idx]);
+                                known_product *= data_shape[idx] as i64;
+                            } else {
+                                return Err(crate::error::CodegenError::InvalidShape(
+                                    format!("Reshape: dimension 0 at index {} out of range", idx),
+                                ));
+                            }
+                        } else if dim > 0 {
+                            output_shape.push(dim as usize);
+                            known_product *= dim;
+                        } else {
+                            return Err(crate::error::CodegenError::InvalidShape(
+                                format!("Invalid reshape dimension: {}", dim),
+                            ));
+                        }
+                    }
+                    
+                    // Compute inferred dimension
+                    if let Some(idx) = infer_dim {
+                        let inferred = total_elements as i64 / known_product;
+                        if inferred * known_product != total_elements as i64 {
+                            return Err(crate::error::CodegenError::InvalidShape(
+                                format!("Cannot reshape {} elements into {:?}", total_elements, target_shape),
+                            ));
+                        }
+                        output_shape[idx] = inferred as usize;
+                    }
+                    
+                    Ok(vec![TensorShape::Static(output_shape)])
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
@@ -65,6 +147,14 @@ impl OpKernel for ReshapeKernel {
             size: bytes as u64,
         }])
     }
+}
+
+/// Helper function to parse i64 array from raw bytes (little-endian).
+fn parse_i64_array(bytes: &[u8]) -> Vec<i64> {
+    bytes
+        .chunks_exact(8)
+        .map(|chunk| i64::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7]]))
+        .collect()
 }
 
 #[cfg(test)]
@@ -268,6 +358,7 @@ mod tests {
     #[test]
     fn test_reshape_kernel_shape_inference() {
         let kernel = ReshapeKernel;
+        let graph = Graph::new();  // Empty test graph
         let node = Node::new("Reshape");
         let input_shapes = vec![
             TensorShape::Static(vec![2, 3]),
@@ -275,7 +366,7 @@ mod tests {
         ];
 
         let output_shapes = kernel
-            .infer_output_shapes(&node, &input_shapes)
+            .infer_output_shapes(&graph, &node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);

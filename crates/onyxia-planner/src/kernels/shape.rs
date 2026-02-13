@@ -22,8 +22,7 @@ impl OpKernel for ShapeKernel {
     }
 
     fn infer_output_shapes(
-        &self,
-        node: &onyxia_onnx::Node,
+        &self,        _graph: &onyxia_onnx::Graph,        node: &onyxia_onnx::Node,
         input_shapes: &[TensorShape],
     ) -> Result<Vec<TensorShape>> {
         // Shape takes one input and produces one 1D int64 output
@@ -37,9 +36,8 @@ impl OpKernel for ShapeKernel {
         let resolved_dims = match &input_shapes[0] {
             TensorShape::Static(dims) => dims,
             TensorShape::Unknown => {
-                return Err(CodegenError::InvalidShape(
-                    "Cannot infer Shape output for unknown input shape".to_string(),
-                ));
+                // Can't infer Shape output yet - input shape is unknown
+                return Ok(vec![TensorShape::Unknown]);
             }
             TensorShape::Absent => {
                 return Err(CodegenError::InvalidShape(
@@ -311,8 +309,9 @@ mod tests {
         let input_shapes = vec![TensorShape::Static(vec![2, 3, 4])];
 
         let kernel = ShapeKernel;
+        let graph = onyxia_onnx::Graph::new();
         let output_shapes = kernel
-            .infer_output_shapes(&node, &input_shapes)
+            .infer_output_shapes(&graph, &node, &input_shapes)
             .expect("shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);

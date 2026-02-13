@@ -29,6 +29,7 @@ pub trait OpKernel: Send + Sync {
     ///
     /// # Arguments
     ///
+    /// * `graph` - The full graph (for accessing initializer data)
     /// * `node` - The ONNX node being processed
     /// * `input_shapes` - Shapes of input tensors (all `Static`, `Unknown`, or `Absent`)
     ///
@@ -37,6 +38,7 @@ pub trait OpKernel: Send + Sync {
     /// A vector of output tensor shapes, one per output.
     fn infer_output_shapes(
         &self,
+        graph: &Graph,
         node: &Node,
         input_shapes: &[TensorShape],
     ) -> Result<Vec<TensorShape>>;
@@ -369,6 +371,7 @@ mod tests {
 
         fn infer_output_shapes(
             &self,
+            _graph: &Graph,
             _node: &Node,
             input_shapes: &[TensorShape],
         ) -> Result<Vec<TensorShape>> {
@@ -413,6 +416,7 @@ mod tests {
 
         fn infer_output_shapes(
             &self,
+            _graph: &Graph,
             _node: &Node,
             input_shapes: &[TensorShape],
         ) -> Result<Vec<TensorShape>> {

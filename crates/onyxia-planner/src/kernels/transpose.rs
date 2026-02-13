@@ -23,6 +23,7 @@ impl OpKernel for TransposeKernel {
 
     fn infer_output_shapes(
         &self,
+        _graph: &onyxia_onnx::Graph,
         node: &onyxia_onnx::Node,
         input_shapes: &[TensorShape],
     ) -> Result<Vec<TensorShape>> {
@@ -188,8 +189,9 @@ mod tests {
 
         let input_shapes = vec![TensorShape::Static(vec![4, 8])];
 
+        let graph = onyxia_onnx::Graph::new();
         let output_shapes = kernel
-            .infer_output_shapes(&node, &input_shapes)
+            .infer_output_shapes(&graph, &node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -207,8 +209,9 @@ mod tests {
 
         let input_shapes = vec![TensorShape::Static(vec![2, 3, 4])];
 
+        let graph = onyxia_onnx::Graph::new();
         let output_shapes = kernel
-            .infer_output_shapes(&node, &input_shapes)
+            .infer_output_shapes(&graph, &node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -222,8 +225,9 @@ mod tests {
 
         let input_shapes = vec![TensorShape::Static(vec![2, 3, 4])];
 
+        let graph = onyxia_onnx::Graph::new();
         let output_shapes = kernel
-            .infer_output_shapes(&node, &input_shapes)
+            .infer_output_shapes(&graph, &node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);

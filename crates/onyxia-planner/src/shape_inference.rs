@@ -145,7 +145,7 @@ pub fn infer_shapes(graph: &mut Graph, registry: &KernelRegistry) -> Result<()> 
             };
 
             // Infer output shapes (no dynamic_dimensions — Phase 1 already resolved them)
-            let output_shapes = match kernel.infer_output_shapes(node, &input_shapes) {
+            let output_shapes = match kernel.infer_output_shapes(graph, node, &input_shapes) {
                 Ok(shapes) => shapes,
                 Err(e) => {
                     if iteration == 0 {

@@ -25,6 +25,7 @@ impl OpKernel for GatherKernel {
 
     fn infer_output_shapes(
         &self,
+        _graph: &onyxia_onnx::Graph,
         node: &onyxia_onnx::Node,
         input_shapes: &[TensorShape],
     ) -> Result<Vec<TensorShape>> {
@@ -281,8 +282,9 @@ mod tests {
             TensorShape::Static(vec![2]),    // indices
         ];
 
+        let graph = onyxia_onnx::Graph::new();
         let output_shapes = GatherKernel
-            .infer_output_shapes(&node, &input_shapes)
+            .infer_output_shapes(&graph, &node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -299,8 +301,9 @@ mod tests {
             TensorShape::Static(vec![8, 32]),       // batch × seq
         ];
 
+        let graph = onyxia_onnx::Graph::new();
         let output_shapes = GatherKernel
-            .infer_output_shapes(&node, &input_shapes)
+            .infer_output_shapes(&graph, &node, &input_shapes)
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -320,8 +323,9 @@ mod tests {
             TensorShape::Static(vec![2]),       // indices
         ];
 
+        let graph = onyxia_onnx::Graph::new();
         let output_shapes = GatherKernel
-            .infer_output_shapes(&node_with_axis, &input_shapes)
+            .infer_output_shapes(&graph, &node_with_axis, &input_shapes)
             .expect("Shape inference should succeed");
 
         // axis=-2 → axis=1 (for rank 3)
