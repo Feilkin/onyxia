@@ -662,7 +662,7 @@ impl PlanExecutor {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
     use onyxia_planner::plan::ExecutionPlan;
     use onyxia_planner::{ModelMetadata, TensorRegistry};
 
