@@ -261,34 +261,34 @@ fn extract_constant_tensor_info(
 ) -> Result<TensorInfo> {
     // Find the "value" attribute which contains the TensorProto
     for attr in &node.attribute {
-        if attr.name == "value" {
-            if let Some(ref tensor) = attr.t {
-                let shape = if tensor.dims.is_empty() {
-                    TensorShape::Static(vec![]) // Scalar
-                } else {
-                    TensorShape::Static(tensor.dims.iter().map(|&d| d as usize).collect())
-                };
+        if attr.name == "value"
+            && let Some(ref tensor) = attr.t
+        {
+            let shape = if tensor.dims.is_empty() {
+                TensorShape::Static(vec![]) // Scalar
+            } else {
+                TensorShape::Static(tensor.dims.iter().map(|&d| d as usize).collect())
+            };
 
-                let dtype = tensor_data_type_to_dtype(tensor.data_type);
+            let dtype = tensor_data_type_to_dtype(tensor.data_type);
 
-                // Extract raw data - check if it's external or embedded
-                let initializer = if tensor.data_location == 1 {
-                    // EXTERNAL
-                    // Load from external file
-                    load_external_data(tensor, base_dir)?
-                } else {
-                    // Extract raw data from tensor (embedded or typed arrays)
-                    extract_tensor_raw_data(tensor)
-                };
+            // Extract raw data - check if it's external or embedded
+            let initializer = if tensor.data_location == 1 {
+                // EXTERNAL
+                // Load from external file
+                load_external_data(tensor, base_dir)?
+            } else {
+                // Extract raw data from tensor (embedded or typed arrays)
+                extract_tensor_raw_data(tensor)
+            };
 
-                return Ok(TensorInfo {
-                    name: name.to_string(),
-                    dtype,
-                    shape,
-                    kind: TensorKind::Intermediate,
-                    initializer,
-                });
-            }
+            return Ok(TensorInfo {
+                name: name.to_string(),
+                dtype,
+                shape,
+                kind: TensorKind::Intermediate,
+                initializer,
+            });
         }
     }
 

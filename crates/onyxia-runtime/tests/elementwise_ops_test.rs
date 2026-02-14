@@ -1,6 +1,6 @@
 //! End-to-end tests for elementwise operations.
 //!
-//! Tests: Add, Sub, Mul
+//! Tests: Add, Sub, Mul, Pow
 
 mod common;
 
@@ -862,4 +862,278 @@ async fn test_where_scalar_condition_e2e() {
     println!("  X: [5.0, 6.0, 7.0, 8.0]");
     println!("  Y: [50.0, 60.0, 70.0, 80.0]");
     println!("  Output: {:?} (all from X)", output);
+}
+
+/// End-to-end test: Pow operation with basic powers.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_pow_basic_e2e() {
+    // Build graph
+    let graph = make_binary_elementwise_graph("Pow", "pow_node", DataType::F32, &[4]);
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Verify plan structure
+    assert_eq!(plan.operations.len(), 1);
+    assert_eq!(plan.shaders.len(), 1);
+
+    // Initialize runtime and load plan
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Execute: z = x ^ y
+    // Test: 2^3=8, 3^2=9, 4^2=16, 5^2=25
+    let x = Tensor::from_vec(vec![2.0f32, 3.0, 4.0, 5.0], &[4]);
+    let y = Tensor::from_vec(vec![3.0f32, 2.0, 2.0, 2.0], &[4]);
+
+    let outputs = executor
+        .run(&[("a", x), ("b", y)])
+        .expect("Execution should succeed");
+
+    let z = outputs["c"].to_vec::<f32>().expect("Should convert to f32");
+
+    // Allow small floating point error
+    assert!((z[0] - 8.0).abs() < 1e-5, "2^3 should be 8, got {}", z[0]);
+    assert!((z[1] - 9.0).abs() < 1e-5, "3^2 should be 9, got {}", z[1]);
+    assert!((z[2] - 16.0).abs() < 1e-5, "4^2 should be 16, got {}", z[2]);
+    assert!((z[3] - 25.0).abs() < 1e-5, "5^2 should be 25, got {}", z[3]);
+
+    println!("✓ End-to-end Pow basic test passed!");
+    println!("  Input x: [2.0, 3.0, 4.0, 5.0]");
+    println!("  Input y: [3.0, 2.0, 2.0, 2.0]");
+    println!("  Output z: {:?}", z);
+}
+
+/// End-to-end test: Pow with exponent of zero (x^0 = 1).
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_pow_zero_exponent_e2e() {
+    let graph = make_binary_elementwise_graph("Pow", "pow_node", DataType::F32, &[4]);
+    graph.validate().expect("Graph validation should succeed");
+
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Any number to the power of 0 should equal 1
+    let x = Tensor::from_vec(vec![2.0f32, 3.0, 100.0, -5.0], &[4]);
+    let y = Tensor::from_vec(vec![0.0f32, 0.0, 0.0, 0.0], &[4]);
+
+    let outputs = executor
+        .run(&[("a", x), ("b", y)])
+        .expect("Execution should succeed");
+
+    let z = outputs["c"].to_vec::<f32>().expect("Should convert to f32");
+
+    for (i, &val) in z.iter().enumerate() {
+        assert!(
+            (val - 1.0).abs() < 1e-5,
+            "x^0 should be 1, got {} at index {}",
+            val,
+            i
+        );
+    }
+
+    println!("✓ End-to-end Pow zero exponent test passed!");
+    println!("  Input x: [2.0, 3.0, 100.0, -5.0]");
+    println!("  Input y: [0.0, 0.0, 0.0, 0.0]");
+    println!("  Output z: {:?} (all should be 1.0)", z);
+}
+
+/// End-to-end test: Pow with exponent of one (x^1 = x).
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_pow_one_exponent_e2e() {
+    let graph = make_binary_elementwise_graph("Pow", "pow_node", DataType::F32, &[4]);
+    graph.validate().expect("Graph validation should succeed");
+
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Any number to the power of 1 should equal itself
+    let x = Tensor::from_vec(vec![2.5f32, 3.7, 100.1, 5.9], &[4]);
+    let y = Tensor::from_vec(vec![1.0f32, 1.0, 1.0, 1.0], &[4]);
+
+    let outputs = executor
+        .run(&[("a", x.clone()), ("b", y)])
+        .expect("Execution should succeed");
+
+    let z = outputs["c"].to_vec::<f32>().expect("Should convert to f32");
+    let x_vals = vec![2.5f32, 3.7, 100.1, 5.9];
+
+    for (i, (&expected, &actual)) in x_vals.iter().zip(z.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-5,
+            "x^1 should equal x, got {} vs {} at index {}",
+            actual,
+            expected,
+            i
+        );
+    }
+
+    println!("✓ End-to-end Pow one exponent test passed!");
+    println!("  Input x: {:?}", x_vals);
+    println!("  Input y: [1.0, 1.0, 1.0, 1.0]");
+    println!("  Output z: {:?} (should equal x)", z);
+}
+
+/// End-to-end test: Pow with fractional exponents (square root).
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_pow_fractional_exponent_e2e() {
+    let graph = make_binary_elementwise_graph("Pow", "pow_node", DataType::F32, &[4]);
+    graph.validate().expect("Graph validation should succeed");
+
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Test square roots: x^0.5 = sqrt(x)
+    let x = Tensor::from_vec(vec![4.0f32, 9.0, 16.0, 25.0], &[4]);
+    let y = Tensor::from_vec(vec![0.5f32, 0.5, 0.5, 0.5], &[4]);
+
+    let outputs = executor
+        .run(&[("a", x), ("b", y)])
+        .expect("Execution should succeed");
+
+    let z = outputs["c"].to_vec::<f32>().expect("Should convert to f32");
+    let expected = vec![2.0f32, 3.0, 4.0, 5.0];
+
+    for (i, (&expected, &actual)) in expected.iter().zip(z.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-5,
+            "sqrt({}) should be {}, got {} at index {}",
+            vec![4.0, 9.0, 16.0, 25.0][i],
+            expected,
+            actual,
+            i
+        );
+    }
+
+    println!("✓ End-to-end Pow fractional exponent test passed!");
+    println!("  Input x: [4.0, 9.0, 16.0, 25.0]");
+    println!("  Input y: [0.5, 0.5, 0.5, 0.5]");
+    println!("  Output z: {:?} (square roots)", z);
+}
+
+/// End-to-end test: Pow with scalar broadcasting.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_pow_broadcast_scalar_e2e() {
+    // Create graph with broadcasting: [1] ^ [4]
+    let mut graph = onyxia_onnx::Graph::new();
+
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![1]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![4]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![4]),
+        kind: onyxia_onnx::TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = onyxia_onnx::Node::new("Pow");
+    node.name = "pow_broadcast_node".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    graph.metadata.name = "test_pow_broadcast_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph.validate().expect("Graph validation should succeed");
+
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Broadcast scalar 2.0 to powers [1, 2, 3, 4]
+    // Result should be [2^1, 2^2, 2^3, 2^4] = [2, 4, 8, 16]
+    let a = Tensor::from_vec(vec![2.0f32], &[1]);
+    let b = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[4]);
+
+    let outputs = executor
+        .run(&[("a", a), ("b", b)])
+        .expect("Execution should succeed");
+
+    let c = outputs["c"].to_vec::<f32>().expect("Should convert to f32");
+    let expected = vec![2.0f32, 4.0, 8.0, 16.0];
+
+    for (i, (&expected, &actual)) in expected.iter().zip(c.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-5,
+            "2^{} should be {}, got {} at index {}",
+            i + 1,
+            expected,
+            actual,
+            i
+        );
+    }
+
+    println!("✓ End-to-end Pow broadcast scalar test passed!");
+    println!("  Input a: [2.0] (scalar, broadcasts)");
+    println!("  Input b: [1.0, 2.0, 3.0, 4.0]");
+    println!("  Output c: {:?}", c);
 }

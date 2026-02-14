@@ -305,6 +305,7 @@ impl KernelRegistry {
         registry.register("Add", Box::new(crate::kernels::AddKernel));
         registry.register("Mul", Box::new(crate::kernels::MulKernel));
         registry.register("Sub", Box::new(crate::kernels::SubKernel));
+        registry.register("Pow", Box::new(crate::kernels::PowKernel));
         registry.register("Cast", Box::new(crate::kernels::CastKernel));
         registry.register("Concat", Box::new(crate::kernels::ConcatKernel));
         registry.register("Cos", Box::new(crate::kernels::CosKernel));

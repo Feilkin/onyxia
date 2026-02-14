@@ -41,12 +41,15 @@ impl OpKernel for GeluKernel {
         // Using tanh approximation: 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x^3)))
         match input {
             TensorValue::F32(vals) => {
-                let result: Vec<f32> = vals.iter().map(|&x| {
-                    let sqrt_2_over_pi = 0.79788456_f32; // sqrt(2/π)
-                    let coeff = 0.044715_f32;
-                    let inner = sqrt_2_over_pi * (x + coeff * x * x * x);
-                    0.5 * x * (1.0 + inner.tanh())
-                }).collect();
+                let result: Vec<f32> = vals
+                    .iter()
+                    .map(|&x| {
+                        let sqrt_2_over_pi = 0.79788456_f32; // sqrt(2/π)
+                        let coeff = 0.044715_f32;
+                        let inner = sqrt_2_over_pi * (x + coeff * x * x * x);
+                        0.5 * x * (1.0 + inner.tanh())
+                    })
+                    .collect();
                 Ok(vec![Some(TensorValue::F32(result))])
             }
             _ => Ok(vec![None]),

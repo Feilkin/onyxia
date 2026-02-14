@@ -41,16 +41,34 @@ impl OpKernel for EqualKernel {
 
         // Only fold values with same shape for simplicity
         match (a, b) {
-            (TensorValue::F32(a_vals), TensorValue::F32(b_vals)) if a_vals.len() == b_vals.len() => {
-                let result: Vec<bool> = a_vals.iter().zip(b_vals.iter()).map(|(a, b)| a == b).collect();
+            (TensorValue::F32(a_vals), TensorValue::F32(b_vals))
+                if a_vals.len() == b_vals.len() =>
+            {
+                let result: Vec<bool> = a_vals
+                    .iter()
+                    .zip(b_vals.iter())
+                    .map(|(a, b)| a == b)
+                    .collect();
                 Ok(vec![Some(TensorValue::Bool(result))])
             }
-            (TensorValue::I64(a_vals), TensorValue::I64(b_vals)) if a_vals.len() == b_vals.len() => {
-                let result: Vec<bool> = a_vals.iter().zip(b_vals.iter()).map(|(a, b)| a == b).collect();
+            (TensorValue::I64(a_vals), TensorValue::I64(b_vals))
+                if a_vals.len() == b_vals.len() =>
+            {
+                let result: Vec<bool> = a_vals
+                    .iter()
+                    .zip(b_vals.iter())
+                    .map(|(a, b)| a == b)
+                    .collect();
                 Ok(vec![Some(TensorValue::Bool(result))])
             }
-            (TensorValue::I32(a_vals), TensorValue::I32(b_vals)) if a_vals.len() == b_vals.len() => {
-                let result: Vec<bool> = a_vals.iter().zip(b_vals.iter()).map(|(a, b)| a == b).collect();
+            (TensorValue::I32(a_vals), TensorValue::I32(b_vals))
+                if a_vals.len() == b_vals.len() =>
+            {
+                let result: Vec<bool> = a_vals
+                    .iter()
+                    .zip(b_vals.iter())
+                    .map(|(a, b)| a == b)
+                    .collect();
                 Ok(vec![Some(TensorValue::Bool(result))])
             }
             _ => Ok(vec![None]),

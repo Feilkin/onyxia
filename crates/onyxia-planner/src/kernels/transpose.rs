@@ -82,11 +82,7 @@ impl OpKernel for TransposeKernel {
         let perm = perm.unwrap_or_else(|| (0..rank as i64).rev().collect());
 
         // Helper function to transpose a flat array based on shape and permutation
-        fn transpose_values<T: Clone>(
-            values: &[T],
-            input_shape: &[usize],
-            perm: &[i64],
-        ) -> Vec<T> {
+        fn transpose_values<T: Clone>(values: &[T], input_shape: &[usize], perm: &[i64]) -> Vec<T> {
             let rank = input_shape.len();
             let num_elements: usize = input_shape.iter().product();
 
@@ -134,21 +130,13 @@ impl OpKernel for TransposeKernel {
 
         // Apply transpose based on value type
         let result = match input {
-            TensorValue::F32(vals) => {
-                TensorValue::F32(transpose_values(vals, input_shape, &perm))
-            }
-            TensorValue::I64(vals) => {
-                TensorValue::I64(transpose_values(vals, input_shape, &perm))
-            }
-            TensorValue::I32(vals) => {
-                TensorValue::I32(transpose_values(vals, input_shape, &perm))
-            }
+            TensorValue::F32(vals) => TensorValue::F32(transpose_values(vals, input_shape, &perm)),
+            TensorValue::I64(vals) => TensorValue::I64(transpose_values(vals, input_shape, &perm)),
+            TensorValue::I32(vals) => TensorValue::I32(transpose_values(vals, input_shape, &perm)),
             TensorValue::Bool(vals) => {
                 TensorValue::Bool(transpose_values(vals, input_shape, &perm))
             }
-            TensorValue::U8(vals) => {
-                TensorValue::U8(transpose_values(vals, input_shape, &perm))
-            }
+            TensorValue::U8(vals) => TensorValue::U8(transpose_values(vals, input_shape, &perm)),
         };
 
         Ok(vec![Some(result)])
