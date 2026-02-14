@@ -334,6 +334,7 @@ impl KernelRegistry {
         );
         registry.register("Transpose", Box::new(crate::kernels::TransposeKernel));
         registry.register("Unsqueeze", Box::new(crate::kernels::UnsqueezeKernel));
+        registry.register("Where", Box::new(crate::kernels::WhereKernel));
         registry
     }
 

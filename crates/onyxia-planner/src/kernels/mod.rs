@@ -23,6 +23,7 @@ pub mod sub;
 pub mod tanh;
 pub mod transpose;
 pub mod unsqueeze;
+pub mod where_op;
 
 pub use add::AddKernel;
 pub use cast::CastKernel;
@@ -47,3 +48,4 @@ pub use sub::SubKernel;
 pub use tanh::TanhKernel;
 pub use transpose::TransposeKernel;
 pub use unsqueeze::UnsqueezeKernel;
+pub use where_op::WhereKernel;

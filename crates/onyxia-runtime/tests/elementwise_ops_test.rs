@@ -494,3 +494,372 @@ async fn test_greater_broadcast_e2e() {
     println!("  Input b: [1.0, 2.0, 3.0, 4.0, 5.0]");
     println!("  Output c: {:?} (1=greater, 0=not greater)", c);
 }
+
+/// End-to-end test: Where operator for conditional element selection.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_where_basic_e2e() {
+    // Build graph for Where operator: output = condition ? x : y
+    let mut graph = onyxia_onnx::Graph::new();
+
+    // Condition input (Bool represented as I32)
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "condition".to_string(),
+        dtype: DataType::I32,
+        shape: onyxia_onnx::TensorShape::Static(vec![4]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    // X input (values when condition is true)
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "x".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![4]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    // Y input (values when condition is false)
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "y".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![4]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    // Output tensor
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![4]),
+        kind: onyxia_onnx::TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Where operation node
+    let mut node = onyxia_onnx::Node::new("Where");
+    node.name = "where_node".to_string();
+    node.inputs = vec!["condition".to_string(), "x".to_string(), "y".to_string()];
+    node.outputs = vec!["output".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["condition".to_string(), "x".to_string(), "y".to_string()];
+    graph.outputs = vec!["output".to_string()];
+
+    graph.metadata.name = "test_where_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile and execute
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Test: condition = [1, 0, 1, 0] (true, false, true, false)
+    //       x = [10.0, 20.0, 30.0, 40.0]
+    //       y = [100.0, 200.0, 300.0, 400.0]
+    // Expected: [10.0, 200.0, 30.0, 400.0]
+    let condition = Tensor::from_vec(vec![1i32, 0, 1, 0], &[4]);
+    let x = Tensor::from_vec(vec![10.0f32, 20.0, 30.0, 40.0], &[4]);
+    let y = Tensor::from_vec(vec![100.0f32, 200.0, 300.0, 400.0], &[4]);
+
+    let outputs = executor
+        .run(&[("condition", condition), ("x", x), ("y", y)])
+        .expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+    assert_eq!(
+        output,
+        vec![10.0, 200.0, 30.0, 400.0],
+        "Where result incorrect"
+    );
+
+    println!("✓ End-to-end Where basic test passed!");
+    println!("  Condition: [1, 0, 1, 0] (1=true, 0=false)");
+    println!("  X: [10.0, 20.0, 30.0, 40.0]");
+    println!("  Y: [100.0, 200.0, 300.0, 400.0]");
+    println!("  Output: {:?}", output);
+}
+
+/// End-to-end test: Where operator with all-true condition.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_where_all_true_e2e() {
+    let mut graph = onyxia_onnx::Graph::new();
+
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "condition".to_string(),
+        dtype: DataType::I32,
+        shape: onyxia_onnx::TensorShape::Static(vec![3]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "x".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![3]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "y".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![3]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![3]),
+        kind: onyxia_onnx::TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = onyxia_onnx::Node::new("Where");
+    node.name = "where_node".to_string();
+    node.inputs = vec!["condition".to_string(), "x".to_string(), "y".to_string()];
+    node.outputs = vec!["output".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["condition".to_string(), "x".to_string(), "y".to_string()];
+    graph.outputs = vec!["output".to_string()];
+
+    graph.metadata.name = "test_where_all_true_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // All true: should select all from x
+    let condition = Tensor::from_vec(vec![1i32, 1, 1], &[3]);
+    let x = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], &[3]);
+    let y = Tensor::from_vec(vec![10.0f32, 20.0, 30.0], &[3]);
+
+    let outputs = executor
+        .run(&[("condition", condition), ("x", x), ("y", y)])
+        .expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+    assert_eq!(
+        output,
+        vec![1.0, 2.0, 3.0],
+        "Where all-true result incorrect"
+    );
+
+    println!("✓ End-to-end Where all-true test passed!");
+    println!("  Condition: [1, 1, 1] (all true)");
+    println!("  X: [1.0, 2.0, 3.0]");
+    println!("  Y: [10.0, 20.0, 30.0]");
+    println!("  Output: {:?} (all from X)", output);
+}
+
+/// End-to-end test: Where operator with all-false condition.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_where_all_false_e2e() {
+    let mut graph = onyxia_onnx::Graph::new();
+
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "condition".to_string(),
+        dtype: DataType::I32,
+        shape: onyxia_onnx::TensorShape::Static(vec![3]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "x".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![3]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "y".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![3]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![3]),
+        kind: onyxia_onnx::TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = onyxia_onnx::Node::new("Where");
+    node.name = "where_node".to_string();
+    node.inputs = vec!["condition".to_string(), "x".to_string(), "y".to_string()];
+    node.outputs = vec!["output".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["condition".to_string(), "x".to_string(), "y".to_string()];
+    graph.outputs = vec!["output".to_string()];
+
+    graph.metadata.name = "test_where_all_false_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // All false: should select all from y
+    let condition = Tensor::from_vec(vec![0i32, 0, 0], &[3]);
+    let x = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], &[3]);
+    let y = Tensor::from_vec(vec![10.0f32, 20.0, 30.0], &[3]);
+
+    let outputs = executor
+        .run(&[("condition", condition), ("x", x), ("y", y)])
+        .expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+    assert_eq!(
+        output,
+        vec![10.0, 20.0, 30.0],
+        "Where all-false result incorrect"
+    );
+
+    println!("✓ End-to-end Where all-false test passed!");
+    println!("  Condition: [0, 0, 0] (all false)");
+    println!("  X: [1.0, 2.0, 3.0]");
+    println!("  Y: [10.0, 20.0, 30.0]");
+    println!("  Output: {:?} (all from Y)", output);
+}
+
+/// End-to-end test: Where operator with scalar condition broadcast.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_where_scalar_condition_e2e() {
+    let mut graph = onyxia_onnx::Graph::new();
+
+    // Scalar condition (broadcasts to all elements)
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "condition".to_string(),
+        dtype: DataType::I32,
+        shape: onyxia_onnx::TensorShape::Static(vec![1]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "x".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![4]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "y".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![4]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![4]),
+        kind: onyxia_onnx::TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = onyxia_onnx::Node::new("Where");
+    node.name = "where_node".to_string();
+    node.inputs = vec!["condition".to_string(), "x".to_string(), "y".to_string()];
+    node.outputs = vec!["output".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["condition".to_string(), "x".to_string(), "y".to_string()];
+    graph.outputs = vec!["output".to_string()];
+
+    graph.metadata.name = "test_where_scalar_condition_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Scalar condition = 1 (true), should select all from x
+    let condition = Tensor::from_vec(vec![1i32], &[1]);
+    let x = Tensor::from_vec(vec![5.0f32, 6.0, 7.0, 8.0], &[4]);
+    let y = Tensor::from_vec(vec![50.0f32, 60.0, 70.0, 80.0], &[4]);
+
+    let outputs = executor
+        .run(&[("condition", condition), ("x", x), ("y", y)])
+        .expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+    assert_eq!(
+        output,
+        vec![5.0, 6.0, 7.0, 8.0],
+        "Where scalar condition result incorrect"
+    );
+
+    println!("✓ End-to-end Where scalar condition test passed!");
+    println!("  Condition: [1] (scalar, broadcasts to true for all)");
+    println!("  X: [5.0, 6.0, 7.0, 8.0]");
+    println!("  Y: [50.0, 60.0, 70.0, 80.0]");
+    println!("  Output: {:?} (all from X)", output);
+}
