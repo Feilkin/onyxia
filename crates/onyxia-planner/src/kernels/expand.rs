@@ -30,25 +30,8 @@ impl OpKernel for ExpandKernel {
             ));
         }
 
-        // Get input data shape
-        let data_shape = match &ctx.input_shapes[0] {
-            TensorShape::Static(dims) => dims,
-            TensorShape::Unknown => {
-                return Ok(vec![TensorShape::Unknown]);
-            }
-            TensorShape::Absent => {
-                return Err(CodegenError::InvalidShape(
-                    "Expand data input is absent".to_string(),
-                ));
-            }
-            TensorShape::Dynamic(_) => {
-                return Err(CodegenError::InvalidShape(
-                    "Unexpected Dynamic shape after dimension resolution".to_string(),
-                ));
-            }
-        };
-
-        // Try to get the target shape from the second input value
+        // Try to get the target shape from the second input value first.
+        // The output shape is determined by the target shape, not the input data shape.
         let Some(target_shape_val) = ctx.input_value(1)? else {
             // Shape is not a constant - we can't infer the output shape
             return Ok(vec![TensorShape::Unknown]);
@@ -64,45 +47,47 @@ impl OpKernel for ExpandKernel {
             }
         };
 
-        // Validate compatibility and convert to usize
+        // Convert target shape to output dimensions and validate
         let mut output_dims = Vec::new();
-        let input_rank = data_shape.len();
-        let output_rank = target_shape.len();
-
-        if output_rank < input_rank {
-            return Err(CodegenError::InvalidShape(format!(
-                "Expand target shape rank {} is less than input rank {}",
-                output_rank, input_rank
-            )));
-        }
-
-        // Align shapes from the right and validate
-        let offset = output_rank - input_rank;
-        for i in 0..output_rank {
-            let target_dim = target_shape[i];
+        for (i, &target_dim) in target_shape.iter().enumerate() {
             if target_dim <= 0 {
                 return Err(CodegenError::InvalidShape(format!(
                     "Expand target shape dimension {} is invalid: {}",
                     i, target_dim
                 )));
             }
-            let target_dim_usize = target_dim as usize;
+            output_dims.push(target_dim as usize);
+        }
 
-            if i < offset {
-                // New leading dimension
-                output_dims.push(target_dim_usize);
-            } else {
-                // Corresponding input dimension
-                let input_dim = data_shape[i - offset];
-                if input_dim != 1 && input_dim != target_dim_usize {
+        // If the input data shape is known (Static), validate compatibility
+        if let TensorShape::Static(data_shape) = &ctx.input_shapes[0] {
+            let input_rank = data_shape.len();
+            let output_rank = output_dims.len();
+
+            if output_rank < input_rank {
+                return Err(CodegenError::InvalidShape(format!(
+                    "Expand target shape rank {} is less than input rank {}",
+                    output_rank, input_rank
+                )));
+            }
+
+            // Align shapes from the right and validate compatibility
+            let offset = output_rank - input_rank;
+            for i in 0..input_rank {
+                let input_dim = data_shape[i];
+                let output_dim = output_dims[offset + i];
+                if input_dim != 1 && input_dim != output_dim {
                     return Err(CodegenError::InvalidShape(format!(
                         "Expand: incompatible dimensions at position {}: input={}, target={}",
-                        i, input_dim, target_dim
+                        offset + i,
+                        input_dim,
+                        output_dim
                     )));
                 }
-                output_dims.push(target_dim_usize);
             }
         }
+        // If input shape is Unknown or Absent, we can still return the target shape
+        // Runtime validation will ensure compatibility
 
         Ok(vec![TensorShape::Static(output_dims)])
     }
@@ -296,6 +281,45 @@ mod tests {
             assert_eq!(dims, &vec![3, 5]);
         } else {
             panic!("Expected static shape");
+        }
+    }
+
+    #[test]
+    fn test_expand_kernel_infer_output_shapes_unknown_input() {
+        // Test: when input shape is Unknown but target shape is constant,
+        // we should still be able to infer the output shape
+        let graph = create_expand_test_graph(vec![3, 1], vec![2, 3, 4], vec![2, 3, 4]);
+        let node = Node {
+            name: "expand_node".to_string(),
+            op_type: "Expand".to_string(),
+            inputs: vec!["input".to_string(), "shape".to_string()],
+            outputs: vec!["output".to_string()],
+            attributes: HashMap::new(),
+            domain: String::new(),
+        };
+
+        // Input shape is Unknown (common in dynamic models like Gemma)
+        let input_shapes = vec![TensorShape::Unknown, TensorShape::Static(vec![3])];
+
+        // Get the shape tensor value from the graph
+        let shape_tensor_info = graph.tensor(*graph.tensors.get("shape").unwrap()).unwrap();
+        let shape_value = TensorValue::from_initializer(shape_tensor_info)
+            .unwrap()
+            .unwrap();
+
+        let input_values = vec![None, Some(shape_value)];
+
+        let ctx = InferenceContext::new(&node, &graph, input_shapes, input_values);
+
+        let kernel = ExpandKernel;
+        let output_shapes = kernel.infer_output_shapes(&ctx).unwrap();
+
+        // Should infer output shape from target shape constant
+        assert_eq!(output_shapes.len(), 1);
+        if let TensorShape::Static(dims) = &output_shapes[0] {
+            assert_eq!(dims, &vec![2, 3, 4]);
+        } else {
+            panic!("Expected static shape even with unknown input");
         }
     }
 
