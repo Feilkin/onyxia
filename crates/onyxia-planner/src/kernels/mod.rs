@@ -18,6 +18,7 @@ pub mod rotary_embedding;
 pub mod shape;
 pub mod sin;
 pub mod sub;
+pub mod tanh;
 pub mod transpose;
 pub mod unsqueeze;
 
@@ -39,5 +40,6 @@ pub use rotary_embedding::RotaryEmbeddingKernel;
 pub use shape::ShapeKernel;
 pub use sin::SinKernel;
 pub use sub::SubKernel;
+pub use tanh::TanhKernel;
 pub use transpose::TransposeKernel;
 pub use unsqueeze::UnsqueezeKernel;

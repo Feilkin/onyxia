@@ -310,6 +310,7 @@ impl KernelRegistry {
         registry.register("Cos", Box::new(crate::kernels::CosKernel));
         registry.register("Gather", Box::new(crate::kernels::GatherKernel));
         registry.register("Sin", Box::new(crate::kernels::SinKernel));
+        registry.register("Tanh", Box::new(crate::kernels::TanhKernel));
         registry.register("Gelu", Box::new(crate::kernels::GeluKernel));
         registry.register(
             "GroupQueryAttention",

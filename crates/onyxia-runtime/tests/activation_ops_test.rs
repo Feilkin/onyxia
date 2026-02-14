@@ -1,6 +1,6 @@
 //! End-to-end tests for activation operations.
 //!
-//! Tests: Gelu, Cos, Sin
+//! Tests: Gelu, Cos, Sin, Tanh
 
 mod common;
 
@@ -180,5 +180,91 @@ async fn test_sin_e2e() {
 
     println!("✓ End-to-end Sin test passed!");
     println!("  Input x: [0, π/2, π, 3π/2, 2π, -π/2]");
+    println!("  Output y: {:?}", y);
+}
+
+/// End-to-end test: Tanh activation on GPU and verify correct output.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_tanh_e2e() {
+    // Build graph
+    let graph = make_unary_graph("Tanh", "tanh_node", DataType::F32, &[8], &[8]);
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile and execute
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new().await.expect("Runtime init should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Test inputs with known tanh outputs
+    // tanh(0) = 0, tanh(∞) → 1, tanh(-∞) → -1
+    // tanh(1) ≈ 0.7616, tanh(-1) ≈ -0.7616
+    // tanh(5) ≈ 0.9999 (very close to 1)
+    let x = Tensor::from_vec(vec![-5.0f32, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 5.0], &[8]);
+
+    let outputs = executor
+        .run(&[("input", x)])
+        .expect("Execution should succeed");
+
+    let y = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+    assert_eq!(y.len(), 8);
+
+    // Verify tanh values with appropriate tolerance
+    assert!(
+        (y[0] + 0.9999).abs() < 0.001,
+        "tanh(-5) should be ≈ -0.9999, got {}",
+        y[0]
+    );
+    assert!(
+        (y[1] + 0.7616).abs() < 0.001,
+        "tanh(-1) should be ≈ -0.7616, got {}",
+        y[1]
+    );
+    assert!(
+        (y[2] + 0.4621).abs() < 0.001,
+        "tanh(-0.5) should be ≈ -0.4621, got {}",
+        y[2]
+    );
+    assert!(y[3].abs() < 0.0001, "tanh(0) should be 0, got {}", y[3]);
+    assert!(
+        (y[4] - 0.4621).abs() < 0.001,
+        "tanh(0.5) should be ≈ 0.4621, got {}",
+        y[4]
+    );
+    assert!(
+        (y[5] - 0.7616).abs() < 0.001,
+        "tanh(1) should be ≈ 0.7616, got {}",
+        y[5]
+    );
+    assert!(
+        (y[6] - 0.9640).abs() < 0.001,
+        "tanh(2) should be ≈ 0.9640, got {}",
+        y[6]
+    );
+    assert!(
+        (y[7] - 0.9999).abs() < 0.001,
+        "tanh(5) should be ≈ 0.9999, got {}",
+        y[7]
+    );
+
+    // Verify that all outputs are in the range (-1, 1)
+    for (i, val) in y.iter().enumerate() {
+        assert!(
+            val.abs() < 1.0,
+            "tanh output at index {} should be in range (-1, 1), got {}",
+            i,
+            val
+        );
+    }
+
+    println!("✓ End-to-end Tanh test passed!");
+    println!("  Input x: [-5.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 5.0]");
     println!("  Output y: {:?}", y);
 }
