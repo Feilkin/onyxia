@@ -523,3 +523,226 @@ async fn test_expand_identity_e2e() {
     println!("  Input shape: [3, 4]");
     println!("  Output shape: [3, 4] (no change)");
 }
+
+/// Helper function to create a ConstantOfShape graph.
+fn make_constantofshape_graph(
+    shape_dims: Vec<i64>,
+    output_shape: Vec<usize>,
+    value_opt: Option<f32>,
+) -> Graph {
+    let mut graph = Graph::new();
+
+    // Add shape tensor as initializer (constant)
+    let shape_data: Vec<u8> = shape_dims
+        .iter()
+        .flat_map(|&dim| dim.to_le_bytes())
+        .collect();
+    graph.add_tensor(TensorInfo {
+        name: "shape".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![shape_dims.len()]),
+        kind: TensorKind::Weight,
+        initializer: Some(shape_data),
+    });
+
+    // Add output tensor
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(output_shape),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create ConstantOfShape node
+    let mut node = Node::new("ConstantOfShape");
+    node.name = "constantofshape_node".to_string();
+    node.inputs = vec!["shape".to_string()];
+    node.outputs = vec!["output".to_string()];
+
+    // Add 'value' attribute if specified
+    if let Some(value) = value_opt {
+        // Create raw bytes for a float32 tensor value
+        // Format: directly encode the float as 4 bytes (little-endian)
+        let value_bytes = value.to_le_bytes().to_vec();
+        node.attributes
+            .insert("value".to_string(), AttributeValue::Tensor(value_bytes));
+    }
+
+    graph.add_node(node);
+
+    graph.inputs = vec![];
+    graph.outputs = vec!["output".to_string()];
+
+    graph
+}
+
+/// End-to-end test: ConstantOfShape with default value (0.0).
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_constantofshape_default_value_e2e() {
+    let graph = make_constantofshape_graph(vec![2, 3], vec![2, 3], None);
+    graph.validate().expect("Graph validation should succeed");
+
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime creation should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Model loading should succeed");
+
+    let outputs = executor.run(&[]).expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected: All zeros (default value)
+    let expected = vec![0.0f32; 6]; // 2 * 3 = 6
+
+    assert_eq!(output, expected, "ConstantOfShape default value incorrect");
+
+    println!("✓ End-to-end ConstantOfShape (default value) test passed!");
+    println!("  Output shape: [2, 3]");
+    println!("  Fill value: 0.0 (default)");
+}
+
+/// End-to-end test: ConstantOfShape with custom value (1.0).
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_constantofshape_custom_value_e2e() {
+    let graph = make_constantofshape_graph(vec![3, 4], vec![3, 4], Some(1.0));
+    graph.validate().expect("Graph validation should succeed");
+
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime creation should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Model loading should succeed");
+
+    let outputs = executor.run(&[]).expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected: All ones
+    let expected = vec![1.0f32; 12]; // 3 * 4 = 12
+
+    assert_eq!(output, expected, "ConstantOfShape custom value incorrect");
+
+    println!("✓ End-to-end ConstantOfShape (custom value) test passed!");
+    println!("  Output shape: [3, 4]");
+    println!("  Fill value: 1.0");
+}
+
+/// End-to-end test: ConstantOfShape with 1D output.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_constantofshape_1d_e2e() {
+    let graph = make_constantofshape_graph(vec![5], vec![5], Some(2.5));
+    graph.validate().expect("Graph validation should succeed");
+
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime creation should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Model loading should succeed");
+
+    let outputs = executor.run(&[]).expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected: All 2.5
+    let expected = vec![2.5f32; 5];
+
+    assert_eq!(output, expected, "ConstantOfShape 1D result incorrect");
+
+    println!("✓ End-to-end ConstantOfShape (1D) test passed!");
+    println!("  Output shape: [5]");
+    println!("  Fill value: 2.5");
+}
+
+/// End-to-end test: ConstantOfShape with 3D output.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_constantofshape_3d_e2e() {
+    let graph = make_constantofshape_graph(vec![2, 3, 4], vec![2, 3, 4], Some(-1.0));
+    graph.validate().expect("Graph validation should succeed");
+
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime creation should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Model loading should succeed");
+
+    let outputs = executor.run(&[]).expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected: All -1.0
+    let expected = vec![-1.0f32; 24]; // 2 * 3 * 4 = 24
+
+    assert_eq!(output, expected, "ConstantOfShape 3D result incorrect");
+
+    println!("✓ End-to-end ConstantOfShape (3D) test passed!");
+    println!("  Output shape: [2, 3, 4]");
+    println!("  Fill value: -1.0");
+}
+
+/// End-to-end test: ConstantOfShape with scalar output (empty shape).
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_constantofshape_scalar_e2e() {
+    let graph = make_constantofshape_graph(vec![], vec![], Some(42.0));
+    graph.validate().expect("Graph validation should succeed");
+
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime creation should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Model loading should succeed");
+
+    let outputs = executor.run(&[]).expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected: Single value 42.0
+    let expected = vec![42.0f32];
+
+    assert_eq!(output, expected, "ConstantOfShape scalar result incorrect");
+
+    println!("✓ End-to-end ConstantOfShape (scalar) test passed!");
+    println!("  Output shape: [] (scalar)");
+    println!("  Fill value: 42.0");
+}
