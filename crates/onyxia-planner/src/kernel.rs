@@ -329,6 +329,7 @@ impl KernelRegistry {
         registry.register("Constant", Box::new(crate::kernels::ConstantKernel));
         registry.register("Shape", Box::new(crate::kernels::ShapeKernel));
         registry.register("Reshape", Box::new(crate::kernels::ReshapeKernel));
+        registry.register("ReduceMean", Box::new(crate::kernels::ReduceMeanKernel));
         registry.register("ReduceSum", Box::new(crate::kernels::ReduceSumKernel));
         registry.register(
             "RotaryEmbedding",

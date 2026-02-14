@@ -59,6 +59,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
 | `TransposeKernel` | Transpose | Shape manipulation |
 | `ConcatKernel` | Concat | Shape manipulation |
 | `GatherKernel` | Gather | Indexing |
+| `ReduceMeanKernel` | ReduceMean | Reduction |
 | `ReduceSumKernel` | ReduceSum | Reduction |
 | `RotaryEmbeddingKernel` | RotaryEmbedding | Attention |
 | `GroupQueryAttentionKernel` | GroupQueryAttention | Attention |
