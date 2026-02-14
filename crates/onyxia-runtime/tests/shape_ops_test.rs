@@ -746,3 +746,313 @@ async fn test_constantofshape_scalar_e2e() {
     println!("  Output shape: [] (scalar)");
     println!("  Fill value: 42.0");
 }
+
+/// Helper function to create a Range graph with integer inputs.
+fn make_range_graph_i64(start: i64, limit: i64, delta: i64) -> Graph {
+    let mut graph = Graph::new();
+
+    // Add start tensor (scalar I64)
+    graph.add_tensor(TensorInfo {
+        name: "start".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![]),
+        kind: TensorKind::Weight,
+        initializer: Some(start.to_le_bytes().to_vec()),
+    });
+
+    // Add limit tensor (scalar I64)
+    graph.add_tensor(TensorInfo {
+        name: "limit".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![]),
+        kind: TensorKind::Weight,
+        initializer: Some(limit.to_le_bytes().to_vec()),
+    });
+
+    // Add delta tensor (scalar I64)
+    graph.add_tensor(TensorInfo {
+        name: "delta".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![]),
+        kind: TensorKind::Weight,
+        initializer: Some(delta.to_le_bytes().to_vec()),
+    });
+
+    // Calculate output size
+    let output_size = ((limit - start) as f64 / delta as f64).ceil().max(0.0) as usize;
+
+    // Add output tensor (1D F32 - Range outputs as F32 on GPU)
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![output_size]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Range node
+    let mut node = Node::new("Range");
+    node.name = "range_node".to_string();
+    node.inputs = vec![
+        "start".to_string(),
+        "limit".to_string(),
+        "delta".to_string(),
+    ];
+    node.outputs = vec!["output".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec![];
+    graph.outputs = vec!["output".to_string()];
+
+    graph.metadata.name = "test_range_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph
+}
+
+/// Helper function to create a Range graph with float inputs.
+fn make_range_graph_f32(start: f32, limit: f32, delta: f32) -> Graph {
+    let mut graph = Graph::new();
+
+    // Add start tensor (scalar F32)
+    graph.add_tensor(TensorInfo {
+        name: "start".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![]),
+        kind: TensorKind::Weight,
+        initializer: Some(start.to_le_bytes().to_vec()),
+    });
+
+    // Add limit tensor (scalar F32)
+    graph.add_tensor(TensorInfo {
+        name: "limit".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![]),
+        kind: TensorKind::Weight,
+        initializer: Some(limit.to_le_bytes().to_vec()),
+    });
+
+    // Add delta tensor (scalar F32)
+    graph.add_tensor(TensorInfo {
+        name: "delta".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![]),
+        kind: TensorKind::Weight,
+        initializer: Some(delta.to_le_bytes().to_vec()),
+    });
+
+    // Calculate output size
+    let output_size = ((limit - start) / delta).ceil().max(0.0) as usize;
+
+    // Add output tensor (1D F32)
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![output_size]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Range node
+    let mut node = Node::new("Range");
+    node.name = "range_node".to_string();
+    node.inputs = vec![
+        "start".to_string(),
+        "limit".to_string(),
+        "delta".to_string(),
+    ];
+    node.outputs = vec!["output".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec![];
+    graph.outputs = vec!["output".to_string()];
+
+    graph.metadata.name = "test_range_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph
+}
+
+/// End-to-end test: Range with integer step=1.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_range_integer_step_1_e2e() {
+    let graph = make_range_graph_i64(0, 5, 1);
+    graph.validate().expect("Graph validation should succeed");
+
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime creation should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Model loading should succeed");
+
+    let outputs = executor.run(&[]).expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected: [0, 1, 2, 3, 4]
+    let expected = vec![0.0f32, 1.0, 2.0, 3.0, 4.0];
+
+    assert_eq!(output, expected, "Range(0, 5, 1) result incorrect");
+
+    println!("✓ End-to-end Range(0, 5, 1) test passed!");
+    println!("  Expected: [0, 1, 2, 3, 4]");
+    println!("  Got: {:?}", output);
+}
+
+/// End-to-end test: Range with integer step=2.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_range_integer_step_2_e2e() {
+    let graph = make_range_graph_i64(2, 10, 2);
+    graph.validate().expect("Graph validation should succeed");
+
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime creation should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Model loading should succeed");
+
+    let outputs = executor.run(&[]).expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected: [2, 4, 6, 8]
+    let expected = vec![2.0f32, 4.0, 6.0, 8.0];
+
+    assert_eq!(output, expected, "Range(2, 10, 2) result incorrect");
+
+    println!("✓ End-to-end Range(2, 10, 2) test passed!");
+    println!("  Expected: [2, 4, 6, 8]");
+    println!("  Got: {:?}", output);
+}
+
+/// End-to-end test: Range with negative step (descending).
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_range_negative_step_e2e() {
+    let graph = make_range_graph_i64(10, 0, -2);
+    graph.validate().expect("Graph validation should succeed");
+
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime creation should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Model loading should succeed");
+
+    let outputs = executor.run(&[]).expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected: [10, 8, 6, 4, 2]
+    let expected = vec![10.0f32, 8.0, 6.0, 4.0, 2.0];
+
+    assert_eq!(output, expected, "Range(10, 0, -2) result incorrect");
+
+    println!("✓ End-to-end Range(10, 0, -2) test passed!");
+    println!("  Expected: [10, 8, 6, 4, 2]");
+    println!("  Got: {:?}", output);
+}
+
+/// End-to-end test: Range with floating point values.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_range_float_e2e() {
+    let graph = make_range_graph_f32(0.0, 2.5, 0.5);
+    graph.validate().expect("Graph validation should succeed");
+
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime creation should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Model loading should succeed");
+
+    let outputs = executor.run(&[]).expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected: [0.0, 0.5, 1.0, 1.5, 2.0]
+    let expected = vec![0.0f32, 0.5, 1.0, 1.5, 2.0];
+
+    // Use approximate comparison for floating point
+    for (i, (&got, &exp)) in output.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (got - exp).abs() < 1e-6,
+            "Range float result mismatch at index {}: got {}, expected {}",
+            i,
+            got,
+            exp
+        );
+    }
+
+    println!("✓ End-to-end Range(0.0, 2.5, 0.5) test passed!");
+    println!("  Expected: [0.0, 0.5, 1.0, 1.5, 2.0]");
+    println!("  Got: {:?}", output);
+}
+
+/// End-to-end test: Range with empty output (start == limit).
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_range_empty_e2e() {
+    let graph = make_range_graph_i64(5, 5, 1);
+    graph.validate().expect("Graph validation should succeed");
+
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime creation should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Model loading should succeed");
+
+    let outputs = executor.run(&[]).expect("Execution should succeed");
+
+    let output_tensor = &outputs["output"];
+
+    // Check that the shape is [0]
+    assert_eq!(
+        output_tensor.shape(),
+        &[0],
+        "Range(5, 5, 1) shape should be [0]"
+    );
+    assert!(output_tensor.is_empty(), "Range(5, 5, 1) should be empty");
+
+    println!("✓ End-to-end Range(5, 5, 1) empty test passed!");
+    println!("  Expected shape: [0]");
+    println!("  Got shape: {:?}", output_tensor.shape());
+}

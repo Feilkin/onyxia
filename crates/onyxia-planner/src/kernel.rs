@@ -337,6 +337,7 @@ impl KernelRegistry {
         );
         registry.register("Shape", Box::new(crate::kernels::ShapeKernel));
         registry.register("Reshape", Box::new(crate::kernels::ReshapeKernel));
+        registry.register("Range", Box::new(crate::kernels::RangeKernel));
         registry.register("Slice", Box::new(crate::kernels::SliceKernel));
         registry.register("Softmax", Box::new(crate::kernels::SoftmaxKernel));
         registry.register("ReduceMean", Box::new(crate::kernels::ReduceMeanKernel));
