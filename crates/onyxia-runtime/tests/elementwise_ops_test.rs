@@ -317,3 +317,180 @@ async fn test_equal_broadcast_e2e() {
     println!("  Input b: [1.0, 2.0, 3.0, 2.0]");
     println!("  Output c: {:?} (1=equal, 0=not equal)", c);
 }
+
+/// End-to-end test: Greater comparison on GPU and verify correct output.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_greater_e2e() {
+    // Build graph with Bool output type for Greater operator
+    let mut graph = onyxia_onnx::Graph::new();
+
+    // Add input tensors (F32)
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![6]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![6]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add output tensor (Bool type per ONNX spec)
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::Bool,
+        shape: onyxia_onnx::TensorShape::Static(vec![6]),
+        kind: onyxia_onnx::TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Greater operation node
+    let mut node = onyxia_onnx::Node::new("Greater");
+    node.name = "greater_node".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    graph.add_node(node);
+
+    // Set graph inputs and outputs
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    // Set metadata
+    graph.metadata.name = "test_greater_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Initialize runtime and load plan
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Execute: c = (a > b)
+    // Test various cases: greater, less, equal, negative numbers, infinity
+    let a = Tensor::from_vec(
+        vec![5.0f32, 3.0, 5.0, -2.0, f32::INFINITY, f32::NEG_INFINITY],
+        &[6],
+    );
+    let b = Tensor::from_vec(vec![3.0f32, 5.0, 5.0, -5.0, 100.0, -100.0], &[6]);
+
+    let outputs = executor
+        .run(&[("a", a), ("b", b)])
+        .expect("Execution should succeed");
+
+    // Output is stored as u32 (0 for false, 1 for true)
+    let c = outputs["c"].to_vec::<u32>().expect("Should convert to u32");
+    assert_eq!(
+        c,
+        vec![1, 0, 0, 1, 1, 0],
+        "Greater result incorrect (1=true, 0=false)"
+    );
+
+    println!("✓ End-to-end Greater test passed!");
+    println!("  Input a: [5.0, 3.0, 5.0, -2.0, inf, -inf]");
+    println!("  Input b: [3.0, 5.0, 5.0, -5.0, 100.0, -100.0]");
+    println!("  Output c: {:?} (1=greater, 0=not greater)", c);
+}
+
+/// End-to-end test: Greater with broadcasting (scalar vs tensor).
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_greater_broadcast_e2e() {
+    // Build graph with broadcasting: scalar > vector
+    let mut graph = onyxia_onnx::Graph::new();
+
+    // Add input tensors
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![1]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![5]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add output tensor (Bool type per ONNX spec)
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::Bool,
+        shape: onyxia_onnx::TensorShape::Static(vec![5]),
+        kind: onyxia_onnx::TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Greater operation node
+    let mut node = onyxia_onnx::Node::new("Greater");
+    node.name = "greater_broadcast_node".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    graph.metadata.name = "test_greater_broadcast_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile and execute
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Broadcast scalar 3.0 against vector [1.0, 2.0, 3.0, 4.0, 5.0]
+    // Expected: 3.0 > [1.0, 2.0, 3.0, 4.0, 5.0] = [true, true, false, false, false]
+    let a = Tensor::from_vec(vec![3.0f32], &[1]);
+    let b = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0], &[5]);
+
+    let outputs = executor
+        .run(&[("a", a), ("b", b)])
+        .expect("Execution should succeed");
+
+    let c = outputs["c"].to_vec::<u32>().expect("Should convert to u32");
+    assert_eq!(
+        c,
+        vec![1, 1, 0, 0, 0],
+        "Greater broadcast result incorrect (1=true, 0=false)"
+    );
+
+    println!("✓ End-to-end Greater broadcast test passed!");
+    println!("  Input a: [3.0] (scalar)");
+    println!("  Input b: [1.0, 2.0, 3.0, 4.0, 5.0]");
+    println!("  Output c: {:?} (1=greater, 0=not greater)", c);
+}
