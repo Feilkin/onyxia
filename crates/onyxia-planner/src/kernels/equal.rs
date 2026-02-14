@@ -1,7 +1,7 @@
 //! EqualKernel implementation for elementwise equality comparison.
 
 use crate::error::Result;
-use crate::inference::{InferenceContext, infer_elementwise_broadcast};
+use crate::inference::{InferenceContext, TensorValue, infer_elementwise_broadcast};
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
@@ -28,6 +28,33 @@ impl OpKernel for EqualKernel {
 
     fn infer_output_shapes(&self, ctx: &InferenceContext<'_>) -> Result<Vec<TensorShape>> {
         infer_elementwise_broadcast(ctx)
+    }
+
+    fn try_fold(&self, ctx: &InferenceContext<'_>) -> Result<Vec<Option<TensorValue>>> {
+        // Try to constant-fold if both inputs are known
+        let Some(a) = ctx.input_value(0)? else {
+            return Ok(vec![None]);
+        };
+        let Some(b) = ctx.input_value(1)? else {
+            return Ok(vec![None]);
+        };
+
+        // Only fold values with same shape for simplicity
+        match (a, b) {
+            (TensorValue::F32(a_vals), TensorValue::F32(b_vals)) if a_vals.len() == b_vals.len() => {
+                let result: Vec<bool> = a_vals.iter().zip(b_vals.iter()).map(|(a, b)| a == b).collect();
+                Ok(vec![Some(TensorValue::Bool(result))])
+            }
+            (TensorValue::I64(a_vals), TensorValue::I64(b_vals)) if a_vals.len() == b_vals.len() => {
+                let result: Vec<bool> = a_vals.iter().zip(b_vals.iter()).map(|(a, b)| a == b).collect();
+                Ok(vec![Some(TensorValue::Bool(result))])
+            }
+            (TensorValue::I32(a_vals), TensorValue::I32(b_vals)) if a_vals.len() == b_vals.len() => {
+                let result: Vec<bool> = a_vals.iter().zip(b_vals.iter()).map(|(a, b)| a == b).collect();
+                Ok(vec![Some(TensorValue::Bool(result))])
+            }
+            _ => Ok(vec![None]),
+        }
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {

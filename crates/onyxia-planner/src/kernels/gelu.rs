@@ -1,7 +1,7 @@
 //! GeluKernel implementation for GELU activation function.
 
 use crate::error::Result;
-use crate::inference::InferenceContext;
+use crate::inference::{InferenceContext, TensorValue};
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
@@ -28,6 +28,29 @@ impl OpKernel for GeluKernel {
             ));
         }
         Ok(vec![ctx.input_shapes[0].clone()])
+    }
+
+    fn try_fold(&self, ctx: &InferenceContext<'_>) -> Result<Vec<Option<TensorValue>>> {
+        // Try to constant-fold if input is known
+        let Some(input) = ctx.input_value(0)? else {
+            return Ok(vec![None]);
+        };
+
+        // Only fold F32 values
+        // GELU(x) = x * Φ(x) where Φ is the cumulative distribution function
+        // Using tanh approximation: 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x^3)))
+        match input {
+            TensorValue::F32(vals) => {
+                let result: Vec<f32> = vals.iter().map(|&x| {
+                    let sqrt_2_over_pi = 0.79788456_f32; // sqrt(2/π)
+                    let coeff = 0.044715_f32;
+                    let inner = sqrt_2_over_pi * (x + coeff * x * x * x);
+                    0.5 * x * (1.0 + inner.tanh())
+                }).collect();
+                Ok(vec![Some(TensorValue::F32(result))])
+            }
+            _ => Ok(vec![None]),
+        }
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {

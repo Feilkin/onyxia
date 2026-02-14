@@ -1,7 +1,7 @@
 //! TransposeKernel implementation for tensor dimension permutation.
 
 use crate::error::Result;
-use crate::inference::InferenceContext;
+use crate::inference::{InferenceContext, TensorValue};
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
@@ -61,6 +61,97 @@ impl OpKernel for TransposeKernel {
         let output_dims: Vec<usize> = perm.iter().map(|&p| input_dims[p as usize]).collect();
 
         Ok(vec![TensorShape::Static(output_dims)])
+    }
+
+    fn try_fold(&self, ctx: &InferenceContext<'_>) -> Result<Vec<Option<TensorValue>>> {
+        // Try to constant-fold if input is known
+        let Some(input) = ctx.input_value(0)? else {
+            return Ok(vec![None]);
+        };
+
+        // Get input shape
+        let input_shape = match &ctx.input_shapes[0] {
+            TensorShape::Static(dims) => dims,
+            _ => return Ok(vec![None]),
+        };
+
+        let rank = input_shape.len();
+
+        // Read perm attribute (optional)
+        let perm: Option<Vec<i64>> = ctx.node.attr("perm").ok();
+        let perm = perm.unwrap_or_else(|| (0..rank as i64).rev().collect());
+
+        // Helper function to transpose a flat array based on shape and permutation
+        fn transpose_values<T: Clone>(
+            values: &[T],
+            input_shape: &[usize],
+            perm: &[i64],
+        ) -> Vec<T> {
+            let rank = input_shape.len();
+            let num_elements: usize = input_shape.iter().product();
+
+            // Compute output shape
+            let output_shape: Vec<usize> = perm.iter().map(|&p| input_shape[p as usize]).collect();
+
+            // Compute strides for input and output
+            let mut input_strides = vec![1; rank];
+            let mut output_strides = vec![1; rank];
+            for i in (0..rank - 1).rev() {
+                input_strides[i] = input_strides[i + 1] * input_shape[i + 1];
+                output_strides[i] = output_strides[i + 1] * output_shape[i + 1];
+            }
+
+            let mut result = vec![values[0].clone(); num_elements];
+
+            // For each element in the output
+            for out_idx in 0..num_elements {
+                // Compute multi-dimensional index in output
+                let mut out_coords = vec![0; rank];
+                let mut temp = out_idx;
+                for i in 0..rank {
+                    out_coords[i] = temp / output_strides[i];
+                    temp %= output_strides[i];
+                }
+
+                // Map to input coordinates using inverse permutation
+                let mut in_coords = vec![0; rank];
+                for i in 0..rank {
+                    in_coords[perm[i] as usize] = out_coords[i];
+                }
+
+                // Compute flat input index
+                let in_idx: usize = in_coords
+                    .iter()
+                    .zip(input_strides.iter())
+                    .map(|(c, s)| c * s)
+                    .sum();
+
+                result[out_idx] = values[in_idx].clone();
+            }
+
+            result
+        }
+
+        // Apply transpose based on value type
+        let result = match input {
+            TensorValue::F32(vals) => {
+                TensorValue::F32(transpose_values(vals, input_shape, &perm))
+            }
+            TensorValue::I64(vals) => {
+                TensorValue::I64(transpose_values(vals, input_shape, &perm))
+            }
+            TensorValue::I32(vals) => {
+                TensorValue::I32(transpose_values(vals, input_shape, &perm))
+            }
+            TensorValue::Bool(vals) => {
+                TensorValue::Bool(transpose_values(vals, input_shape, &perm))
+            }
+            TensorValue::U8(vals) => {
+                TensorValue::U8(transpose_values(vals, input_shape, &perm))
+            }
+        };
+
+        Ok(vec![Some(result)])
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {

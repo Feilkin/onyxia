@@ -92,6 +92,104 @@ impl OpKernel for ExpandKernel {
         Ok(vec![TensorShape::Static(output_dims)])
     }
 
+    fn try_fold(&self, ctx: &InferenceContext<'_>) -> Result<Vec<Option<TensorValue>>> {
+        // Try to constant-fold if data and shape inputs are known
+        let Some(data_val) = ctx.input_value(0)? else {
+            return Ok(vec![None]);
+        };
+        let Some(shape_val) = ctx.input_value(1)? else {
+            return Ok(vec![None]);
+        };
+
+        // Get input shape
+        let input_shape = match &ctx.input_shapes[0] {
+            TensorShape::Static(dims) => dims,
+            _ => return Ok(vec![None]),
+        };
+
+        // Parse target shape from the second input
+        let target_shape = match shape_val {
+            TensorValue::I64(v) => v.as_slice(),
+            _ => return Ok(vec![None]),
+        };
+
+        let output_dims: Vec<usize> = target_shape.iter().map(|&d| d as usize).collect();
+
+        // Helper function to expand (broadcast) values
+        fn expand_values<T: Clone>(
+            values: &[T],
+            input_shape: &[usize],
+            output_shape: &[usize],
+        ) -> Vec<T> {
+            let input_rank = input_shape.len();
+            let output_rank = output_shape.len();
+            let num_elements: usize = output_shape.iter().product();
+
+            // Align shapes from the right (broadcasting rules)
+            let offset = output_rank - input_rank;
+
+            // Compute strides
+            let mut input_strides = vec![1; input_rank];
+            let mut output_strides = vec![1; output_rank];
+            for i in (0..input_rank - 1).rev() {
+                input_strides[i] = input_strides[i + 1] * input_shape[i + 1];
+            }
+            for i in (0..output_rank - 1).rev() {
+                output_strides[i] = output_strides[i + 1] * output_shape[i + 1];
+            }
+
+            let mut result = Vec::with_capacity(num_elements);
+
+            // For each element in the output
+            for out_idx in 0..num_elements {
+                // Compute multi-dimensional index in output
+                let mut out_coords = vec![0; output_rank];
+                let mut temp = out_idx;
+                for i in 0..output_rank {
+                    out_coords[i] = temp / output_strides[i];
+                    temp %= output_strides[i];
+                }
+
+                // Map to input coordinates (with broadcasting)
+                let mut in_idx = 0;
+                for i in 0..input_rank {
+                    let out_dim_idx = offset + i;
+                    let coord = if input_shape[i] == 1 {
+                        0 // broadcast this dimension
+                    } else {
+                        out_coords[out_dim_idx]
+                    };
+                    in_idx += coord * input_strides[i];
+                }
+
+                result.push(values[in_idx].clone());
+            }
+
+            result
+        }
+
+        // Apply expand based on value type
+        let result = match data_val {
+            TensorValue::F32(vals) => {
+                TensorValue::F32(expand_values(vals, input_shape, &output_dims))
+            }
+            TensorValue::I64(vals) => {
+                TensorValue::I64(expand_values(vals, input_shape, &output_dims))
+            }
+            TensorValue::I32(vals) => {
+                TensorValue::I32(expand_values(vals, input_shape, &output_dims))
+            }
+            TensorValue::Bool(vals) => {
+                TensorValue::Bool(expand_values(vals, input_shape, &output_dims))
+            }
+            TensorValue::U8(vals) => {
+                TensorValue::U8(expand_values(vals, input_shape, &output_dims))
+            }
+        };
+
+        Ok(vec![Some(result)])
+    }
+
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
         // Get input and output shapes
         let input_info = ctx.input_info(0)?;

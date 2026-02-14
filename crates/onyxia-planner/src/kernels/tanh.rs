@@ -1,7 +1,7 @@
 //! TanhKernel implementation for hyperbolic tangent activation function.
 
 use crate::error::Result;
-use crate::inference::InferenceContext;
+use crate::inference::{InferenceContext, TensorValue};
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
@@ -26,6 +26,22 @@ impl OpKernel for TanhKernel {
             ));
         }
         Ok(vec![ctx.input_shapes[0].clone()])
+    }
+
+    fn try_fold(&self, ctx: &InferenceContext<'_>) -> Result<Vec<Option<TensorValue>>> {
+        // Try to constant-fold if input is known
+        let Some(input) = ctx.input_value(0)? else {
+            return Ok(vec![None]);
+        };
+
+        // Only fold F32 values
+        match input {
+            TensorValue::F32(vals) => {
+                let result: Vec<f32> = vals.iter().map(|x| x.tanh()).collect();
+                Ok(vec![Some(TensorValue::F32(result))])
+            }
+            _ => Ok(vec![None]),
+        }
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {

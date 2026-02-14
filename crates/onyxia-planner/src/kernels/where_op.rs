@@ -1,7 +1,7 @@
 //! WhereKernel implementation for conditional element selection.
 
 use crate::error::Result;
-use crate::inference::{InferenceContext, infer_elementwise_broadcast};
+use crate::inference::{InferenceContext, TensorValue, infer_elementwise_broadcast};
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
@@ -22,6 +22,57 @@ impl OpKernel for WhereKernel {
     fn infer_output_shapes(&self, ctx: &InferenceContext<'_>) -> Result<Vec<TensorShape>> {
         // infer_elementwise_broadcast handles any number of inputs, including 3
         infer_elementwise_broadcast(ctx)
+    }
+
+    fn try_fold(&self, ctx: &InferenceContext<'_>) -> Result<Vec<Option<TensorValue>>> {
+        // Try to constant-fold if all three inputs are known
+        let Some(condition) = ctx.input_value(0)? else {
+            return Ok(vec![None]);
+        };
+        let Some(x) = ctx.input_value(1)? else {
+            return Ok(vec![None]);
+        };
+        let Some(y) = ctx.input_value(2)? else {
+            return Ok(vec![None]);
+        };
+
+        // Only fold when all inputs have the same length (same shape)
+        match (condition, x, y) {
+            (TensorValue::Bool(cond), TensorValue::F32(x_vals), TensorValue::F32(y_vals))
+                if cond.len() == x_vals.len() && cond.len() == y_vals.len() =>
+            {
+                let result: Vec<f32> = cond
+                    .iter()
+                    .zip(x_vals.iter())
+                    .zip(y_vals.iter())
+                    .map(|((c, x), y)| if *c { *x } else { *y })
+                    .collect();
+                Ok(vec![Some(TensorValue::F32(result))])
+            }
+            (TensorValue::Bool(cond), TensorValue::I64(x_vals), TensorValue::I64(y_vals))
+                if cond.len() == x_vals.len() && cond.len() == y_vals.len() =>
+            {
+                let result: Vec<i64> = cond
+                    .iter()
+                    .zip(x_vals.iter())
+                    .zip(y_vals.iter())
+                    .map(|((c, x), y)| if *c { *x } else { *y })
+                    .collect();
+                Ok(vec![Some(TensorValue::I64(result))])
+            }
+            (TensorValue::Bool(cond), TensorValue::I32(x_vals), TensorValue::I32(y_vals))
+                if cond.len() == x_vals.len() && cond.len() == y_vals.len() =>
+            {
+                let result: Vec<i32> = cond
+                    .iter()
+                    .zip(x_vals.iter())
+                    .zip(y_vals.iter())
+                    .map(|((c, x), y)| if *c { *x } else { *y })
+                    .collect();
+                Ok(vec![Some(TensorValue::I32(result))])
+            }
+            _ => Ok(vec![None]),
+        }
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
