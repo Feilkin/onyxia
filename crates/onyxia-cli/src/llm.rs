@@ -89,12 +89,29 @@ impl LlmSession {
         // Update sequence length
         self.past_seq_len = prompt_len;
 
-        // Extract logits
-        let logits = outputs
-            .get("logits")
-            .context("Missing logits output")?
+        // Extract logits for the last position only
+        // Logits shape is [batch=1, seq_len=max_seq_len, vocab_size]
+        // We need logits[0, prompt_len-1, :] (last token of the prompt)
+        let logits_tensor = outputs.get("logits").context("Missing logits output")?;
+        let logits_full = logits_tensor
             .to_vec::<f32>()
             .context("Failed to convert logits to f32")?;
+
+        // Extract the vocab_size from the shape
+        let shape = logits_tensor.shape();
+        if shape.len() != 3 || shape[0] != 1 {
+            anyhow::bail!(
+                "Expected logits shape [1, seq_len, vocab_size], got {:?}",
+                shape
+            );
+        }
+
+        let vocab_size = shape[2];
+
+        // Calculate offset to last valid position: [0, prompt_len-1, :]
+        let last_pos = prompt_len - 1;
+        let offset = last_pos * vocab_size;
+        let logits = logits_full[offset..offset + vocab_size].to_vec();
 
         Ok(logits)
     }
@@ -141,12 +158,27 @@ impl LlmSession {
         // Update sequence length
         self.past_seq_len += 1;
 
-        // Extract logits
-        let logits = outputs
-            .get("logits")
-            .context("Missing logits output")?
+        // Extract logits for the current position (position 0 in decode mode)
+        // Logits shape is [batch=1, seq_len=1, vocab_size] in decode mode
+        let logits_tensor = outputs.get("logits").context("Missing logits output")?;
+        let logits_full = logits_tensor
             .to_vec::<f32>()
             .context("Failed to convert logits to f32")?;
+
+        // Extract the vocab_size from the shape
+        let shape = logits_tensor.shape();
+        if shape.len() != 3 || shape[0] != 1 {
+            anyhow::bail!(
+                "Expected logits shape [1, seq_len, vocab_size], got {:?}",
+                shape
+            );
+        }
+
+        let vocab_size = shape[2];
+
+        // For decode with seq_len=1, we want position 0: [0, 0, :]
+        let offset = 0;
+        let logits = logits_full[offset..offset + vocab_size].to_vec();
 
         Ok(logits)
     }
@@ -189,9 +221,16 @@ fn create_prefill_inputs(input_ids: &[i64], _past_seq_len: usize) -> Vec<(&'stat
 
 /// Create input tensors for decode phase.
 fn create_decode_inputs(token_id: i64, past_seq_len: usize) -> Vec<(&'static str, Tensor)> {
+    // total_sequence_length = past_seq_len (already generated) + 1 (current token)
+    let total_seq_len = past_seq_len + 1;
+
     vec![
         ("input_ids", Tensor::from_vec(vec![token_id], &[1, 1])),
-        ("attention_mask", Tensor::from_vec(vec![1i64], &[1, 1])),
+        // attention_mask covers all tokens: past + current
+        (
+            "attention_mask",
+            Tensor::from_vec(vec![1i64; total_seq_len], &[1, total_seq_len]),
+        ),
         (
             "position_ids",
             Tensor::from_vec(vec![past_seq_len as i64], &[1, 1]),
