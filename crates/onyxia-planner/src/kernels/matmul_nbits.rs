@@ -66,11 +66,11 @@ impl OpKernel for MatMulNBitsKernel {
         // Output shape: preserve batch dimensions from A, replace last two dims with [M, N]
         // A: [...batch..., M, K]  ->  Output: [...batch..., M, N]
         let m = a_dims[a_dims.len() - 2];
-        
+
         let mut output_dims = a_dims[..a_dims.len() - 2].to_vec();
         output_dims.push(m);
         output_dims.push(n);
-        
+
         Ok(vec![TensorShape::Static(output_dims)])
     }
 
@@ -455,9 +455,9 @@ mod tests {
         let graph = onyxia_onnx::Graph::new();
         let output_shapes = kernel
             .infer_output_shapes(&{
-            let input_values = vec![None; input_shapes.len()];
-            InferenceContext::new(&node, &graph, input_shapes.clone(), input_values)
-        })
+                let input_values = vec![None; input_shapes.len()];
+                InferenceContext::new(&node, &graph, input_shapes.clone(), input_values)
+            })
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);

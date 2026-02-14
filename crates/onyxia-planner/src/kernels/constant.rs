@@ -46,7 +46,7 @@ impl OpKernel for ConstantKernel {
         }
 
         let output_name = &ctx.node.outputs[0];
-        
+
         if let Some(&tensor_id) = ctx.graph.tensors.get(output_name) {
             if let Ok(tensor_info) = ctx.graph.tensor(tensor_id) {
                 if let Some(value) = TensorValue::from_initializer(tensor_info)? {
@@ -127,9 +127,7 @@ mod tests {
         let kernel = ConstantKernel;
         let graph = onyxia_onnx::Graph::new();
         let shapes = kernel
-            .infer_output_shapes(&{
-            InferenceContext::new(&node, &graph, vec![], vec![])
-        })
+            .infer_output_shapes(&{ InferenceContext::new(&node, &graph, vec![], vec![]) })
             .expect("shape inference should succeed");
 
         // Should return one output shape (Unknown, since actual shape is in tensor registry)

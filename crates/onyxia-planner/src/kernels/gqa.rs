@@ -55,14 +55,18 @@ impl OpKernel for GroupQueryAttentionKernel {
         // (both pre-allocated to max_seq_len), not past_seq_len + seq_len
         let present_kv_shape = ctx.input_shapes[3].clone(); // Same as past_key shape
 
-        Ok(vec![output_shape, present_kv_shape.clone(), present_kv_shape])
+        Ok(vec![
+            output_shape,
+            present_kv_shape.clone(),
+            present_kv_shape,
+        ])
     }
 
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>> {
         // Read attributes
         let num_heads: i64 = ctx.node.attr("num_heads")?;
         let kv_num_heads: i64 = ctx.node.attr("kv_num_heads")?;
-        
+
         // Read optional attributes with defaults per ONNX spec
         let local_window_size: i64 = ctx.node.attr("local_window_size").unwrap_or(-1);
         let softcap: f32 = ctx.node.attr("softcap").unwrap_or(0.0);
@@ -488,9 +492,9 @@ mod tests {
         let graph = onyxia_onnx::Graph::new();
         let output_shapes = kernel
             .infer_output_shapes(&{
-            let input_values = vec![None; input_shapes.len()];
-            InferenceContext::new(&node, &graph, input_shapes.clone(), input_values)
-        })
+                let input_values = vec![None; input_shapes.len()];
+                InferenceContext::new(&node, &graph, input_shapes.clone(), input_values)
+            })
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 3);

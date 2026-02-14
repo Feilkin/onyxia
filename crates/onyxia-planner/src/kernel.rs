@@ -307,6 +307,7 @@ impl KernelRegistry {
         registry.register("Sub", Box::new(crate::kernels::SubKernel));
         registry.register("Cast", Box::new(crate::kernels::CastKernel));
         registry.register("Concat", Box::new(crate::kernels::ConcatKernel));
+        registry.register("Cos", Box::new(crate::kernels::CosKernel));
         registry.register("Gather", Box::new(crate::kernels::GatherKernel));
         registry.register("Gelu", Box::new(crate::kernels::GeluKernel));
         registry.register(
@@ -385,10 +386,16 @@ mod tests {
             "dummy"
         }
 
-        fn infer_output_shapes(&self, ctx: &crate::inference::InferenceContext<'_>) -> Result<Vec<TensorShape>> {
+        fn infer_output_shapes(
+            &self,
+            ctx: &crate::inference::InferenceContext<'_>,
+        ) -> Result<Vec<TensorShape>> {
             // Dummy: output shape equals input shape
             Ok(vec![
-                ctx.input_shapes.get(0).cloned().unwrap_or(TensorShape::Unknown),
+                ctx.input_shapes
+                    .get(0)
+                    .cloned()
+                    .unwrap_or(TensorShape::Unknown),
             ])
         }
 
@@ -425,10 +432,16 @@ mod tests {
             "another"
         }
 
-        fn infer_output_shapes(&self, ctx: &crate::inference::InferenceContext<'_>) -> Result<Vec<TensorShape>> {
+        fn infer_output_shapes(
+            &self,
+            ctx: &crate::inference::InferenceContext<'_>,
+        ) -> Result<Vec<TensorShape>> {
             // Another dummy: output shape equals input shape
             Ok(vec![
-                ctx.input_shapes.get(0).cloned().unwrap_or(TensorShape::Unknown),
+                ctx.input_shapes
+                    .get(0)
+                    .cloned()
+                    .unwrap_or(TensorShape::Unknown),
             ])
         }
 

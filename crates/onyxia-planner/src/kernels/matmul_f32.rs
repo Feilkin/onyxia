@@ -65,12 +65,11 @@ impl OpKernel for MatMulF32Kernel {
         // A: [...batch..., M, K]  B: [K, N]  ->  Output: [...batch..., M, N]
         let m = a_dims[a_dims.len() - 2];
         let n = b_dims[b_dims.len() - 1];
-        
+
         let mut output_dims = a_dims[..a_dims.len() - 2].to_vec();
         output_dims.push(m);
         output_dims.push(n);
-        
-        
+
         Ok(vec![TensorShape::Static(output_dims)])
     }
 

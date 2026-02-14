@@ -1,7 +1,7 @@
 //! SubKernel implementation for elementwise subtraction.
 
 use crate::error::Result;
-use crate::inference::{infer_elementwise_broadcast, InferenceContext};
+use crate::inference::{InferenceContext, infer_elementwise_broadcast};
 use crate::kernel::{OpKernel, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;

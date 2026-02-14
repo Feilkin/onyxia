@@ -56,12 +56,13 @@ pub fn resolve_dynamic_dimensions(
                             ))
                         })?;
 
-                        let size = evaluate_expr(&expr, dynamic_dimensions).map_err(|eval_err| {
-                            CodegenError::InvalidShape(format!(
-                                "Failed to evaluate dimension '{}': {} (tensor: '{}')",
-                                name, eval_err, info.name
-                            ))
-                        })?;
+                        let size =
+                            evaluate_expr(&expr, dynamic_dimensions).map_err(|eval_err| {
+                                CodegenError::InvalidShape(format!(
+                                    "Failed to evaluate dimension '{}': {} (tensor: '{}')",
+                                    name, eval_err, info.name
+                                ))
+                            })?;
 
                         resolved.push(size);
                     }

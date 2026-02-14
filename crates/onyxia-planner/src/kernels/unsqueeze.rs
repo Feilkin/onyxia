@@ -73,7 +73,7 @@ impl OpKernel for UnsqueezeKernel {
         // Compute output shape by inserting 1s at specified axes
         let output_rank = data_shape.len() + axes.len();
         let mut output_shape = Vec::new();
-        
+
         // Convert negative axes to positive and sort
         let mut normalized_axes: Vec<usize> = axes
             .iter()
@@ -89,7 +89,7 @@ impl OpKernel for UnsqueezeKernel {
 
         let mut data_idx = 0;
         let mut axes_idx = 0;
-        
+
         for out_idx in 0..output_rank {
             if axes_idx < normalized_axes.len() && out_idx == normalized_axes[axes_idx] {
                 // Insert a 1 at this position
@@ -336,21 +336,21 @@ mod tests {
     fn test_unsqueeze_kernel_shape_inference() {
         let kernel = UnsqueezeKernel;
         let graph = onyxia_onnx::Graph::new();
-        
+
         // Test with axes from attribute (opset < 13 pattern)
         let mut node = Node::new("Unsqueeze");
         node.attributes.insert(
             "axes".to_string(),
             onyxia_onnx::AttributeValue::Ints(vec![0i64, 2i64]),
         );
-        
+
         let input_shapes = vec![TensorShape::Static(vec![4])];
 
         let output_shapes = kernel
             .infer_output_shapes(&{
-            let input_values = vec![None; input_shapes.len()];
-            InferenceContext::new(&node, &graph, input_shapes.clone(), input_values)
-        })
+                let input_values = vec![None; input_shapes.len()];
+                InferenceContext::new(&node, &graph, input_shapes.clone(), input_values)
+            })
             .expect("Shape inference should succeed");
 
         assert_eq!(output_shapes.len(), 1);
@@ -362,7 +362,7 @@ mod tests {
     fn test_unsqueeze_kernel_shape_inference_with_initializer() {
         // Test with axes from initializer (opset >= 13 pattern)
         let mut graph = onyxia_onnx::Graph::new();
-        
+
         // Add data tensor
         graph.add_tensor(TensorInfo {
             name: "data".to_string(),
@@ -371,7 +371,7 @@ mod tests {
             kind: TensorKind::Input,
             initializer: None,
         });
-        
+
         // Add axes tensor as constant/initializer
         let axes_data: Vec<u8> = vec![1i64]
             .into_iter()
@@ -384,10 +384,10 @@ mod tests {
             kind: TensorKind::Weight,
             initializer: Some(axes_data),
         });
-        
+
         let mut node = Node::new("Unsqueeze");
         node.inputs = vec!["data".to_string(), "axes".to_string()];
-        
+
         let kernel = UnsqueezeKernel;
         let input_shapes = vec![
             TensorShape::Static(vec![3, 4]),
@@ -399,7 +399,7 @@ mod tests {
         let axes_tensor = &graph.tensor_info[axes_tensor_id];
         let axes_value = TensorValue::from_initializer(axes_tensor).unwrap();
         let input_values = vec![None, axes_value];
-        
+
         let ctx = InferenceContext::new(&node, &graph, input_shapes.clone(), input_values);
         let output_shapes = kernel
             .infer_output_shapes(&ctx)

@@ -4,6 +4,7 @@
         "cargo nextest": true,
         "cargo doc": true,
         "cargo check": true,
-        "cargo clippy": true
+        "cargo clippy": true,
+        "cargo fmt": true
     }
 }

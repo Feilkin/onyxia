@@ -380,7 +380,7 @@ mod tests {
         let shape_tensor = &graph.tensor_info[shape_tensor_id];
         let shape_value = TensorValue::from_initializer(shape_tensor).unwrap();
         let input_values = vec![None, shape_value];
-        
+
         let ctx = InferenceContext::new(&node, &graph, input_shapes.clone(), input_values);
         let output_shapes = kernel
             .infer_output_shapes(&ctx)
@@ -525,10 +525,10 @@ mod tests {
         // This will perform constant folding through Shape → Gather → Unsqueeze → Concat chain
         use crate::kernel::KernelRegistry;
         use crate::shape_inference::infer_shapes;
-        
+
         let registry = KernelRegistry::default();
         infer_shapes(&mut graph, &registry).expect("Shape inference should succeed");
-        
+
         // Check the final reshape output shape
         let reshape_output = graph.tensors.get("reshape_output").unwrap();
         let output_shape = &graph.tensor_info[*reshape_output].shape;

@@ -26,7 +26,7 @@ impl OpKernel for RmsNormKernel {
                 "RMSNorm requires at least one input".to_string(),
             ));
         }
-        
+
         Ok(vec![ctx.input_shapes[0].clone()])
     }
 

@@ -161,7 +161,7 @@ impl OpKernel for ConcatKernel {
             }
             _ => return Ok(vec![None]), // Other types not supported for constant folding
         };
-        
+
         Ok(vec![Some(result)])
     }
 
@@ -211,7 +211,9 @@ impl OpKernel for ConcatKernel {
 
 #[cfg(test)]
 mod tests {
-    use super::*;    use crate::inference::InferenceContext;    use crate::plan::BufferRef;
+    use super::*;
+    use crate::inference::InferenceContext;
+    use crate::plan::BufferRef;
     use onyxia_onnx::{AttributeValue, DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
     use std::collections::HashMap;
 
