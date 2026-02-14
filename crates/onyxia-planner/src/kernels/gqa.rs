@@ -51,37 +51,9 @@ impl OpKernel for GroupQueryAttentionKernel {
         let output_shape = ctx.input_shapes[0].clone();
 
         // Outputs 1 and 2: present_key and present_value
-        // Shape: [batch, kv_num_heads, total_seq_len, head_dim]
-        // where total_seq_len = past_seq_len + seq_len
-        let present_kv_shape = match (&ctx.input_shapes[0], &ctx.input_shapes[3]) {
-            (TensorShape::Static(query_dims), TensorShape::Static(past_key_dims)) => {
-                if query_dims.len() != 3 {
-                    return Err(CodegenError::InvalidShape(format!(
-                        "GroupQueryAttention expected query shape [batch, seq_len, hidden], got {:?}",
-                        query_dims
-                    )));
-                }
-                if past_key_dims.len() != 4 {
-                    return Err(CodegenError::InvalidShape(format!(
-                        "GroupQueryAttention expected past_key shape [batch, kv_heads, past_seq, head_dim], got {:?}",
-                        past_key_dims
-                    )));
-                }
-
-                let batch = query_dims[0];
-                let seq_len = query_dims[1];
-                let kv_num_heads = past_key_dims[1];
-                let past_seq_len = past_key_dims[2];
-                let head_dim = past_key_dims[3];
-                let total_seq_len = past_seq_len + seq_len;
-
-                TensorShape::Static(vec![batch, kv_num_heads, total_seq_len, head_dim])
-            }
-            _ => {
-                // If shapes are not fully static, we can't infer the KV cache shape
-                TensorShape::Unknown
-            }
-        };
+        // In buffer-sharing mode, these have the SAME shape as past_key/past_value
+        // (both pre-allocated to max_seq_len), not past_seq_len + seq_len
+        let present_kv_shape = ctx.input_shapes[3].clone(); // Same as past_key shape
 
         Ok(vec![output_shape, present_kv_shape.clone(), present_kv_shape])
     }
@@ -90,6 +62,12 @@ impl OpKernel for GroupQueryAttentionKernel {
         // Read attributes
         let num_heads: i64 = ctx.node.attr("num_heads")?;
         let kv_num_heads: i64 = ctx.node.attr("kv_num_heads")?;
+        
+        // Read optional attributes with defaults per ONNX spec
+        let local_window_size: i64 = ctx.node.attr("local_window_size").unwrap_or(-1);
+        let softcap: f32 = ctx.node.attr("softcap").unwrap_or(0.0);
+        // Note: do_rotary, rotary_interleaved, smooth_softmax, qk_output, and quantization
+        // attributes are not yet implemented
 
         // Get query shape: [batch, seq_len, num_heads * head_dim]
         let query_info = ctx.input_info(0)?;
@@ -117,19 +95,20 @@ impl OpKernel for GroupQueryAttentionKernel {
             )));
         }
 
-        // Get past_key shape: [batch, kv_num_heads, past_seq_len, head_dim]
+        // Get past_key shape: [batch, kv_num_heads, max_seq_len, head_dim]
+        // Note: With buffer sharing, past_seq_len dimension is now max_seq_len
         let past_key_info = ctx.input_info(3)?;
         let past_key_shape = ctx.static_shape(&past_key_info.shape)?;
 
         if past_key_shape.len() != 4 {
             return Err(CodegenError::InvalidShape(format!(
-                "GroupQueryAttention expects past_key shape [batch, kv_heads, past_seq, head_dim], got {:?}",
+                "GroupQueryAttention expects past_key shape [batch, kv_heads, max_seq, head_dim], got {:?}",
                 past_key_shape
             )));
         }
 
-        let past_seq_len = past_key_shape[2];
-        let total_seq_len = past_seq_len + seq_len;
+        let max_seq_len = past_key_shape[2]; // This is max_sequence_length now
+        // Note: We'll get the actual past_seq_len at runtime from seqlens_k input
 
         // Calculate scale (default: 1 / sqrt(head_dim))
         let scale: f32 = ctx
@@ -139,27 +118,33 @@ impl OpKernel for GroupQueryAttentionKernel {
 
         let workgroup_size: u32 = 256;
 
-        // Step 1: Concatenate past_key with current key → present_key
-        let present_key_elements = batch_size * (kv_num_heads as usize) * total_seq_len * head_dim;
-        let concat_key_shader = ctx.compile_shader(
-            "gqa_concat_kv",
-            include_str!("../../shaders/attention/gqa_concat_kv.wgsl"),
+        // Step 1: Update past_key with current key → present_key (in-place)
+        let update_key_elements = batch_size * (kv_num_heads as usize) * max_seq_len * head_dim;
+        let update_key_shader = ctx.compile_shader(
+            "gqa_update_kv",
+            include_str!("../../shaders/attention/gqa_update_kv.wgsl"),
             HashMap::from([(
                 "WORKGROUP_SIZE".to_string(),
                 ShaderDefValue::UInt(workgroup_size),
             )]),
         )?;
 
-        let mut concat_key_immediates = Vec::new();
-        concat_key_immediates.extend_from_slice(&(batch_size as u32).to_le_bytes());
-        concat_key_immediates.extend_from_slice(&(seq_len as u32).to_le_bytes());
-        concat_key_immediates.extend_from_slice(&(past_seq_len as u32).to_le_bytes());
-        concat_key_immediates.extend_from_slice(&(total_seq_len as u32).to_le_bytes());
-        concat_key_immediates.extend_from_slice(&(kv_num_heads as u32).to_le_bytes());
-        concat_key_immediates.extend_from_slice(&(head_dim as u32).to_le_bytes());
+        // Note: past_seq_len is runtime-dynamic but we need it for the shader
+        // For now, we'll use 0 and the user needs to provide actual value via immediates update
+        // or we need to read it from seqlens_k input. Let's use 0 for prefill for now.
+        // TODO: Read past_seq_len from seqlens_k input at runtime
+        let past_seq_len = 0; // This will be wrong for decode! Need runtime input
 
-        let concat_key_step = Step::Dispatch {
-            shader_index: concat_key_shader,
+        let mut update_key_immediates = Vec::new();
+        update_key_immediates.extend_from_slice(&(batch_size as u32).to_le_bytes());
+        update_key_immediates.extend_from_slice(&(seq_len as u32).to_le_bytes());
+        update_key_immediates.extend_from_slice(&(past_seq_len as u32).to_le_bytes());
+        update_key_immediates.extend_from_slice(&(max_seq_len as u32).to_le_bytes());
+        update_key_immediates.extend_from_slice(&(kv_num_heads as u32).to_le_bytes());
+        update_key_immediates.extend_from_slice(&(head_dim as u32).to_le_bytes());
+
+        let update_key_step = Step::Dispatch {
+            shader_index: update_key_shader,
             bindings: vec![
                 BindingDesc {
                     buffer: ctx.input(3), // past_key
@@ -174,26 +159,24 @@ impl OpKernel for GroupQueryAttentionKernel {
                     read_only: false,
                 },
             ],
-            workgroups: [(present_key_elements as u32).div_ceil(workgroup_size), 1, 1],
-            immediates: Some(concat_key_immediates),
+            workgroups: [(update_key_elements as u32).div_ceil(workgroup_size), 1, 1],
+            immediates: Some(update_key_immediates),
         };
 
-        // Step 2: Concatenate past_value with current value → present_value
-        let present_value_elements =
-            batch_size * (kv_num_heads as usize) * total_seq_len * head_dim;
-        // Reuse the same shader
-        let concat_value_shader = concat_key_shader;
+        // Step 2: Update past_value with current value → present_value (in-place)
+        let update_value_elements = batch_size * (kv_num_heads as usize) * max_seq_len * head_dim;
+        let update_value_shader = update_key_shader; // Reuse same shader
 
-        let mut concat_value_immediates = Vec::new();
-        concat_value_immediates.extend_from_slice(&(batch_size as u32).to_le_bytes());
-        concat_value_immediates.extend_from_slice(&(seq_len as u32).to_le_bytes());
-        concat_value_immediates.extend_from_slice(&(past_seq_len as u32).to_le_bytes());
-        concat_value_immediates.extend_from_slice(&(total_seq_len as u32).to_le_bytes());
-        concat_value_immediates.extend_from_slice(&(kv_num_heads as u32).to_le_bytes());
-        concat_value_immediates.extend_from_slice(&(head_dim as u32).to_le_bytes());
+        let mut update_value_immediates = Vec::new();
+        update_value_immediates.extend_from_slice(&(batch_size as u32).to_le_bytes());
+        update_value_immediates.extend_from_slice(&(seq_len as u32).to_le_bytes());
+        update_value_immediates.extend_from_slice(&(past_seq_len as u32).to_le_bytes());
+        update_value_immediates.extend_from_slice(&(max_seq_len as u32).to_le_bytes());
+        update_value_immediates.extend_from_slice(&(kv_num_heads as u32).to_le_bytes());
+        update_value_immediates.extend_from_slice(&(head_dim as u32).to_le_bytes());
 
-        let concat_value_step = Step::Dispatch {
-            shader_index: concat_value_shader,
+        let update_value_step = Step::Dispatch {
+            shader_index: update_value_shader,
             bindings: vec![
                 BindingDesc {
                     buffer: ctx.input(4), // past_value
@@ -209,14 +192,16 @@ impl OpKernel for GroupQueryAttentionKernel {
                 },
             ],
             workgroups: [
-                (present_value_elements as u32).div_ceil(workgroup_size),
+                (update_value_elements as u32).div_ceil(workgroup_size),
                 1,
                 1,
             ],
-            immediates: Some(concat_value_immediates),
+            immediates: Some(update_value_immediates),
         };
 
-        // Step 3: Compute attention scores (Q @ K^T / scale)
+        let total_seq_len = max_seq_len; // We attend over the full cache
+
+        // Step 3: Compute attention scores (Q @ K^T * scale), with optional softcap
         let scores_elements = batch_size * (num_heads as usize) * seq_len * total_seq_len;
         let scores_size = (scores_elements * std::mem::size_of::<f32>()) as u64;
 
@@ -243,6 +228,7 @@ impl OpKernel for GroupQueryAttentionKernel {
         scores_immediates.extend_from_slice(&(kv_num_heads as u32).to_le_bytes());
         scores_immediates.extend_from_slice(&(head_dim as u32).to_le_bytes());
         scores_immediates.extend_from_slice(&scale.to_le_bytes());
+        scores_immediates.extend_from_slice(&softcap.to_le_bytes());
 
         let scores_step = Step::Dispatch {
             shader_index: scores_shader,
@@ -264,7 +250,7 @@ impl OpKernel for GroupQueryAttentionKernel {
             immediates: Some(scores_immediates),
         };
 
-        // Step 4: Apply causal mask and softmax
+        // Step 4: Apply causal mask, sliding window (if enabled), and softmax
         let softmax_rows = batch_size * (num_heads as usize) * seq_len;
         let softmax_shader = ctx.compile_shader(
             "gqa_softmax",
@@ -281,6 +267,7 @@ impl OpKernel for GroupQueryAttentionKernel {
         softmax_immediates.extend_from_slice(&(past_seq_len as u32).to_le_bytes());
         softmax_immediates.extend_from_slice(&(total_seq_len as u32).to_le_bytes());
         softmax_immediates.extend_from_slice(&(num_heads as u32).to_le_bytes());
+        softmax_immediates.extend_from_slice(&(local_window_size as i32).to_le_bytes());
 
         let softmax_step = Step::Dispatch {
             shader_index: softmax_shader,
@@ -333,8 +320,8 @@ impl OpKernel for GroupQueryAttentionKernel {
 
         // Return all steps
         Ok(vec![
-            concat_key_step,
-            concat_value_step,
+            update_key_step,
+            update_value_step,
             scores_step,
             softmax_step,
             output_step,

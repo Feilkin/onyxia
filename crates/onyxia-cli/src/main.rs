@@ -508,7 +508,8 @@ async fn cmd_run_model(
     dynamic_dims.insert("batch_size".to_string(), 1);
     dynamic_dims.insert("sequence_length".to_string(), max_seq_len); // Max length for buffer allocation
     dynamic_dims.insert("total_sequence_length".to_string(), max_seq_len);
-    dynamic_dims.insert("past_sequence_length".to_string(), 0);
+    // Pre-allocate KV cache to max_sequence_length for buffer sharing (prevents aliasing conflicts)
+    dynamic_dims.insert("past_sequence_length".to_string(), max_seq_len);
     dynamic_dims.insert("num_attention_heads".to_string(), 4);
     dynamic_dims.insert("num_key_value_heads".to_string(), 1);
     dynamic_dims.insert("head_dim".to_string(), 256);

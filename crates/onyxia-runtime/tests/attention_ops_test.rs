@@ -183,17 +183,17 @@ async fn test_rotary_embedding_e2e() {
     println!("  Output: {:?}", output);
 }
 
-/// End-to-end test: GroupQueryAttention with no cache (past_seq_len=0).
+/// End-to-end test: GroupQueryAttention with no cache (prefill mode).
 #[pollster::test]
 #[ignore] // Requires GPU
 async fn test_gqa_e2e_no_cache() {
-    // Build graph for GQA with no cache
+    // Build graph for GQA with no cache (prefill mode)
     // Query: [batch=1, seq_len=2, num_heads=2, head_dim=4] → [1, 2, 8]
     let mut graph = Graph::new();
 
     let batch = 1;
     let seq_len = 2;
-    let past_seq_len = 0; // No cache
+    let max_seq_len = 4; // Pre-allocated buffer size
     let num_heads = 2;
     let kv_num_heads = 1;
     let head_dim = 4;
@@ -225,20 +225,20 @@ async fn test_gqa_e2e_no_cache() {
         initializer: None,
     });
 
-    // Input 3: past_key [1, 1, 0, 4] (empty)
+    // Input 3: past_key [1, 1, max_seq_len, 4] - pre-allocated, initially empty
     graph.add_tensor(TensorInfo {
         name: "past_key".to_string(),
         dtype: DataType::F32,
-        shape: TensorShape::Static(vec![batch, kv_num_heads, past_seq_len, head_dim]),
+        shape: TensorShape::Static(vec![batch, kv_num_heads, max_seq_len, head_dim]),
         kind: TensorKind::Input,
         initializer: None,
     });
 
-    // Input 4: past_value [1, 1, 0, 4] (empty)
+    // Input 4: past_value [1, 1, max_seq_len, 4] - pre-allocated, initially empty
     graph.add_tensor(TensorInfo {
         name: "past_value".to_string(),
         dtype: DataType::F32,
-        shape: TensorShape::Static(vec![batch, kv_num_heads, past_seq_len, head_dim]),
+        shape: TensorShape::Static(vec![batch, kv_num_heads, max_seq_len, head_dim]),
         kind: TensorKind::Input,
         initializer: None,
     });
@@ -270,20 +270,20 @@ async fn test_gqa_e2e_no_cache() {
         initializer: None,
     });
 
-    // Output 1: present_key [1, 1, 2, 4]
+    // Output 1: present_key [1, 1, max_seq_len, 4] - same size as past_key
     graph.add_tensor(TensorInfo {
         name: "present_key".to_string(),
         dtype: DataType::F32,
-        shape: TensorShape::Static(vec![batch, kv_num_heads, seq_len, head_dim]),
+        shape: TensorShape::Static(vec![batch, kv_num_heads, max_seq_len, head_dim]),
         kind: TensorKind::Output,
         initializer: None,
     });
 
-    // Output 2: present_value [1, 1, 2, 4]
+    // Output 2: present_value [1, 1, max_seq_len, 4] - same size as past_value
     graph.add_tensor(TensorInfo {
         name: "present_value".to_string(),
         dtype: DataType::F32,
-        shape: TensorShape::Static(vec![batch, kv_num_heads, seq_len, head_dim]),
+        shape: TensorShape::Static(vec![batch, kv_num_heads, max_seq_len, head_dim]),
         kind: TensorKind::Output,
         initializer: None,
     });
@@ -366,19 +366,19 @@ async fn test_gqa_e2e_no_cache() {
         0.0, 3.0, 0.0, 0.0, // pos 1: [0,3,0,0]
     ];
 
-    // Empty past cache (0 elements)
-    let past_key_data: Vec<f32> = vec![];
-    let past_value_data: Vec<f32> = vec![];
+    // Empty past cache (pre-allocated to max_seq_len, all zeros)
+    let past_key_data = vec![0.0f32; max_seq_len * head_dim];
+    let past_value_data = vec![0.0f32; max_seq_len * head_dim];
 
     // Sequence lengths and total
-    let seqlens_k_data = vec![2i32];
+    let seqlens_k_data = vec![1i32]; // last valid index = seq_len - 1
     let total_seq_data = vec![2i32];
 
     let query = Tensor::from_vec(query_data.clone(), &[1, 2, 8]);
     let key = Tensor::from_vec(key_data.clone(), &[1, 2, 4]);
     let value = Tensor::from_vec(value_data.clone(), &[1, 2, 4]);
-    let past_key = Tensor::from_vec(past_key_data, &[1, 1, 0, 4]);
-    let past_value = Tensor::from_vec(past_value_data, &[1, 1, 0, 4]);
+    let past_key = Tensor::from_vec(past_key_data, &[1, 1, max_seq_len, 4]);
+    let past_value = Tensor::from_vec(past_value_data, &[1, 1, max_seq_len, 4]);
     let seqlens_k = Tensor::from_vec(seqlens_k_data, &[1]);
     let total_seq = Tensor::from_vec(total_seq_data, &[1]);
 
@@ -406,24 +406,51 @@ async fn test_gqa_e2e_no_cache() {
 
     // Verify output shape
     assert_eq!(output.len(), 16); // 1*2*8
-    assert_eq!(present_key.len(), 8); // 1*1*2*4
-    assert_eq!(present_value.len(), 8); // 1*1*2*4
+    assert_eq!(present_key.len(), max_seq_len * head_dim); // 1*1*max_seq_len*4 = 16
+    assert_eq!(present_value.len(), max_seq_len * head_dim);
 
-    // Verify present_key contains the key data (no past cache)
-    for (i, (&pk, &k)) in present_key.iter().zip(key_data.iter()).enumerate() {
-        assert!(
-            (pk - k).abs() < 1e-5,
-            "present_key mismatch at index {}: expected {}, got {}",
-            i,
-            k,
-            pk
-        );
-    }
+    // Verify present_key contains the key data in first seq_len positions
+    // Position 0: [1,0,0,0]
+    assert!(
+        (present_key[0] - 1.0).abs() < 1e-5,
+        "key pos 0[0] should be 1.0"
+    );
+    assert!(
+        (present_key[1] - 0.0).abs() < 1e-5,
+        "key pos 0[1] should be 0.0"
+    );
+    // Position 1: [0,1,0,0]
+    assert!(
+        (present_key[4] - 0.0).abs() < 1e-5,
+        "key pos 1[0] should be 0.0"
+    );
+    assert!(
+        (present_key[5] - 1.0).abs() < 1e-5,
+        "key pos 1[1] should be 1.0"
+    );
+    // Positions beyond seq_len should be 0
+    assert!(
+        (present_key[8] - 0.0).abs() < 1e-5,
+        "key pos 2 should be 0.0"
+    );
 
-    println!("✓ End-to-end GroupQueryAttention (no cache) test passed!");
+    // Verify present_value
+    assert!(
+        (present_value[0] - 2.0).abs() < 1e-5,
+        "value pos 0[0] should be 2.0"
+    );
+    assert!(
+        (present_value[5] - 3.0).abs() < 1e-5,
+        "value pos 1[1] should be 3.0"
+    );
+
+    println!("✓ End-to-end GroupQueryAttention (prefill, no prior cache) test passed!");
     println!("  Query shape: [1, 2, 8]");
     println!("  Output shape: [1, 2, 8]");
-    println!("  Present key shape: [1, 1, 2, 4]");
+    println!(
+        "  KV cache shape: [1, 1, {}, 4] ({} positions used)",
+        max_seq_len, seq_len
+    );
 }
 
 /// End-to-end test: GroupQueryAttention with KV cache.
@@ -434,14 +461,15 @@ async fn test_gqa_e2e_with_cache() {
     let mut graph = Graph::new();
 
     let batch = 1;
-    let seq_len = 1; // Process 1 new token
-    let past_seq_len = 2; // 2 tokens in cache
+    let seq_len = 3; // Process 3 tokens (prefill mode)
+    let past_seq_len = 0; // No prior cache (prefill)
+    let max_seq_len = 5; // Pre-allocated buffer size for KV cache
     let num_heads = 2;
     let kv_num_heads = 1;
     let head_dim = 4;
-    let total_seq_len = past_seq_len + seq_len;
+    let total_seq_len = seq_len; // In prefill, total = seq_len
 
-    // Input 0: query [1, 1, 8]
+    // Input 0: query [1, 3, 8] - 3 tokens
     graph.add_tensor(TensorInfo {
         name: "query".to_string(),
         dtype: DataType::F32,
@@ -450,7 +478,7 @@ async fn test_gqa_e2e_with_cache() {
         initializer: None,
     });
 
-    // Input 1: key [1, 1, 4]
+    // Input 1: key [1, 3, 4]
     graph.add_tensor(TensorInfo {
         name: "key".to_string(),
         dtype: DataType::F32,
@@ -459,7 +487,7 @@ async fn test_gqa_e2e_with_cache() {
         initializer: None,
     });
 
-    // Input 2: value [1, 1, 4]
+    // Input 2: value [1, 3, 4]
     graph.add_tensor(TensorInfo {
         name: "value".to_string(),
         dtype: DataType::F32,
@@ -468,20 +496,20 @@ async fn test_gqa_e2e_with_cache() {
         initializer: None,
     });
 
-    // Input 3: past_key [1, 1, 2, 4]
+    // Input 3: past_key [1, 1, max_seq_len, 4] - pre-allocated to max size
     graph.add_tensor(TensorInfo {
         name: "past_key".to_string(),
         dtype: DataType::F32,
-        shape: TensorShape::Static(vec![batch, kv_num_heads, past_seq_len, head_dim]),
+        shape: TensorShape::Static(vec![batch, kv_num_heads, max_seq_len, head_dim]),
         kind: TensorKind::Input,
         initializer: None,
     });
 
-    // Input 4: past_value [1, 1, 2, 4]
+    // Input 4: past_value [1, 1, max_seq_len, 4] - pre-allocated to max size
     graph.add_tensor(TensorInfo {
         name: "past_value".to_string(),
         dtype: DataType::F32,
-        shape: TensorShape::Static(vec![batch, kv_num_heads, past_seq_len, head_dim]),
+        shape: TensorShape::Static(vec![batch, kv_num_heads, max_seq_len, head_dim]),
         kind: TensorKind::Input,
         initializer: None,
     });
@@ -504,7 +532,7 @@ async fn test_gqa_e2e_with_cache() {
         initializer: None,
     });
 
-    // Output 0: output [1, 1, 8]
+    // Output 0: output [1, 3, 8]
     graph.add_tensor(TensorInfo {
         name: "output".to_string(),
         dtype: DataType::F32,
@@ -513,20 +541,20 @@ async fn test_gqa_e2e_with_cache() {
         initializer: None,
     });
 
-    // Output 1: present_key [1, 1, 3, 4]
+    // Output 1: present_key [1, 1, max_seq_len, 4] - same size as past_key
     graph.add_tensor(TensorInfo {
         name: "present_key".to_string(),
         dtype: DataType::F32,
-        shape: TensorShape::Static(vec![batch, kv_num_heads, total_seq_len, head_dim]),
+        shape: TensorShape::Static(vec![batch, kv_num_heads, max_seq_len, head_dim]),
         kind: TensorKind::Output,
         initializer: None,
     });
 
-    // Output 2: present_value [1, 1, 3, 4]
+    // Output 2: present_value [1, 1, max_seq_len, 4] - same size as past_value
     graph.add_tensor(TensorInfo {
         name: "present_value".to_string(),
         dtype: DataType::F32,
-        shape: TensorShape::Static(vec![batch, kv_num_heads, total_seq_len, head_dim]),
+        shape: TensorShape::Static(vec![batch, kv_num_heads, max_seq_len, head_dim]),
         kind: TensorKind::Output,
         initializer: None,
     });
@@ -590,42 +618,41 @@ async fn test_gqa_e2e_with_cache() {
         .await
         .expect("Plan loading should succeed");
 
-    // Test data
-    // Query: [1, 1, 8] - 1 new position
+    // Test data - prefill with 3 tokens
+    // Query: [1, 3, 8] - 3 positions
     let query_data = vec![
-        1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, // pos 2: head0=[1,0,0,0], head1=[0,1,0,0]
+        1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, // pos 0: head0=[1,0,0,0], head1=[0,1,0,0]
+        0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, // pos 1: head0=[0,1,0,0], head1=[1,0,0,0]
+        0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, // pos 2: head0=[0,0,1,0], head1=[0,0,1,0]
     ];
 
-    // Key: [1, 1, 4] - 1 new position
+    // Key: [1, 3, 4] - 3 positions
     let key_data = vec![
-        0.0f32, 0.0, 1.0, 0.0, // pos 2: [0,0,1,0]
-    ];
-
-    // Value: [1, 1, 4]
-    let value_data = vec![
-        0.0f32, 0.0, 4.0, 0.0, // pos 2: [0,0,4,0]
-    ];
-
-    // Past cache: [1, 1, 2, 4]
-    let past_key_data = vec![
         1.0f32, 0.0, 0.0, 0.0, // pos 0: [1,0,0,0]
         0.0, 1.0, 0.0, 0.0, // pos 1: [0,1,0,0]
+        0.0, 0.0, 1.0, 0.0, // pos 2: [0,0,1,0]
     ];
 
-    let past_value_data = vec![
+    // Value: [1, 3, 4]
+    let value_data = vec![
         2.0f32, 0.0, 0.0, 0.0, // pos 0: [2,0,0,0]
         0.0, 3.0, 0.0, 0.0, // pos 1: [0,3,0,0]
+        0.0, 0.0, 4.0, 0.0, // pos 2: [0,0,4,0]
     ];
 
-    // Sequence lengths
-    let seqlens_k_data = vec![3i32]; // Total 3 tokens
-    let total_seq_data = vec![3i32];
+    // Past cache: [1, 1, max_seq_len, 4] - empty (all zeros)
+    let past_key_data = vec![0.0f32; max_seq_len * head_dim];
+    let past_value_data = vec![0.0f32; max_seq_len * head_dim];
 
-    let query = Tensor::from_vec(query_data.clone(), &[1, 1, 8]);
-    let key = Tensor::from_vec(key_data.clone(), &[1, 1, 4]);
-    let value = Tensor::from_vec(value_data.clone(), &[1, 1, 4]);
-    let past_key = Tensor::from_vec(past_key_data.clone(), &[1, 1, 2, 4]);
-    let past_value = Tensor::from_vec(past_value_data.clone(), &[1, 1, 2, 4]);
+    // Sequence lengths
+    let seqlens_k_data = vec![2i32]; // last valid index = total_seq - 1 = 3 - 1 = 2
+    let total_seq_data = vec![3i32]; // total sequence length
+
+    let query = Tensor::from_vec(query_data.clone(), &[1, 3, 8]);
+    let key = Tensor::from_vec(key_data.clone(), &[1, 3, 4]);
+    let value = Tensor::from_vec(value_data.clone(), &[1, 3, 4]);
+    let past_key = Tensor::from_vec(past_key_data.clone(), &[1, 1, max_seq_len, 4]);
+    let past_value = Tensor::from_vec(past_value_data.clone(), &[1, 1, max_seq_len, 4]);
     let seqlens_k = Tensor::from_vec(seqlens_k_data, &[1]);
     let total_seq = Tensor::from_vec(total_seq_data, &[1]);
 
@@ -652,52 +679,60 @@ async fn test_gqa_e2e_with_cache() {
         .expect("Should convert to f32");
 
     // Verify output shape
-    assert_eq!(output.len(), 8); // 1*1*8
-    assert_eq!(present_key.len(), 12); // 1*1*3*4
-    assert_eq!(present_value.len(), 12);
+    assert_eq!(output.len(), 24); // 1*3*8
+    assert_eq!(present_key.len(), max_seq_len * head_dim); // 1*1*5*4 = 20
+    assert_eq!(present_value.len(), max_seq_len * head_dim);
 
-    // Verify present_key contains past_key + new key
-    let expected_present_key: Vec<f32> = past_key_data
-        .iter()
-        .chain(key_data.iter())
-        .copied()
-        .collect();
-    for (i, (&pk, &exp)) in present_key
-        .iter()
-        .zip(expected_present_key.iter())
-        .enumerate()
-    {
-        assert!(
-            (pk - exp).abs() < 1e-5,
-            "present_key mismatch at index {}: expected {}, got {}",
-            i,
-            exp,
-            pk
-        );
-    }
+    // Verify present_key contains the 3 new keys in first 3 positions
+    // Position 0: [1,0,0,0]
+    assert!(
+        (present_key[0] - 1.0).abs() < 1e-5,
+        "key pos 0[0] should be 1.0"
+    );
+    assert!(
+        (present_key[1] - 0.0).abs() < 1e-5,
+        "key pos 0[1] should be 0.0"
+    );
+    // Position 1: [0,1,0,0]
+    assert!(
+        (present_key[4] - 0.0).abs() < 1e-5,
+        "key pos 1[0] should be 0.0"
+    );
+    assert!(
+        (present_key[5] - 1.0).abs() < 1e-5,
+        "key pos 1[1] should be 1.0"
+    );
+    // Position 2: [0,0,1,0]
+    assert!(
+        (present_key[8] - 0.0).abs() < 1e-5,
+        "key pos 2[0] should be 0.0"
+    );
+    assert!(
+        (present_key[10] - 1.0).abs() < 1e-5,
+        "key pos 2[2] should be 1.0"
+    );
+    // Positions 3-4: should be 0 (beyond valid data)
 
-    // Verify present_value contains past_value + new value
-    let expected_present_value: Vec<f32> = past_value_data
-        .iter()
-        .chain(value_data.iter())
-        .copied()
-        .collect();
-    for (i, (&pv, &exp)) in present_value
-        .iter()
-        .zip(expected_present_value.iter())
-        .enumerate()
-    {
-        assert!(
-            (pv - exp).abs() < 1e-5,
-            "present_value mismatch at index {}: expected {}, got {}",
-            i,
-            exp,
-            pv
-        );
-    }
+    // Verify present_value contains the 3 new values
+    assert!(
+        (present_value[0] - 2.0).abs() < 1e-5,
+        "value pos 0[0] should be 2.0"
+    );
+    assert!(
+        (present_value[5] - 3.0).abs() < 1e-5,
+        "value pos 1[1] should be 3.0"
+    );
+    assert!(
+        (present_value[10] - 4.0).abs() < 1e-5,
+        "value pos 2[2] should be 4.0"
+    );
 
-    println!("✓ End-to-end GroupQueryAttention (with cache) test passed!");
-    println!("  Query shape: [1, 1, 8]");
+    println!("✓ End-to-end GroupQueryAttention (prefill mode, buffer sharing) test passed!");
+    println!("  Query shape: [1, 3, 8]");
+    println!(
+        "  KV cache: [1, 1, {}, 4] (pre-allocated, {} positions used)",
+        max_seq_len, total_seq_len
+    );
     println!("  Past cache: 2 tokens");
     println!("  Output shape: [1, 1, 8]");
     println!("  Present key shape: [1, 1, 3, 4]");

@@ -52,7 +52,8 @@ fn test_compile_gemma_model() {
     let dynamic_dimensions = HashMap::from([
         ("batch_size".to_string(), 1),
         ("sequence_length".to_string(), 64),
-        ("past_sequence_length".to_string(), 0),
+        // Pre-allocate KV cache to max_sequence_length for buffer sharing (prevents aliasing conflicts)
+        ("past_sequence_length".to_string(), 64),
         ("total_sequence_length".to_string(), 64),
         ("num_attention_heads".to_string(), 8),
         ("num_key_value_heads".to_string(), 8),

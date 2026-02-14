@@ -70,7 +70,8 @@ async fn test_generate_gemma_impl(
     dynamic_dims.insert("batch_size".to_string(), 1);
     dynamic_dims.insert("sequence_length".to_string(), 128); // Max length for buffer allocation
     dynamic_dims.insert("total_sequence_length".to_string(), 128);
-    dynamic_dims.insert("past_sequence_length".to_string(), 0);
+    // Pre-allocate KV cache to max_sequence_length for buffer sharing (prevents aliasing conflicts)
+    dynamic_dims.insert("past_sequence_length".to_string(), 128);
     dynamic_dims.insert("num_attention_heads".to_string(), 4);
     dynamic_dims.insert("num_key_value_heads".to_string(), 1);
     dynamic_dims.insert("head_dim".to_string(), 256);
@@ -208,7 +209,8 @@ async fn test_sampling_variance_impl(
     dynamic_dims.insert("batch_size".to_string(), 1);
     dynamic_dims.insert("sequence_length".to_string(), 128); // Max length for buffer allocation
     dynamic_dims.insert("total_sequence_length".to_string(), 128);
-    dynamic_dims.insert("past_sequence_length".to_string(), 0);
+    // Pre-allocate KV cache to max_sequence_length for buffer sharing (prevents aliasing conflicts)
+    dynamic_dims.insert("past_sequence_length".to_string(), 128);
     dynamic_dims.insert("num_attention_heads".to_string(), 4);
     dynamic_dims.insert("num_key_value_heads".to_string(), 1);
     dynamic_dims.insert("head_dim".to_string(), 256);
@@ -323,7 +325,8 @@ async fn test_deterministic_generation_impl(
     dynamic_dims.insert("batch_size".to_string(), 1);
     dynamic_dims.insert("sequence_length".to_string(), 128); // Max length for buffer allocation
     dynamic_dims.insert("total_sequence_length".to_string(), 128);
-    dynamic_dims.insert("past_sequence_length".to_string(), 0);
+    // Pre-allocate KV cache to max_sequence_length for buffer sharing
+    dynamic_dims.insert("past_sequence_length".to_string(), 128);
     dynamic_dims.insert("num_attention_heads".to_string(), 4);
     dynamic_dims.insert("num_key_value_heads".to_string(), 1);
     dynamic_dims.insert("head_dim".to_string(), 256);

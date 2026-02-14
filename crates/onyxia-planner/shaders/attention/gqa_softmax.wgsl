@@ -15,6 +15,8 @@ struct ImmediateConstants {
     past_seq_len: u32,
     total_seq_len: u32,
     num_heads: u32,
+    // Sliding window size (-1 = disabled, >=0 = enabled)
+    local_window_size: i32,
 }
 
 @group(0) @binding(0) var<storage, read_write> scores: array<f32>;
@@ -38,18 +40,35 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // A query at position q_pos can attend to keys at positions 0..=(past_seq_len + q_pos)
     let valid_k_pos_max = constants.past_seq_len + q_pos;
     
+    // Calculate sliding window mask boundary (if enabled)
+    // When local_window_size >= 0, only attend to keys within the window
+    // k_pos must be > (past_seq_len + q_pos - local_window_size)
+    let has_sliding_window = constants.local_window_size >= 0;
+    let window_min_k_pos = i32(constants.past_seq_len + q_pos) - constants.local_window_size;
+    
     // Base offset for this row in the scores array
     let base_offset = batch * (constants.num_heads * constants.seq_len * constants.total_seq_len)
                     + head * (constants.seq_len * constants.total_seq_len)
                     + q_pos * constants.total_seq_len;
     
-    // Step 1: Apply causal mask and find max value (for numerical stability)
+    // Step 1: Apply causal mask, sliding window, and find max value (for numerical stability)
     var max_val = NEG_INF;
     for (var k_pos = 0u; k_pos < constants.total_seq_len; k_pos = k_pos + 1u) {
         let idx = base_offset + k_pos;
         
+        var should_mask = false;
+        
         // Apply causal mask: prevent attending to future tokens
         if k_pos > valid_k_pos_max {
+            should_mask = true;
+        }
+        
+        // Apply sliding window mask: prevent attending to tokens outside window
+        if has_sliding_window && i32(k_pos) < window_min_k_pos {
+            should_mask = true;
+        }
+        
+        if should_mask {
             scores[idx] = NEG_INF;
         } else {
             max_val = max(max_val, scores[idx]);

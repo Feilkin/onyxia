@@ -47,7 +47,8 @@ async fn test_runtime_load_gemma_model() {
     let dynamic_dimensions = HashMap::from([
         ("batch_size".to_string(), 1),
         ("sequence_length".to_string(), 64),
-        ("past_sequence_length".to_string(), 0),
+        // Pre-allocate KV cache to max_sequence_length for buffer sharing (prevents aliasing conflicts)
+        ("past_sequence_length".to_string(), 64),
         ("total_sequence_length".to_string(), 64),
     ]);
 
@@ -127,7 +128,8 @@ async fn test_runtime_load_gemma_full_precision() {
     let dynamic_dimensions = HashMap::from([
         ("batch_size".to_string(), 1),
         ("sequence_length".to_string(), 64),
-        ("past_sequence_length".to_string(), 0),
+        // Pre-allocate KV cache to max_sequence_length for buffer sharing (prevents aliasing conflicts)
+        ("past_sequence_length".to_string(), 64),
         ("total_sequence_length".to_string(), 64),
     ]);
 

@@ -19,6 +19,8 @@ struct ImmediateConstants {
     head_dim: u32,
     // Scale factor (typically 1 / sqrt(head_dim))
     scale: f32,
+    // Softcap value (0.0 = disabled)
+    softcap: f32,
 }
 
 @group(0) @binding(0) var<storage, read> query: array<f32>;
@@ -60,6 +62,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         dot_product += query[q_idx] * present_key[k_idx];
     }
     
-    // Apply scaling and store
-    scores[idx] = dot_product * constants.scale;
+    // Apply scaling
+    var score = dot_product * constants.scale;
+    
+    // Apply softcap if enabled (softcap != 0.0)
+    // Formula: score = softcap * tanh(score / softcap)
+    if constants.softcap != 0.0 {
+        score = constants.softcap * tanh(score / constants.softcap);
+    }
+    
+    scores[idx] = score;
 }
