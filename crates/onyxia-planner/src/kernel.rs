@@ -309,6 +309,7 @@ impl KernelRegistry {
         registry.register("Concat", Box::new(crate::kernels::ConcatKernel));
         registry.register("Cos", Box::new(crate::kernels::CosKernel));
         registry.register("Equal", Box::new(crate::kernels::EqualKernel));
+        registry.register("Expand", Box::new(crate::kernels::ExpandKernel));
         registry.register("Gather", Box::new(crate::kernels::GatherKernel));
         registry.register("Greater", Box::new(crate::kernels::GreaterKernel));
         registry.register("Sin", Box::new(crate::kernels::SinKernel));
