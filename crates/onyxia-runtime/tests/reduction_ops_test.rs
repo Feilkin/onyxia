@@ -3,7 +3,7 @@
 //! Tests: ReduceSum
 
 use onyxia_onnx::{AttributeValue, DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
-use onyxia_planner::{compile, KernelRegistry};
+use onyxia_planner::{KernelRegistry, compile};
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 
@@ -56,9 +56,7 @@ fn make_reducesum_graph() -> Graph {
 #[ignore] // Requires GPU
 async fn test_reducesum_e2e() {
     let graph = make_reducesum_graph();
-    graph
-        .validate()
-        .expect("Graph validation should succeed");
+    graph.validate().expect("Graph validation should succeed");
 
     let registry = KernelRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");

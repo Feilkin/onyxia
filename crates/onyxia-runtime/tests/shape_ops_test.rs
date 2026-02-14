@@ -3,7 +3,7 @@
 //! Tests: Reshape, Transpose, Concat
 
 use onyxia_onnx::{AttributeValue, DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
-use onyxia_planner::{compile, KernelRegistry};
+use onyxia_planner::{KernelRegistry, compile};
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 
@@ -55,9 +55,7 @@ async fn test_reshape_e2e() {
     let registry = KernelRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
-    let runtime = Runtime::new()
-        .await
-        .expect("Runtime init should succeed");
+    let runtime = Runtime::new().await.expect("Runtime init should succeed");
     let mut executor = runtime
         .load_model(plan)
         .await
@@ -132,9 +130,7 @@ fn make_transpose_graph() -> Graph {
 #[ignore] // Requires GPU
 async fn test_transpose_2d_e2e() {
     let graph = make_transpose_graph();
-    graph
-        .validate()
-        .expect("Graph validation should succeed");
+    graph.validate().expect("Graph validation should succeed");
 
     // Compile to ExecutionPlan
     let registry = KernelRegistry::with_defaults();
@@ -230,9 +226,7 @@ fn make_concat_graph() -> Graph {
 #[ignore] // Requires GPU
 async fn test_concat_e2e() {
     let graph = make_concat_graph();
-    graph
-        .validate()
-        .expect("Graph validation should succeed");
+    graph.validate().expect("Graph validation should succeed");
 
     let registry = KernelRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");

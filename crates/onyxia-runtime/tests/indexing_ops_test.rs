@@ -3,7 +3,7 @@
 //! Tests: Gather (simple and embedding lookup)
 
 use onyxia_onnx::{DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
-use onyxia_planner::{compile, KernelRegistry};
+use onyxia_planner::{KernelRegistry, compile};
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 
@@ -61,9 +61,7 @@ fn make_gather_graph() -> Graph {
 #[ignore] // Requires GPU
 async fn test_gather_e2e() {
     let graph = make_gather_graph();
-    graph
-        .validate()
-        .expect("Graph validation should succeed");
+    graph.validate().expect("Graph validation should succeed");
 
     // Compile to ExecutionPlan
     let registry = KernelRegistry::with_defaults();
@@ -167,9 +165,7 @@ async fn test_gather_embedding_e2e() {
     graph.metadata.producer_name = "onyxia_test".to_string();
     graph.metadata.model_version = 1;
 
-    graph
-        .validate()
-        .expect("Graph validation should succeed");
+    graph.validate().expect("Graph validation should succeed");
 
     // Compile and load
     let registry = KernelRegistry::with_defaults();

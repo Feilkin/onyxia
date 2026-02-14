@@ -1,6 +1,6 @@
 //! End-to-end tests for activation operations.
 //!
-//! Tests: Gelu, Cos
+//! Tests: Gelu, Cos, Sin
 
 mod common;
 
@@ -104,33 +104,81 @@ async fn test_cos_e2e() {
         "cos(0) should be 1, got {}",
         y[0]
     );
-    assert!(
-        y[1].abs() < 0.0001,
-        "cos(π/2) should be ~0, got {}",
-        y[1]
-    );
+    assert!(y[1].abs() < 0.0001, "cos(π/2) should be ~0, got {}", y[1]);
     assert!(
         (y[2] + 1.0).abs() < 0.0001,
         "cos(π) should be -1, got {}",
         y[2]
     );
-    assert!(
-        y[3].abs() < 0.0001,
-        "cos(3π/2) should be ~0, got {}",
-        y[3]
-    );
+    assert!(y[3].abs() < 0.0001, "cos(3π/2) should be ~0, got {}", y[3]);
     assert!(
         (y[4] - 1.0).abs() < 0.0001,
         "cos(2π) should be 1, got {}",
         y[4]
     );
+    assert!(y[5].abs() < 0.0001, "cos(-π/2) should be ~0, got {}", y[5]);
+
+    println!("✓ End-to-end Cos test passed!");
+    println!("  Input x: [0, π/2, π, 3π/2, 2π, -π/2]");
+    println!("  Output y: {:?}", y);
+}
+
+/// End-to-end test: Sin activation on GPU and verify correct output.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_sin_e2e() {
+    // Build graph
+    let graph = make_unary_graph("Sin", "sin_node", DataType::F32, &[6], &[6]);
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile and execute
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new().await.expect("Runtime init should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Test inputs with known sine outputs
+    // sin(0) = 0, sin(π/2) ≈ 1, sin(π) ≈ 0, sin(3π/2) ≈ -1, sin(2π) ≈ 0, sin(-π/2) ≈ -1
+    use std::f32::consts::PI;
+    let x = Tensor::from_vec(
+        vec![0.0f32, PI / 2.0, PI, 3.0 * PI / 2.0, 2.0 * PI, -PI / 2.0],
+        &[6],
+    );
+
+    let outputs = executor
+        .run(&[("input", x)])
+        .expect("Execution should succeed");
+
+    let y = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+    assert_eq!(y.len(), 6);
+
+    // Verify sine values with appropriate tolerance
+    assert!(y[0].abs() < 0.0001, "sin(0) should be 0, got {}", y[0]);
     assert!(
-        y[5].abs() < 0.0001,
-        "cos(-π/2) should be ~0, got {}",
+        (y[1] - 1.0).abs() < 0.0001,
+        "sin(π/2) should be 1, got {}",
+        y[1]
+    );
+    assert!(y[2].abs() < 0.0001, "sin(π) should be ~0, got {}", y[2]);
+    assert!(
+        (y[3] + 1.0).abs() < 0.0001,
+        "sin(3π/2) should be -1, got {}",
+        y[3]
+    );
+    assert!(y[4].abs() < 0.0001, "sin(2π) should be ~0, got {}", y[4]);
+    assert!(
+        (y[5] + 1.0).abs() < 0.0001,
+        "sin(-π/2) should be -1, got {}",
         y[5]
     );
 
-    println!("✓ End-to-end Cos test passed!");
+    println!("✓ End-to-end Sin test passed!");
     println!("  Input x: [0, π/2, π, 3π/2, 2π, -π/2]");
     println!("  Output y: {:?}", y);
 }
