@@ -1,11 +1,11 @@
 //! End-to-end tests for elementwise operations.
 //!
-//! Tests: Add, Sub, Mul, Div, Pow
+//! Tests: Add, Sub, Mul, Div, Pow, Max
 
 mod common;
 
 use common::make_binary_elementwise_graph;
-use onyxia_onnx::DataType;
+use onyxia_onnx::{DataType, Graph, TensorInfo, TensorKind, TensorShape};
 use onyxia_planner::{KernelRegistry, compile};
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
@@ -1364,4 +1364,270 @@ async fn test_pow_broadcast_scalar_e2e() {
     println!("  Input a: [2.0] (scalar, broadcasts)");
     println!("  Input b: [1.0, 2.0, 3.0, 4.0]");
     println!("  Output c: {:?}", c);
+}
+
+/// End-to-end test: Max of two vectors on GPU and verify correct output.
+#[pollster::test]
+#[ignore] // Requires GPU - ignore in CI or environments without GPU
+async fn test_max_basic_e2e() {
+    // Build graph
+    let graph = make_binary_elementwise_graph("Max", "max_node", DataType::F32, &[4]);
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Verify plan structure
+    assert_eq!(plan.operations.len(), 1);
+    assert_eq!(plan.shaders.len(), 1);
+    assert_eq!(plan.inputs.len(), 2);
+    assert_eq!(plan.outputs.len(), 1);
+
+    // Initialize runtime and load plan
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    println!(
+        "GPU: {} ({:?})",
+        runtime.adapter_info().name,
+        runtime.adapter_info().backend
+    );
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Run with concrete inputs
+    let a = Tensor::from_vec(vec![1.0f32, 5.0, 2.0, 8.0], &[4]);
+    let b = Tensor::from_vec(vec![3.0f32, 2.0, 6.0, 4.0], &[4]);
+
+    let outputs = executor
+        .run(&[("a", a), ("b", b)])
+        .expect("Execution should succeed");
+
+    // Verify output: max(a, b) element-wise
+    let c = outputs["c"].to_vec::<f32>().expect("Should convert to f32");
+    assert_eq!(c, vec![3.0, 5.0, 6.0, 8.0], "Max result incorrect");
+
+    println!("✓ End-to-end Max basic test passed!");
+    println!("  Input a: [1.0, 5.0, 2.0, 8.0]");
+    println!("  Input b: [3.0, 2.0, 6.0, 4.0]");
+    println!("  Output c: {:?}", c);
+}
+
+/// End-to-end test: Max with broadcasting (scalar broadcasted to tensor).
+#[pollster::test]
+#[ignore] // Requires GPU - ignore in CI or environments without GPU
+async fn test_max_broadcast_e2e() {
+    // Build graph with different shapes
+    let mut graph = Graph::new();
+
+    // Input a: scalar [1]
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Input b: vector [4]
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Output c: vector [4] (broadcasted)
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = onyxia_onnx::Node::new("Max");
+    node.name = "max_broadcast".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Initialize runtime and load plan
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Broadcast scalar 5.0 to vector [1, 8, 3, 4]
+    // Result should be [max(5, 1), max(5, 8), max(5, 3), max(5, 4)] = [5, 8, 5, 5]
+    let a = Tensor::from_vec(vec![5.0f32], &[1]);
+    let b = Tensor::from_vec(vec![1.0f32, 8.0, 3.0, 4.0], &[4]);
+
+    let outputs = executor
+        .run(&[("a", a), ("b", b)])
+        .expect("Execution should succeed");
+
+    let c = outputs["c"].to_vec::<f32>().expect("Should convert to f32");
+    assert_eq!(
+        c,
+        vec![5.0, 8.0, 5.0, 5.0],
+        "Max broadcast result incorrect"
+    );
+
+    println!("✓ End-to-end Max broadcast test passed!");
+    println!("  Input a: [5.0] (scalar, broadcasts)");
+    println!("  Input b: [1.0, 8.0, 3.0, 4.0]");
+    println!("  Output c: {:?}", c);
+}
+
+/// End-to-end test: Max with negative values and edge cases.
+#[pollster::test]
+#[ignore] // Requires GPU - ignore in CI or environments without GPU
+async fn test_max_negative_e2e() {
+    // Build graph
+    let graph = make_binary_elementwise_graph("Max", "max_negative", DataType::F32, &[4]);
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Initialize runtime and load plan
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Test with negative values: max(-1, -5), max(-2, 0), max(3, -1), max(-10, -10)
+    let a = Tensor::from_vec(vec![-1.0f32, -2.0, 3.0, -10.0], &[4]);
+    let b = Tensor::from_vec(vec![-5.0f32, 0.0, -1.0, -10.0], &[4]);
+
+    let outputs = executor
+        .run(&[("a", a), ("b", b)])
+        .expect("Execution should succeed");
+
+    let c = outputs["c"].to_vec::<f32>().expect("Should convert to f32");
+    assert_eq!(
+        c,
+        vec![-1.0, 0.0, 3.0, -10.0],
+        "Max negative result incorrect"
+    );
+
+    println!("✓ End-to-end Max negative test passed!");
+    println!("  Input a: [-1.0, -2.0, 3.0, -10.0]");
+    println!("  Input b: [-5.0, 0.0, -1.0, -10.0]");
+    println!("  Output c: {:?}", c);
+}
+
+/// End-to-end test: Max with three inputs (tests chaining).
+#[pollster::test]
+#[ignore] // Requires GPU - ignore in CI or environments without GPU
+async fn test_max_three_inputs_e2e() {
+    // Build graph with three inputs
+    let mut graph = Graph::new();
+
+    // Add three input tensors
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add output tensor
+    graph.add_tensor(TensorInfo {
+        name: "d".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Max node with three inputs
+    let mut node = onyxia_onnx::Node::new("Max");
+    node.name = "max_three".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+    node.outputs = vec!["d".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+    graph.outputs = vec!["d".to_string()];
+
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Should have 1 operation with 2 steps (chained pairwise max)
+    assert_eq!(plan.operations.len(), 1);
+    assert_eq!(plan.operations[0].steps.len(), 2);
+
+    // Initialize runtime and load plan
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Compute max(1, 5, 3), max(2, 1, 6), max(8, 4, 2), max(3, 7, 9)
+    let a = Tensor::from_vec(vec![1.0f32, 2.0, 8.0, 3.0], &[4]);
+    let b = Tensor::from_vec(vec![5.0f32, 1.0, 4.0, 7.0], &[4]);
+    let c = Tensor::from_vec(vec![3.0f32, 6.0, 2.0, 9.0], &[4]);
+
+    let outputs = executor
+        .run(&[("a", a), ("b", b), ("c", c)])
+        .expect("Execution should succeed");
+
+    let d = outputs["d"].to_vec::<f32>().expect("Should convert to f32");
+    assert_eq!(d, vec![5.0, 6.0, 8.0, 9.0], "Max three inputs incorrect");
+
+    println!("✓ End-to-end Max three inputs test passed!");
+    println!("  Input a: [1.0, 2.0, 8.0, 3.0]");
+    println!("  Input b: [5.0, 1.0, 4.0, 7.0]");
+    println!("  Input c: [3.0, 6.0, 2.0, 9.0]");
+    println!("  Output d: {:?}", d);
 }

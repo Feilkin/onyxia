@@ -314,6 +314,7 @@ impl KernelRegistry {
         registry.register("Expand", Box::new(crate::kernels::ExpandKernel));
         registry.register("Gather", Box::new(crate::kernels::GatherKernel));
         registry.register("Greater", Box::new(crate::kernels::GreaterKernel));
+        registry.register("Max", Box::new(crate::kernels::MaxKernel));
         registry.register("Sin", Box::new(crate::kernels::SinKernel));
         registry.register("Sqrt", Box::new(crate::kernels::SqrtKernel));
         registry.register("Neg", Box::new(crate::kernels::NegKernel));
