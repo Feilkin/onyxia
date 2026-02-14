@@ -268,3 +268,155 @@ async fn test_tanh_e2e() {
     println!("  Input x: [-5.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 5.0]");
     println!("  Output y: {:?}", y);
 }
+
+/// End-to-end test: Sqrt (square root) on GPU and verify correct output.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_sqrt_e2e() {
+    // Build graph
+    let graph = make_unary_graph("Sqrt", "sqrt_node", DataType::F32, &[10], &[10]);
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile and execute
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new().await.expect("Runtime init should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Test inputs with known square root outputs
+    // sqrt(0) = 0, sqrt(1) = 1, sqrt(4) = 2, sqrt(9) = 3, sqrt(16) = 4
+    // sqrt(25) = 5, sqrt(100) = 10, sqrt(2) ≈ 1.414, sqrt(0.25) = 0.5
+    let x = Tensor::from_vec(
+        vec![0.0f32, 1.0, 2.0, 4.0, 9.0, 16.0, 25.0, 100.0, 0.25, 0.01],
+        &[10],
+    );
+
+    let outputs = executor
+        .run(&[("input", x)])
+        .expect("Execution should succeed");
+
+    let y = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+    assert_eq!(y.len(), 10);
+
+    // Verify sqrt values with appropriate tolerance
+    assert!(y[0].abs() < 0.0001, "sqrt(0) should be 0, got {}", y[0]);
+    assert!(
+        (y[1] - 1.0).abs() < 0.0001,
+        "sqrt(1) should be 1, got {}",
+        y[1]
+    );
+    assert!(
+        (y[2] - 1.414213).abs() < 0.001,
+        "sqrt(2) should be ≈ 1.414, got {}",
+        y[2]
+    );
+    assert!(
+        (y[3] - 2.0).abs() < 0.0001,
+        "sqrt(4) should be 2, got {}",
+        y[3]
+    );
+    assert!(
+        (y[4] - 3.0).abs() < 0.0001,
+        "sqrt(9) should be 3, got {}",
+        y[4]
+    );
+    assert!(
+        (y[5] - 4.0).abs() < 0.0001,
+        "sqrt(16) should be 4, got {}",
+        y[5]
+    );
+    assert!(
+        (y[6] - 5.0).abs() < 0.0001,
+        "sqrt(25) should be 5, got {}",
+        y[6]
+    );
+    assert!(
+        (y[7] - 10.0).abs() < 0.0001,
+        "sqrt(100) should be 10, got {}",
+        y[7]
+    );
+    assert!(
+        (y[8] - 0.5).abs() < 0.0001,
+        "sqrt(0.25) should be 0.5, got {}",
+        y[8]
+    );
+    assert!(
+        (y[9] - 0.1).abs() < 0.0001,
+        "sqrt(0.01) should be 0.1, got {}",
+        y[9]
+    );
+
+    // Verify that all outputs are non-negative (property of sqrt)
+    for (i, val) in y.iter().enumerate() {
+        assert!(
+            *val >= 0.0,
+            "sqrt output at index {} should be non-negative, got {}",
+            i,
+            val
+        );
+    }
+
+    println!("✓ End-to-end Sqrt test passed!");
+    println!("  Input x: [0.0, 1.0, 2.0, 4.0, 9.0, 16.0, 25.0, 100.0, 0.25, 0.01]");
+    println!("  Output y: {:?}", y);
+}
+
+/// End-to-end test: Sqrt with multidimensional tensors.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_sqrt_multidim_e2e() {
+    // Build graph with 3D tensor
+    let graph = make_unary_graph("Sqrt", "sqrt_node", DataType::F32, &[2, 2, 3], &[2, 2, 3]);
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile and execute
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new().await.expect("Runtime init should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Test with 3D tensor: 2x2x3 = 12 elements
+    let x = Tensor::from_vec(
+        vec![
+            1.0f32, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0, 64.0, 81.0, 100.0, 121.0, 144.0,
+        ],
+        &[2, 2, 3],
+    );
+
+    let outputs = executor
+        .run(&[("input", x)])
+        .expect("Execution should succeed");
+
+    let y = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+    assert_eq!(y.len(), 12);
+
+    // Verify square roots
+    let expected = vec![
+        1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+    ];
+    for (i, (&result, &expected_val)) in y.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (result - expected_val).abs() < 0.0001,
+            "sqrt at index {} should be {}, got {}",
+            i,
+            expected_val,
+            result
+        );
+    }
+
+    println!("✓ End-to-end Sqrt multidimensional test passed!");
+    println!("  Input shape: [2, 2, 3]");
+    println!("  Output y: {:?}", y);
+}
