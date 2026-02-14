@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::inference::{InferenceContext, TensorValue};
-use crate::operator::{OpOperator, PlanContext};
+use crate::operator::{Operator, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
 use onyxia_onnx::TensorShape;
@@ -19,7 +19,7 @@ use std::collections::HashMap;
 /// - output: embeddings [batch, seq, hidden_dim]
 pub struct GatherOperator;
 
-impl OpOperator for GatherOperator {
+impl Operator for GatherOperator {
     fn name(&self) -> &str {
         "Gather"
     }

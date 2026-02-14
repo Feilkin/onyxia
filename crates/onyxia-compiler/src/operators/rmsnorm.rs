@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::inference::InferenceContext;
-use crate::operator::{OpOperator, PlanContext};
+use crate::operator::{Operator, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
 use onyxia_onnx::TensorShape;
@@ -14,7 +14,7 @@ use std::collections::HashMap;
 /// Used in modern LLMs like Llama and Gemma.
 pub struct RmsNormOperator;
 
-impl OpOperator for RmsNormOperator {
+impl Operator for RmsNormOperator {
     fn name(&self) -> &str {
         "RMSNorm"
     }

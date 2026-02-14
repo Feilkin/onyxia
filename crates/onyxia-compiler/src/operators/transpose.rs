@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::inference::{InferenceContext, TensorValue};
-use crate::operator::{OpOperator, PlanContext};
+use crate::operator::{Operator, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
 use onyxia_onnx::TensorShape;
@@ -17,7 +17,7 @@ use std::collections::HashMap;
 /// If perm is not specified, defaults to reversing all dimensions.
 pub struct TransposeOperator;
 
-impl OpOperator for TransposeOperator {
+impl Operator for TransposeOperator {
     fn name(&self) -> &str {
         "Transpose"
     }

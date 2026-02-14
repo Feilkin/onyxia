@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::inference::{InferenceContext, TensorValue, infer_elementwise_broadcast};
-use crate::operator::{OpOperator, PlanContext};
+use crate::operator::{Operator, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
 use onyxia_onnx::TensorShape;
@@ -21,7 +21,7 @@ use std::collections::HashMap;
 /// representation, so Bool-typed outputs work correctly.
 pub struct EqualOperator;
 
-impl OpOperator for EqualOperator {
+impl Operator for EqualOperator {
     fn name(&self) -> &str {
         "Equal"
     }

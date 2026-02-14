@@ -194,7 +194,7 @@ impl TensorValue {
     }
 }
 
-/// Context provided to OpOperator during shape and value inference.
+/// Context provided to Operator during shape and value inference.
 ///
 /// Gives operators read-only access to everything they need:
 /// input shapes, input values, node attributes, and the graph.

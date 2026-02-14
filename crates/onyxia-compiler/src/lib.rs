@@ -34,7 +34,7 @@ pub mod shape_inference;
 pub mod symbolic_expr;
 
 pub use error::{CodegenError, Result};
-pub use operator::{OpOperator, OperatorRegistry, PlanContext};
+pub use operator::{Operator, OperatorRegistry, PlanContext};
 pub use plan::{
     BindingDesc, BufferRef, CompiledShader, ExecutionPlan, ModelMetadata, PlannedOp,
     ScratchBufferDesc, ShaderIndex, Step, TensorRegistry,

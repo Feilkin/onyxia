@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::inference::{InferenceContext, TensorValue};
-use crate::operator::{OpOperator, PlanContext};
+use crate::operator::{Operator, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
 use onyxia_onnx::TensorShape;
@@ -13,7 +13,7 @@ use std::collections::HashMap;
 /// Sqrt(x) = sqrt(x) - element-wise square root function.
 pub struct SqrtOperator;
 
-impl OpOperator for SqrtOperator {
+impl Operator for SqrtOperator {
     fn name(&self) -> &str {
         "Sqrt"
     }

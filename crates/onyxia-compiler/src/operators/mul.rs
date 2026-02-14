@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::inference::{InferenceContext, TensorValue, infer_elementwise_broadcast};
-use crate::operator::{OpOperator, PlanContext};
+use crate::operator::{Operator, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
 use onyxia_onnx::TensorShape;
@@ -14,7 +14,7 @@ use std::collections::HashMap;
 /// Broadcasting is handled by the shader itself.
 pub struct MulOperator;
 
-impl OpOperator for MulOperator {
+impl Operator for MulOperator {
     fn name(&self) -> &str {
         "Mul"
     }

@@ -1,6 +1,6 @@
 //! Operator trait and registry for extensible operation mapping.
 //!
-//! This module defines the core extensibility point: an `OpOperator` trait that
+//! This module defines the core extensibility point: an `Operator` trait that
 //! maps ONNX nodes to GPU execution steps, and an `OperatorRegistry` that maps
 //! op_type strings to operator implementations.
 
@@ -16,7 +16,7 @@ use std::collections::HashMap;
 /// This is the core extensibility point for adding new operations. Each
 /// implementation handles one or more ONNX op_types and generates the
 /// appropriate GPU commands (shaders, buffer bindings, etc.).
-pub trait OpOperator: Send + Sync {
+pub trait Operator: Send + Sync {
     /// Human-readable operator name.
     fn name(&self) -> &str;
 
@@ -74,7 +74,7 @@ pub trait OpOperator: Send + Sync {
     fn plan(&self, ctx: &mut PlanContext<'_>) -> Result<Vec<Step>>;
 }
 
-/// Context provided to OpOperator::plan() during operation planning.
+/// Context provided to Operator::plan() during operation planning.
 ///
 /// Gives operators access to:
 /// - Node and graph metadata
@@ -281,12 +281,12 @@ impl<'a> PlanContext<'a> {
     }
 }
 
-/// Registry of OpOperator implementations.
+/// Registry of Operator implementations.
 ///
 /// Maps ONNX op_type strings (e.g., "Add", "MatMul") to operator implementations
 /// that know how to generate GPU code for those operations.
 pub struct OperatorRegistry {
-    operators: HashMap<String, Box<dyn OpOperator>>,
+    operators: HashMap<String, Box<dyn Operator>>,
 }
 
 impl OperatorRegistry {
@@ -363,14 +363,14 @@ impl OperatorRegistry {
     ///
     /// * `op_type` - ONNX operation type (e.g., "Add", "Mul", "MatMul")
     /// * `operator` - Boxed operator implementation
-    pub fn register(&mut self, op_type: impl Into<String>, operator: Box<dyn OpOperator>) {
+    pub fn register(&mut self, op_type: impl Into<String>, operator: Box<dyn Operator>) {
         self.operators.insert(op_type.into(), operator);
     }
 
     /// Look up an operator by ONNX op_type.
     ///
     /// Returns None if no operator is registered for this op_type.
-    pub fn get(&self, op_type: &str) -> Option<&dyn OpOperator> {
+    pub fn get(&self, op_type: &str) -> Option<&dyn Operator> {
         self.operators.get(op_type).map(|k| k.as_ref())
     }
 }
@@ -405,7 +405,7 @@ mod tests {
     /// Dummy operator for testing that uses TRIVIAL_WGSL.
     struct DummyOperator;
 
-    impl OpOperator for DummyOperator {
+    impl Operator for DummyOperator {
         fn name(&self) -> &str {
             "dummy"
         }
@@ -451,7 +451,7 @@ mod tests {
     /// Another dummy operator for multi-operator tests.
     struct AnotherOperator;
 
-    impl OpOperator for AnotherOperator {
+    impl Operator for AnotherOperator {
         fn name(&self) -> &str {
             "another"
         }

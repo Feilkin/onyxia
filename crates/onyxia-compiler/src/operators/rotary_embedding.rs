@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::inference::InferenceContext;
-use crate::operator::{OpOperator, PlanContext};
+use crate::operator::{Operator, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
 use onyxia_onnx::TensorShape;
@@ -24,7 +24,7 @@ use std::collections::HashMap;
 /// - interleaved: 0 = split-half layout (default), 1 = interleaved pairs
 pub struct RotaryEmbeddingOperator;
 
-impl OpOperator for RotaryEmbeddingOperator {
+impl Operator for RotaryEmbeddingOperator {
     fn name(&self) -> &str {
         "RotaryEmbedding"
     }

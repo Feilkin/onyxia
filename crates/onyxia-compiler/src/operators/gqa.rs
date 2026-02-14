@@ -2,7 +2,7 @@
 
 use crate::error::{CodegenError, Result};
 use crate::inference::InferenceContext;
-use crate::operator::{OpOperator, PlanContext};
+use crate::operator::{Operator, PlanContext};
 use crate::plan::{BindingDesc, ScratchBufferDesc, Step};
 use naga_oil::compose::ShaderDefValue;
 use onyxia_onnx::TensorShape;
@@ -35,7 +35,7 @@ use std::collections::HashMap;
 /// - scale: optional attention scale (default: 1/sqrt(head_dim))
 pub struct GroupQueryAttentionOperator;
 
-impl OpOperator for GroupQueryAttentionOperator {
+impl Operator for GroupQueryAttentionOperator {
     fn name(&self) -> &str {
         "GroupQueryAttention"
     }

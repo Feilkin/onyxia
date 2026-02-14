@@ -2,7 +2,7 @@
 
 use crate::error::{CodegenError, Result};
 use crate::inference::{InferenceContext, TensorValue};
-use crate::operator::{OpOperator, PlanContext};
+use crate::operator::{Operator, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
 use onyxia_onnx::{AttributeValue, TensorShape};
@@ -21,7 +21,7 @@ use std::collections::HashMap;
 /// - **Attributes**: `value` (optional tensor, defaults to scalar 0.0f32)
 pub struct ConstantOfShapeOperator;
 
-impl OpOperator for ConstantOfShapeOperator {
+impl Operator for ConstantOfShapeOperator {
     fn name(&self) -> &str {
         "ConstantOfShape"
     }

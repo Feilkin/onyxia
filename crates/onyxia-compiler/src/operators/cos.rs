@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::inference::{InferenceContext, TensorValue};
-use crate::operator::{OpOperator, PlanContext};
+use crate::operator::{Operator, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
 use onyxia_onnx::TensorShape;
@@ -13,7 +13,7 @@ use std::collections::HashMap;
 /// Cos(x) = cos(x) - element-wise cosine function.
 pub struct CosOperator;
 
-impl OpOperator for CosOperator {
+impl Operator for CosOperator {
     fn name(&self) -> &str {
         "Cos"
     }

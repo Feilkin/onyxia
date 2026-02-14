@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::inference::{InferenceContext, TensorValue};
-use crate::operator::{OpOperator, PlanContext};
+use crate::operator::{Operator, PlanContext};
 use crate::plan::Step;
 use onyxia_onnx::TensorShape;
 
@@ -15,7 +15,7 @@ use onyxia_onnx::TensorShape;
 /// Future optimization: buffer aliasing to avoid copies entirely.
 pub struct UnsqueezeOperator;
 
-impl OpOperator for UnsqueezeOperator {
+impl Operator for UnsqueezeOperator {
     fn name(&self) -> &str {
         "Unsqueeze"
     }

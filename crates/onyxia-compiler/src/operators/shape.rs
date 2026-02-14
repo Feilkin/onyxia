@@ -2,7 +2,7 @@
 
 use crate::error::{CodegenError, Result};
 use crate::inference::{InferenceContext, TensorValue};
-use crate::operator::{OpOperator, PlanContext};
+use crate::operator::{Operator, PlanContext};
 use crate::plan::Step;
 use onyxia_onnx::TensorShape;
 
@@ -17,7 +17,7 @@ use onyxia_onnx::TensorShape;
 /// - `end`: Ending dimension index (default: rank of input)
 pub struct ShapeOperator;
 
-impl OpOperator for ShapeOperator {
+impl Operator for ShapeOperator {
     fn name(&self) -> &str {
         "Shape"
     }

@@ -2,7 +2,7 @@
 
 use crate::error::{CodegenError, Result};
 use crate::inference::{InferenceContext, TensorValue, broadcast_shapes};
-use crate::operator::{OpOperator, PlanContext};
+use crate::operator::{Operator, PlanContext};
 use crate::plan::{BindingDesc, ScratchBufferDesc, Step};
 use naga_oil::compose::ShaderDefValue;
 use onyxia_onnx::TensorShape;
@@ -15,7 +15,7 @@ use std::collections::HashMap;
 /// For >2 inputs, chains pairwise max operations.
 pub struct MaxOperator;
 
-impl OpOperator for MaxOperator {
+impl Operator for MaxOperator {
     fn name(&self) -> &str {
         "Max"
     }

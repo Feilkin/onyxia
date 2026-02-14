@@ -2,7 +2,7 @@
 
 use crate::error::{CodegenError, Result};
 use crate::inference::{InferenceContext, TensorValue};
-use crate::operator::{OpOperator, PlanContext};
+use crate::operator::{Operator, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
 use onyxia_onnx::{DataType, TensorShape};
@@ -32,7 +32,7 @@ use std::collections::HashMap;
 /// - Range(10, 0, -2) = [10, 8, 6, 4, 2]
 pub struct RangeOperator;
 
-impl OpOperator for RangeOperator {
+impl Operator for RangeOperator {
     fn name(&self) -> &str {
         "Range"
     }

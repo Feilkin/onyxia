@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::inference::{InferenceContext, TensorValue};
-use crate::operator::{OpOperator, PlanContext};
+use crate::operator::{Operator, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
 use onyxia_onnx::TensorShape;
@@ -15,7 +15,7 @@ use std::collections::HashMap;
 /// Uses tanh approximation for efficiency.
 pub struct GeluOperator;
 
-impl OpOperator for GeluOperator {
+impl Operator for GeluOperator {
     fn name(&self) -> &str {
         "Gelu"
     }
@@ -158,7 +158,9 @@ mod tests {
             &mut shaders,
         );
 
-        let steps = GeluOperator.plan(&mut ctx).expect("Planning should succeed");
+        let steps = GeluOperator
+            .plan(&mut ctx)
+            .expect("Planning should succeed");
 
         // Verify we got exactly one dispatch step
         assert_eq!(steps.len(), 1);
@@ -242,7 +244,9 @@ mod tests {
             &mut shaders,
         );
 
-        let steps = GeluOperator.plan(&mut ctx).expect("Planning should succeed");
+        let steps = GeluOperator
+            .plan(&mut ctx)
+            .expect("Planning should succeed");
 
         match &steps[0] {
             Step::Dispatch { workgroups, .. } => {

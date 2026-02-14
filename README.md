@@ -77,11 +77,11 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
 ### Adding Custom Operations
 
 ```rust
-use onyxia_compiler::{OpKernel, InferenceContext, TensorValue, PlanContext, Step, OperatorRegistery, compile};
+use onyxia_compiler::{Operator, InferenceContext, TensorValue, PlanContext, Step, OperatorRegistery, compile};
 
 struct MyCustomOperator;
 
-impl OpKernel for MyCustomOperator {
+impl Operator for MyCustomOperator {
     fn name(&self) -> &str { "MyCustomOp" }
     
     fn infer_output_shapes(

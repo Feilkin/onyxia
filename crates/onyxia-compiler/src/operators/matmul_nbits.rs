@@ -6,7 +6,7 @@
 
 use crate::error::Result;
 use crate::inference::InferenceContext;
-use crate::operator::{OpOperator, PlanContext};
+use crate::operator::{Operator, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use naga_oil::compose::ShaderDefValue;
 use onyxia_onnx::TensorShape;
@@ -25,7 +25,7 @@ use std::collections::HashMap;
 /// Each block of weights shares a scale and zero_point for dequantization.
 pub struct MatMulNBitsOperator;
 
-impl OpOperator for MatMulNBitsOperator {
+impl Operator for MatMulNBitsOperator {
     fn name(&self) -> &str {
         "MatMulNBits"
     }

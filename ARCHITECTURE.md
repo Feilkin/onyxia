@@ -38,11 +38,11 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in 3 main stag
 ### onyxia-compiler
 
 **Responsibilities:**
-- **Operator-based shape inference** — each `OpOperator` implements `infer_output_shapes()` for its operation, called once in topological order with value propagation for data-dependent shape inference
+- **Operator-based shape inference** — each `Operator` implements `infer_output_shapes()` for its operation, called once in topological order with value propagation for data-dependent shape inference
 - Schedule operations (topological sort with `petgraph`)
 - Resolve all dynamic dimensions to static shapes at plan time
 - Compile WGSL shaders to `naga::Module` using `naga_oil` (the only crate that touches WGSL)
-- Map ONNX operations to GPU steps via `OpOperator` trait + `OperatorRegistry`
+- Map ONNX operations to GPU steps via `Operator` trait + `OperatorRegistry`
 - Deduplicate compiled shaders across operations
 - Produce `ExecutionPlan` with all shapes resolved and shaders pre-compiled
 
@@ -51,10 +51,10 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in 3 main stag
 - `PlannedOp`: One ONNX node → name, op_type, inputs, outputs, steps, scratch buffers
 - `Step`: Dispatch (shader + bindings + workgroups), CopyBuffer, WriteBuffer
 - `CompiledShader`: label + `naga::Module` + entry point name
-- `OpOperator` trait: `infer_output_shapes(&self, ctx: &InferenceContext) -> Result<Vec<TensorShape>>`, optional `try_fold(&self, ctx: &InferenceContext) -> Result<Vec<Option<TensorValue>>>`, and `plan(&self, ctx: &mut PlanContext) -> Result<Vec<Step>>`
+- `Operator` trait: `infer_output_shapes(&self, ctx: &InferenceContext) -> Result<Vec<TensorShape>>`, optional `try_fold(&self, ctx: &InferenceContext) -> Result<Vec<Option<TensorValue>>>`, and `plan(&self, ctx: &mut PlanContext) -> Result<Vec<Step>>`
 - `InferenceContext`: Provides node, graph, input shapes, and constant-folded input values to operators during shape inference
 - `TensorValue`: Represents compile-time constant values for data-dependent shape inference
-- `OperatorRegistry`: Maps op_type strings to `Box<dyn OpOperator>`
+- `OperatorRegistry`: Maps op_type strings to `Box<dyn Operator>`
 - `PlanContext`: Gives operators access to node info, tensor shapes, shader compilation, scratch allocation
 
 **Built-in Operators (19):**
@@ -92,10 +92,10 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in 3 main stag
 
 ### 1. Extensible Operation System
 
-Operations are added by implementing `OpOperator`:
+Operations are added by implementing `Operator`:
 
 ```rust
-pub trait OpOperator: Send + Sync {
+pub trait Operator: Send + Sync {
     fn name(&self) -> &str;
     
     // Shape inference: given input shapes and values, return output shapes
@@ -311,7 +311,7 @@ outputs ←───────────────────────
 - [x] ExecutionPlan types: Step, PlannedOp, BufferRef, CompiledShader, TensorRegistry
 - [x] Topological scheduling with petgraph
 - [x] Three-phase shape inference: dynamic dim substitution → forward inference with value propagation → static-only planning
-- [x] `OpOperator` trait with `InferenceContext` and optional `try_fold` for constant folding
+- [x] `Operator` trait with `InferenceContext` and optional `try_fold` for constant folding
 - [x] `TensorValue` type for compile-time constant propagation
 - [x] `OperatorRegistry` for extensible operation mapping
 - [x] `PlanContext` with shader compilation, `static_shape()`, scratch allocation

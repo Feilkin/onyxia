@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::inference::{InferenceContext, TensorValue};
-use crate::operator::{OpOperator, PlanContext};
+use crate::operator::{Operator, PlanContext};
 use crate::plan::{BindingDesc, Step};
 use onyxia_onnx::TensorShape;
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ use std::collections::HashMap;
 /// - other axes: Uses compute shader with strided access
 pub struct ConcatOperator;
 
-impl OpOperator for ConcatOperator {
+impl Operator for ConcatOperator {
     fn name(&self) -> &str {
         "Concat"
     }
