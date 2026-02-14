@@ -1,6 +1,6 @@
 //! End-to-end tests for elementwise operations.
 //!
-//! Tests: Add, Sub, Mul, Pow
+//! Tests: Add, Sub, Mul, Div, Pow
 
 mod common;
 
@@ -143,6 +143,234 @@ async fn test_mul_e2e() {
     println!("  Input a: [2.0, 3.0, 4.0, 5.0]");
     println!("  Input b: [1.5, 2.0, 2.5, 3.0]");
     println!("  Output c: {:?}", c);
+}
+
+/// End-to-end test: Divide two vectors on GPU and verify correct output.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_div_e2e() {
+    // Build graph
+    let graph = make_binary_elementwise_graph("Div", "div_node", DataType::F32, &[4]);
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Verify plan structure
+    assert_eq!(plan.operations.len(), 1);
+    assert_eq!(plan.shaders.len(), 1);
+
+    // Initialize runtime and load plan
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Execute: c = a / b
+    let a = Tensor::from_vec(vec![10.0f32, 20.0, 30.0, 40.0], &[4]);
+    let b = Tensor::from_vec(vec![2.0f32, 4.0, 5.0, 8.0], &[4]);
+
+    let outputs = executor
+        .run(&[("a", a), ("b", b)])
+        .expect("Execution should succeed");
+
+    let c = outputs["c"].to_vec::<f32>().expect("Should convert to f32");
+    assert_eq!(c, vec![5.0, 5.0, 6.0, 5.0], "Div result incorrect");
+
+    println!("✓ End-to-end Div test passed!");
+    println!("  Input a: [10.0, 20.0, 30.0, 40.0]");
+    println!("  Input b: [2.0, 4.0, 5.0, 8.0]");
+    println!("  Output c: {:?}", c);
+}
+
+/// End-to-end test: Division by one (identity operation).
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_div_by_one_e2e() {
+    // Build graph
+    let graph = make_binary_elementwise_graph("Div", "div_by_one_node", DataType::F32, &[4]);
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Initialize runtime and load plan
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Execute: c = a / 1
+    let a = Tensor::from_vec(vec![1.5f32, 2.75, 3.125, 4.25], &[4]);
+    let b = Tensor::from_vec(vec![1.0f32, 1.0, 1.0, 1.0], &[4]);
+
+    let outputs = executor
+        .run(&[("a", a), ("b", b)])
+        .expect("Execution should succeed");
+
+    let c = outputs["c"].to_vec::<f32>().expect("Should convert to f32");
+    assert_eq!(
+        c,
+        vec![1.5, 2.75, 3.125, 4.25],
+        "Div by one should preserve values"
+    );
+
+    println!("✓ End-to-end Div by one test passed!");
+    println!("  Input a: [1.5, 2.75, 3.125, 4.25]");
+    println!("  Input b: [1.0, 1.0, 1.0, 1.0]");
+    println!("  Output c: {:?}", c);
+}
+
+/// End-to-end test: Division with broadcasting (tensor / scalar).
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_div_broadcast_scalar_e2e() {
+    // Create graph with broadcast: [4] / [1] -> [4]
+    let mut graph = onyxia_onnx::Graph::new();
+
+    // Input tensor [4]
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![4]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    // Scalar (broadcast) [1]
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![1]),
+        kind: onyxia_onnx::TensorKind::Input,
+        initializer: None,
+    });
+
+    // Output tensor [4]
+    graph.add_tensor(onyxia_onnx::TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::F32,
+        shape: onyxia_onnx::TensorShape::Static(vec![4]),
+        kind: onyxia_onnx::TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Div operation node
+    let mut node = onyxia_onnx::Node::new("Div");
+    node.name = "div_broadcast_node".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    graph.add_node(node);
+
+    // Set graph inputs and outputs
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    // Set metadata
+    graph.metadata.name = "test_div_broadcast_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Initialize runtime and load plan
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Execute: c = [10, 20, 30, 40] / [2]
+    let a = Tensor::from_vec(vec![10.0f32, 20.0, 30.0, 40.0], &[4]);
+    let b = Tensor::from_vec(vec![2.0f32], &[1]);
+
+    let outputs = executor
+        .run(&[("a", a), ("b", b)])
+        .expect("Execution should succeed");
+
+    let c = outputs["c"].to_vec::<f32>().expect("Should convert to f32");
+    assert_eq!(
+        c,
+        vec![5.0, 10.0, 15.0, 20.0],
+        "Div broadcast result incorrect"
+    );
+
+    println!("✓ End-to-end Div broadcast test passed!");
+    println!("  Input a: [10.0, 20.0, 30.0, 40.0]");
+    println!("  Input b (scalar): [2.0]");
+    println!("  Output c: {:?}", c);
+}
+
+/// End-to-end test: Division by zero produces infinity.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_div_by_zero_e2e() {
+    // Build graph
+    let graph = make_binary_elementwise_graph("Div", "div_by_zero_node", DataType::F32, &[4]);
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Initialize runtime and load plan
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Execute: c = a / 0
+    let a = Tensor::from_vec(vec![1.0f32, -2.0, 0.0, 10.0], &[4]);
+    let b = Tensor::from_vec(vec![0.0f32, 0.0, 0.0, 0.0], &[4]);
+
+    let outputs = executor
+        .run(&[("a", a), ("b", b)])
+        .expect("Execution should succeed");
+
+    let c = outputs["c"].to_vec::<f32>().expect("Should convert to f32");
+
+    // Verify infinity and NaN behavior (IEEE 754 floating point rules)
+    assert!(
+        c[0].is_infinite() && c[0].is_sign_positive(),
+        "1.0/0.0 should be +inf"
+    );
+    assert!(
+        c[1].is_infinite() && c[1].is_sign_negative(),
+        "-2.0/0.0 should be -inf"
+    );
+    assert!(c[2].is_nan(), "0.0/0.0 should be NaN");
+    assert!(
+        c[3].is_infinite() && c[3].is_sign_positive(),
+        "10.0/0.0 should be +inf"
+    );
+
+    println!("✓ End-to-end Div by zero test passed!");
+    println!("  Input a: [1.0, -2.0, 0.0, 10.0]");
+    println!("  Input b: [0.0, 0.0, 0.0, 0.0]");
+    println!("  Output c: {:?}", c);
+    println!("  Verified: infinity and NaN behavior");
 }
 
 /// End-to-end test: Equal comparison on GPU and verify correct output.
