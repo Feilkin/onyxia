@@ -81,12 +81,10 @@ impl LlmSession {
                 )
             })?;
 
-        // Alias present.* → past_key_values.* for next decode step
-        for (present_name, past_name) in &self.kv_pairs {
-            self.executor
-                .alias_buffer(present_name, past_name)
-                .context(format!("Failed to alias {} -> {}", present_name, past_name))?;
-        }
+        // Copy present.* → past_key_values.* for next decode step
+        self.executor
+            .copy_tensors(&self.kv_pairs)
+            .context("Failed to copy KV cache after prefill")?;
 
         // Update sequence length
         self.past_seq_len = prompt_len;
@@ -135,12 +133,10 @@ impl LlmSession {
                 )
             })?;
 
-        // Alias present.* → past_key_values.* for next decode step
-        for (present_name, past_name) in &self.kv_pairs {
-            self.executor
-                .alias_buffer(present_name, past_name)
-                .context(format!("Failed to alias {} -> {}", present_name, past_name))?;
-        }
+        // Copy present.* → past_key_values.* for next decode step
+        self.executor
+            .copy_tensors(&self.kv_pairs)
+            .context("Failed to copy KV cache after decode")?;
 
         // Update sequence length
         self.past_seq_len += 1;
@@ -157,7 +153,6 @@ impl LlmSession {
 
     /// Reset state for a new conversation.
     pub fn reset(&mut self) {
-        self.executor.clear_aliases().ok(); // Ignore errors
         self.past_seq_len = 0;
     }
 
