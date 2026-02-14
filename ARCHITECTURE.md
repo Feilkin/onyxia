@@ -5,18 +5,16 @@
 Onyxia is a **GPU compute shader runtime for ONNX models**, built in 3 main stages:
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+┌─────────────────┐     ┌─────────────────┐      ┌─────────────────┐
 │  onyxia-onnx    │───▶│ onyxia-planner  │────▶│ onyxia-runtime  │
-│                 │     │                 │     │                 │
-│  Parse ONNX     │     │  Compile to     │     │  Execute on GPU │
-│  protobuf into  │     │  execution plan │     │  via wgpu (HAL) │
-│  graph          │     │  with naga IR   │     │                 │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
+│                 │     │                 │      │                 │
+│  Parse ONNX     │     │  Compile to     │      │  Execute on GPU │
+│  protobuf into  │     │  execution plan │      │  via wgpu (HAL) │
+│  graph          │     │  with naga IR   │      │                 │
+└─────────────────┘     └─────────────────┘      └─────────────────┘
         │                       │                        │
         │                       │                        │
     ModelProto            ExecutionPlan           Model outputs
-                    (naga::Module shaders,
-                     resolved shapes)
 ```
 
 ## Responsibility Boundaries
