@@ -1159,3 +1159,343 @@ async fn test_trilu_nonsquare_e2e() {
     println!("✓ End-to-end Trilu non-square test passed!");
     println!("  Output: {:?}", output);
 }
+
+// ============================================================================
+// ScatterND Tests
+// ============================================================================
+
+/// Helper function to create a simple ScatterND graph with reduction="none".
+fn make_scatternd_graph(reduction: &str) -> Graph {
+    let mut graph = Graph::new();
+
+    // Add data input tensor [3, 3]
+    graph.add_tensor(TensorInfo {
+        name: "data".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3, 3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add indices input tensor (I64) [2, 2]
+    graph.add_tensor(TensorInfo {
+        name: "indices".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![2, 2]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add updates input tensor [2]
+    graph.add_tensor(TensorInfo {
+        name: "updates".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![2]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add output tensor [3, 3]
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3, 3]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create ScatterND node
+    let mut node = Node::new("ScatterND");
+    node.name = "scatternd_node".to_string();
+    node.inputs = vec![
+        "data".to_string(),
+        "indices".to_string(),
+        "updates".to_string(),
+    ];
+    node.outputs = vec!["output".to_string()];
+    node.attributes.insert(
+        "reduction".to_string(),
+        AttributeValue::String(reduction.to_string()),
+    );
+    graph.add_node(node);
+
+    graph.inputs = vec![
+        "data".to_string(),
+        "indices".to_string(),
+        "updates".to_string(),
+    ];
+    graph.outputs = vec!["output".to_string()];
+
+    graph.metadata.name = "test_scatternd_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph
+}
+
+/// End-to-end test: ScatterND operation with reduction="none".
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_scatternd_none_e2e() {
+    let graph = make_scatternd_graph("none");
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Initialize runtime
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Data: 3×3 matrix
+    #[rustfmt::skip]
+    let data = Tensor::from_vec(
+        vec![
+            1.0f32, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 9.0,
+        ],
+        &[3, 3],
+    );
+
+    // Indices: [[0, 0], [2, 1]] - scatter to (0,0) and (2,1)
+    let indices = Tensor::from_vec(vec![0i64, 0, 2, 1], &[2, 2]);
+
+    // Updates: [10.0, 20.0]
+    let updates = Tensor::from_vec(vec![10.0f32, 20.0], &[2]);
+
+    let outputs = executor
+        .run(&[("data", data), ("indices", indices), ("updates", updates)])
+        .expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected: data with 10.0 at [0,0] and 20.0 at [2,1]
+    // [[10, 2, 3],
+    //  [4,  5, 6],
+    //  [7, 20, 9]]
+    #[rustfmt::skip]
+    let expected = vec![
+        10.0, 2.0, 3.0,
+        4.0, 5.0, 6.0,
+        7.0, 20.0, 9.0,
+    ];
+
+    assert_eq!(output.len(), expected.len());
+    for (i, (&actual, &expected)) in output.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-5,
+            "Mismatch at index {}: got {}, expected {}",
+            i,
+            actual,
+            expected
+        );
+    }
+
+    println!("✓ End-to-end ScatterND (none) test passed!");
+    println!("  Output: {:?}", output);
+}
+
+/// End-to-end test: ScatterND operation with reduction="add".
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_scatternd_add_e2e() {
+    let graph = make_scatternd_graph("add");
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Initialize runtime
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Data: 3×3 matrix
+    #[rustfmt::skip]
+    let data = Tensor::from_vec(
+        vec![
+            1.0f32, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 9.0,
+        ],
+        &[3, 3],
+    );
+
+    // Indices: [[0, 0], [2, 1]] - scatter to (0,0) and (2,1)
+    let indices = Tensor::from_vec(vec![0i64, 0, 2, 1], &[2, 2]);
+
+    // Updates: [10.0, 20.0]
+    let updates = Tensor::from_vec(vec![10.0f32, 20.0], &[2]);
+
+    let outputs = executor
+        .run(&[("data", data), ("indices", indices), ("updates", updates)])
+        .expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected: data with 10.0 added to [0,0] and 20.0 added to [2,1]
+    // [[11, 2, 3],
+    //  [4,  5, 6],
+    //  [7, 28, 9]]
+    #[rustfmt::skip]
+    let expected = vec![
+        11.0, 2.0, 3.0,
+        4.0, 5.0, 6.0,
+        7.0, 28.0, 9.0,
+    ];
+
+    assert_eq!(output.len(), expected.len());
+    for (i, (&actual, &expected)) in output.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-5,
+            "Mismatch at index {}: got {}, expected {}",
+            i,
+            actual,
+            expected
+        );
+    }
+
+    println!("✓ End-to-end ScatterND (add) test passed!");
+    println!("  Output: {:?}", output);
+}
+
+/// Helper function to create a 1D ScatterND test.
+fn make_scatternd_1d_graph() -> Graph {
+    let mut graph = Graph::new();
+
+    // Add data input tensor [8]
+    graph.add_tensor(TensorInfo {
+        name: "data".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![8]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add indices input tensor (I64) [4, 1] - 4 indices, each of rank 1
+    graph.add_tensor(TensorInfo {
+        name: "indices".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![4, 1]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add updates input tensor [4]
+    graph.add_tensor(TensorInfo {
+        name: "updates".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add output tensor [8]
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![8]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create ScatterND node
+    let mut node = Node::new("ScatterND");
+    node.name = "scatternd_node".to_string();
+    node.inputs = vec![
+        "data".to_string(),
+        "indices".to_string(),
+        "updates".to_string(),
+    ];
+    node.outputs = vec!["output".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec![
+        "data".to_string(),
+        "indices".to_string(),
+        "updates".to_string(),
+    ];
+    graph.outputs = vec!["output".to_string()];
+
+    graph.metadata.name = "test_scatternd_1d_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph
+}
+
+/// End-to-end test: ScatterND operation with 1D data.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_scatternd_1d_e2e() {
+    let graph = make_scatternd_1d_graph();
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Initialize runtime
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Data: [0, 0, 0, 0, 0, 0, 0, 0]
+    let data = Tensor::from_vec(vec![0.0f32; 8], &[8]);
+
+    // Indices: [[1], [3], [5], [7]] - scatter to positions 1, 3, 5, 7
+    let indices = Tensor::from_vec(vec![1i64, 3, 5, 7], &[4, 1]);
+
+    // Updates: [10.0, 20.0, 30.0, 40.0]
+    let updates = Tensor::from_vec(vec![10.0f32, 20.0, 30.0, 40.0], &[4]);
+
+    let outputs = executor
+        .run(&[("data", data), ("indices", indices), ("updates", updates)])
+        .expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected: [0, 10, 0, 20, 0, 30, 0, 40]
+    let expected = vec![0.0, 10.0, 0.0, 20.0, 0.0, 30.0, 0.0, 40.0];
+
+    assert_eq!(output.len(), expected.len());
+    for (i, (&actual, &expected)) in output.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-5,
+            "Mismatch at index {}: got {}, expected {}",
+            i,
+            actual,
+            expected
+        );
+    }
+
+    println!("✓ End-to-end ScatterND 1D test passed!");
+    println!("  Output: {:?}", output);
+}
