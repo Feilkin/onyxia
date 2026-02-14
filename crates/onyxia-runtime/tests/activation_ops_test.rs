@@ -420,3 +420,170 @@ async fn test_sqrt_multidim_e2e() {
     println!("  Input shape: [2, 2, 3]");
     println!("  Output y: {:?}", y);
 }
+
+/// End-to-end test: Neg (negation) on GPU and verify correct output.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_neg_e2e() {
+    // Build graph
+    let graph = make_unary_graph("Neg", "neg_node", DataType::F32, &[10], &[10]);
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile and execute
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new().await.expect("Runtime init should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Test inputs with known negation outputs
+    // -(-5) = 5, -(3) = -3, -(0) = 0, -(-1.5) = 1.5, -(100) = -100
+    let x = Tensor::from_vec(
+        vec![
+            -5.0f32, 3.0, 0.0, -1.5, 100.0, -0.25, 7.5, -42.0, 0.001, -0.001,
+        ],
+        &[10],
+    );
+
+    let outputs = executor
+        .run(&[("input", x)])
+        .expect("Execution should succeed");
+
+    let y = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+    assert_eq!(y.len(), 10);
+
+    // Expected negated values
+    let expected = vec![
+        5.0f32, -3.0, 0.0, 1.5, -100.0, 0.25, -7.5, 42.0, -0.001, 0.001,
+    ];
+
+    // Verify negation with appropriate tolerance
+    for (i, (&result, &expected_val)) in y.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (result - expected_val).abs() < 1e-6,
+            "neg at index {} should be {}, got {}",
+            i,
+            expected_val,
+            result
+        );
+    }
+
+    println!("✓ End-to-end Neg test passed!");
+    println!("  Input x: [-5.0, 3.0, 0.0, -1.5, 100.0, -0.25, 7.5, -42.0, 0.001, -0.001]");
+    println!("  Output y: {:?}", y);
+}
+
+/// End-to-end test: Neg with multidimensional tensor.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_neg_multidim_e2e() {
+    // Build graph for 2x3x2 tensor
+    let graph = make_unary_graph("Neg", "neg_node", DataType::F32, &[2, 3, 2], &[2, 3, 2]);
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile and execute
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new().await.expect("Runtime init should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Test with 3D tensor: 2x3x2 = 12 elements
+    let x = Tensor::from_vec(
+        vec![
+            1.0f32, -2.0, 3.0, -4.0, 5.0, -6.0, 7.0, -8.0, 9.0, -10.0, 11.0, -12.0,
+        ],
+        &[2, 3, 2],
+    );
+
+    let outputs = executor
+        .run(&[("input", x)])
+        .expect("Execution should succeed");
+
+    let y = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+    assert_eq!(y.len(), 12);
+
+    // Verify negation
+    let expected = vec![
+        -1.0f32, 2.0, -3.0, 4.0, -5.0, 6.0, -7.0, 8.0, -9.0, 10.0, -11.0, 12.0,
+    ];
+    for (i, (&result, &expected_val)) in y.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (result - expected_val).abs() < 1e-6,
+            "neg at index {} should be {}, got {}",
+            i,
+            expected_val,
+            result
+        );
+    }
+
+    println!("✓ End-to-end Neg multidimensional test passed!");
+    println!("  Input shape: [2, 3, 2]");
+    println!("  Output y: {:?}", y);
+}
+
+/// End-to-end test: Neg with special values (infinity, NaN).
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_neg_special_values_e2e() {
+    // Build graph
+    let graph = make_unary_graph("Neg", "neg_node", DataType::F32, &[5], &[5]);
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile and execute
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new().await.expect("Runtime init should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Test with special float values
+    let x = Tensor::from_vec(
+        vec![f32::INFINITY, f32::NEG_INFINITY, 0.0f32, -0.0f32, f32::NAN],
+        &[5],
+    );
+
+    let outputs = executor
+        .run(&[("input", x)])
+        .expect("Execution should succeed");
+
+    let y = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+    assert_eq!(y.len(), 5);
+
+    // Verify special value negation
+    assert!(
+        y[0].is_infinite() && y[0].is_sign_negative(),
+        "neg(inf) should be -inf, got {}",
+        y[0]
+    );
+    assert!(
+        y[1].is_infinite() && y[1].is_sign_positive(),
+        "neg(-inf) should be inf, got {}",
+        y[1]
+    );
+    assert_eq!(y[2], 0.0, "neg(0.0) should be 0.0");
+    assert_eq!(y[3], 0.0, "neg(-0.0) should be 0.0");
+    assert!(y[4].is_nan(), "neg(NaN) should be NaN");
+
+    println!("✓ End-to-end Neg special values test passed!");
+    println!("  Input x: [inf, -inf, 0.0, -0.0, NaN]");
+    println!(
+        "  Output y: [{}, {}, {}, {}, {}]",
+        y[0], y[1], y[2], y[3], y[4]
+    );
+}
