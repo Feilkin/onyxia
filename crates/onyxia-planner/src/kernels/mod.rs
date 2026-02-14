@@ -31,6 +31,7 @@ pub mod sqrt;
 pub mod sub;
 pub mod tanh;
 pub mod transpose;
+pub mod trilu;
 pub mod unsqueeze;
 pub mod where_op;
 
@@ -65,5 +66,6 @@ pub use sqrt::SqrtKernel;
 pub use sub::SubKernel;
 pub use tanh::TanhKernel;
 pub use transpose::TransposeKernel;
+pub use trilu::TriluKernel;
 pub use unsqueeze::UnsqueezeKernel;
 pub use where_op::WhereKernel;

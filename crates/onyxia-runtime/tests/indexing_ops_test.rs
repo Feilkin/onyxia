@@ -2,7 +2,7 @@
 //!
 //! Tests: Gather (simple and embedding lookup)
 
-use onyxia_onnx::{DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
+use onyxia_onnx::{AttributeValue, DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
 use onyxia_planner::{KernelRegistry, compile};
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
@@ -764,4 +764,398 @@ async fn test_slice_reverse_e2e() {
     println!("✓ End-to-end Slice reverse test passed!");
     println!("  Input: [0..6]");
     println!("  Slice [5:0:-1]: {:?}", output);
+}
+
+/// Helper function to create a Trilu graph.
+fn make_trilu_graph(upper: i64) -> Graph {
+    let mut graph = Graph::new();
+
+    // Add input tensor [3, 3]
+    graph.add_tensor(TensorInfo {
+        name: "input".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3, 3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add output tensor [3, 3]
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3, 3]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Trilu node
+    let mut node = Node::new("Trilu");
+    node.name = "trilu_node".to_string();
+    node.inputs = vec!["input".to_string()];
+    node.outputs = vec!["output".to_string()];
+    node.attributes
+        .insert("upper".to_string(), AttributeValue::Int(upper));
+    graph.add_node(node);
+
+    graph.inputs = vec!["input".to_string()];
+    graph.outputs = vec!["output".to_string()];
+
+    graph.metadata.name = "test_trilu_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph
+}
+
+/// End-to-end test: Trilu operation - upper triangle.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_trilu_upper_triangle_e2e() {
+    let graph = make_trilu_graph(1);
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Initialize runtime
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Input: 3×3 matrix
+    #[rustfmt::skip]
+    let input = Tensor::from_vec(
+        vec![
+            1.0f32, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 9.0,
+        ],
+        &[3, 3],
+    );
+
+    let outputs = executor
+        .run(&[("input", input)])
+        .expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected upper triangle (upper=1, k=0):
+    // [[1, 2, 3],
+    //  [0, 5, 6],
+    //  [0, 0, 9]]
+    #[rustfmt::skip]
+    let expected = vec![
+        1.0, 2.0, 3.0,
+        0.0, 5.0, 6.0,
+        0.0, 0.0, 9.0,
+    ];
+
+    assert_eq!(output.len(), expected.len());
+    for (i, (&actual, &expected)) in output.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "Mismatch at index {}: got {}, expected {}",
+            i,
+            actual,
+            expected
+        );
+    }
+
+    println!("✓ End-to-end Trilu upper triangle test passed!");
+    println!("  Output: {:?}", output);
+}
+
+/// End-to-end test: Trilu operation - lower triangle.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_trilu_lower_triangle_e2e() {
+    let graph = make_trilu_graph(0);
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Initialize runtime
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Input: 3×3 matrix
+    #[rustfmt::skip]
+    let input = Tensor::from_vec(
+        vec![
+            1.0f32, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 9.0,
+        ],
+        &[3, 3],
+    );
+
+    let outputs = executor
+        .run(&[("input", input)])
+        .expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected lower triangle (upper=0, k=0):
+    // [[1, 0, 0],
+    //  [4, 5, 0],
+    //  [7, 8, 9]]
+    #[rustfmt::skip]
+    let expected = vec![
+        1.0, 0.0, 0.0,
+        4.0, 5.0, 0.0,
+        7.0, 8.0, 9.0,
+    ];
+
+    assert_eq!(output.len(), expected.len());
+    for (i, (&actual, &expected)) in output.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "Mismatch at index {}: got {}, expected {}",
+            i,
+            actual,
+            expected
+        );
+    }
+
+    println!("✓ End-to-end Trilu lower triangle test passed!");
+    println!("  Output: {:?}", output);
+}
+
+/// Helper function to create a Trilu graph with batched input.
+fn make_trilu_batched_graph(upper: i64) -> Graph {
+    let mut graph = Graph::new();
+
+    // Add input tensor [2, 3, 3] (batch of 2 matrices)
+    graph.add_tensor(TensorInfo {
+        name: "input".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![2, 3, 3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add output tensor [2, 3, 3]
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![2, 3, 3]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Trilu node
+    let mut node = Node::new("Trilu");
+    node.name = "trilu_node".to_string();
+    node.inputs = vec!["input".to_string()];
+    node.outputs = vec!["output".to_string()];
+    node.attributes
+        .insert("upper".to_string(), AttributeValue::Int(upper));
+    graph.add_node(node);
+
+    graph.inputs = vec!["input".to_string()];
+    graph.outputs = vec!["output".to_string()];
+
+    graph.metadata.name = "test_trilu_batched_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph
+}
+
+/// End-to-end test: Trilu operation with batched input (3D tensor).
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_trilu_batched_e2e() {
+    let graph = make_trilu_batched_graph(1);
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Initialize runtime
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Input: 2×3×3 batched matrices
+    #[rustfmt::skip]
+    let input = Tensor::from_vec(
+        vec![
+            // First matrix
+            1.0f32, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 9.0,
+            // Second matrix
+            10.0, 11.0, 12.0,
+            13.0, 14.0, 15.0,
+            16.0, 17.0, 18.0,
+        ],
+        &[2, 3, 3],
+    );
+
+    let outputs = executor
+        .run(&[("input", input)])
+        .expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected upper triangle for both matrices:
+    // First: [[1, 2, 3], [0, 5, 6], [0, 0, 9]]
+    // Second: [[10, 11, 12], [0, 14, 15], [0, 0, 18]]
+    #[rustfmt::skip]
+    let expected = vec![
+        1.0, 2.0, 3.0,
+        0.0, 5.0, 6.0,
+        0.0, 0.0, 9.0,
+        10.0, 11.0, 12.0,
+        0.0, 14.0, 15.0,
+        0.0, 0.0, 18.0,
+    ];
+
+    assert_eq!(output.len(), expected.len());
+    for (i, (&actual, &expected)) in output.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "Mismatch at index {}: got {}, expected {}",
+            i,
+            actual,
+            expected
+        );
+    }
+
+    println!("✓ End-to-end Trilu batched test passed!");
+    println!("  Output: {:?}", output);
+}
+
+/// Helper function to create a Trilu graph with non-square matrices.
+fn make_trilu_nonsquare_graph(upper: i64) -> Graph {
+    let mut graph = Graph::new();
+
+    // Add input tensor [2, 4] (non-square matrix)
+    graph.add_tensor(TensorInfo {
+        name: "input".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![2, 4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add output tensor [2, 4]
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![2, 4]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Trilu node
+    let mut node = Node::new("Trilu");
+    node.name = "trilu_node".to_string();
+    node.inputs = vec!["input".to_string()];
+    node.outputs = vec!["output".to_string()];
+    node.attributes
+        .insert("upper".to_string(), AttributeValue::Int(upper));
+    graph.add_node(node);
+
+    graph.inputs = vec!["input".to_string()];
+    graph.outputs = vec!["output".to_string()];
+
+    graph.metadata.name = "test_trilu_nonsquare_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph
+}
+
+/// End-to-end test: Trilu operation with non-square matrix.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_trilu_nonsquare_e2e() {
+    let graph = make_trilu_nonsquare_graph(1);
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile to ExecutionPlan
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Initialize runtime
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Input: 2×4 non-square matrix
+    #[rustfmt::skip]
+    let input = Tensor::from_vec(
+        vec![
+            1.0f32, 2.0, 3.0, 4.0,
+            5.0, 6.0, 7.0, 8.0,
+        ],
+        &[2, 4],
+    );
+
+    let outputs = executor
+        .run(&[("input", input)])
+        .expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected upper triangle (upper=1, k=0):
+    // [[1, 2, 3, 4],
+    //  [0, 6, 7, 8]]
+    #[rustfmt::skip]
+    let expected = vec![
+        1.0, 2.0, 3.0, 4.0,
+        0.0, 6.0, 7.0, 8.0,
+    ];
+
+    assert_eq!(output.len(), expected.len());
+    for (i, (&actual, &expected)) in output.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "Mismatch at index {}: got {}, expected {}",
+            i,
+            actual,
+            expected
+        );
+    }
+
+    println!("✓ End-to-end Trilu non-square test passed!");
+    println!("  Output: {:?}", output);
 }
