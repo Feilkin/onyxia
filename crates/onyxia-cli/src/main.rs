@@ -453,12 +453,19 @@ fn cmd_inspect(model_path: PathBuf, dynamic_dim_args: Vec<String>) -> Result<()>
     }
     println!();
 
-    // Show first few operations
-    println!("First 20 operations:");
-    for (i, node) in model.nodes.iter().take(20).enumerate() {
-        println!("  {}. {} ({})", i + 1, node.name, node.op_type);
-        println!("     Inputs: {:?}", node.inputs);
-        println!("     Outputs: {:?}", node.outputs);
+    // Collect unique operation types with counts
+    let mut op_type_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for node in &model.nodes {
+        *op_type_counts.entry(&node.op_type).or_insert(0) += 1;
+    }
+    
+    // Sort by operation name for consistent output
+    let mut op_types: Vec<_> = op_type_counts.iter().collect();
+    op_types.sort_by_key(|(name, _)| *name);
+    
+    println!("Operation types ({} unique, {} total):", op_types.len(), model.nodes.len());
+    for (op_type, count) in op_types {
+        println!("  {} - {} instance{}", op_type, count, if *count == 1 { "" } else { "s" });
     }
     println!();
 
