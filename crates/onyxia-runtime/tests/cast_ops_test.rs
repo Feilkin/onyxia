@@ -3,7 +3,7 @@
 //! Tests: Cast
 
 use onyxia_onnx::{AttributeValue, DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
-use onyxia_planner::{KernelRegistry, compile};
+use onyxia_compiler::{KernelRegistry, compile};
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 

@@ -1,6 +1,6 @@
 //! GPU executor for compiled Onyxia graphs.
 //!
-//! This crate executes the compiled graphs from `onyxia-codegen` on the GPU
+//! This crate executes the compiled graphs from `onyxia-compiler` on the GPU
 //! using `wgpu` as the hardware abstraction layer.
 //!
 //! # Architecture
@@ -14,7 +14,7 @@
 //!
 //! ```no_run
 //! use onyxia_runtime::{Runtime, Tensor};
-//! use onyxia_planner::compile;
+//! use onyxia_compiler::compile;
 //! use onyxia_onnx::load_model;
 //!
 //! #[pollster::main]

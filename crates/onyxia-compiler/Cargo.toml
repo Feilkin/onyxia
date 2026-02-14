@@ -1,5 +1,5 @@
 [package]
-name = "onyxia-planner"
+name = "onyxia-compiler"
 description = "Execution plan compiler for Onyxia"
 version.workspace = true
 edition.workspace = true

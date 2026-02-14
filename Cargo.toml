@@ -2,7 +2,7 @@
 resolver = "3"
 members = [
     "crates/onyxia-onnx",
-    "crates/onyxia-planner",
+    "crates/onyxia-compiler",
     "crates/onyxia-runtime",
     "crates/onyxia-cli",
 ]
@@ -24,7 +24,7 @@ repository = "https://github.com/your-org/onyxia"
 [workspace.dependencies]
 # Workspace crates
 onyxia-onnx = { path = "crates/onyxia-onnx" }
-onyxia-planner = { path = "crates/onyxia-planner" }
+onyxia-compiler = { path = "crates/onyxia-compiler" }
 onyxia-runtime = { path = "crates/onyxia-runtime" }
 
 # External dependencies will be added here via `cargo add --workspace <crate>`

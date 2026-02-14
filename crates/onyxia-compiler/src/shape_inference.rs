@@ -1,4 +1,4 @@
-//! Three-phase shape inference for the Onyxia planner.
+//! Three-phase shape inference for the Onyxia compiler.
 //!
 //! ## Phase 1: Dynamic Dimension Substitution
 //!

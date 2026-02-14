@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use onyxia_planner::{compile, KernelRegistry};
+//! use onyxia_compiler::{compile, KernelRegistry};
 //! use onyxia_onnx::Graph;
 //! use std::collections::HashMap;
 //!
@@ -70,7 +70,7 @@ use scheduler::Scheduler;
 /// # Example
 ///
 /// ```rust
-/// use onyxia_planner::{compile, KernelRegistry};
+/// use onyxia_compiler::{compile, KernelRegistry};
 /// use onyxia_onnx::Graph;
 /// use std::collections::HashMap;
 ///

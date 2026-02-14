@@ -6,7 +6,7 @@
 use crate::error::{Result, RuntimeError};
 use crate::tensor::Tensor;
 use onyxia_onnx::{TensorId, TensorShape};
-use onyxia_planner::plan::{BindingDesc, BufferRef, ExecutionPlan, PlannedOp, Step};
+use onyxia_compiler::plan::{BindingDesc, BufferRef, ExecutionPlan, PlannedOp, Step};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -113,7 +113,7 @@ impl PlanExecutor {
     fn create_bind_group_layout_for_shader(
         &self,
         _shader_index: usize,
-        compiled_shader: &onyxia_planner::plan::CompiledShader,
+        compiled_shader: &onyxia_compiler::plan::CompiledShader,
     ) -> Result<wgpu::BindGroupLayout> {
         // Extract bindings from the naga module entry point
         let entry_point = compiled_shader
@@ -801,8 +801,8 @@ impl PlanExecutor {
 mod tests {
     use super::*;
     use onyxia_onnx::{DataType, TensorInfo, TensorKind};
-    use onyxia_planner::plan::ExecutionPlan;
-    use onyxia_planner::{ModelMetadata, TensorRegistry};
+    use onyxia_compiler::plan::ExecutionPlan;
+    use onyxia_compiler::{ModelMetadata, TensorRegistry};
 
     #[pollster::test]
     #[ignore] // Requires GPU

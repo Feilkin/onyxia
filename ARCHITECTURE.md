@@ -6,7 +6,7 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in 3 main stag
 
 ```
 ┌─────────────────┐     ┌─────────────────┐      ┌─────────────────┐
-│  onyxia-onnx    │───▶│ onyxia-planner  │────▶│ onyxia-runtime  │
+│  onyxia-onnx    │───▶│ onyxia-compiler  │────▶│ onyxia-runtime  │
 │                 │     │                 │      │                 │
 │  Parse ONNX     │     │  Compile to     │      │  Execute on GPU │
 │  protobuf into  │     │  execution plan │      │  via wgpu (HAL) │
@@ -35,7 +35,7 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in 3 main stag
 - `DataType`: F32, F16, I32, I64, U8, U32, Bool, Q4, Q8
 
 
-### onyxia-planner
+### onyxia-compiler
 
 **Responsibilities:**
 - **Kernel-based shape inference** — each `OpKernel` implements `infer_output_shapes()` for its operation, called once in topological order with value propagation for data-dependent shape inference
@@ -160,13 +160,13 @@ Each crate has a **single, well-defined responsibility**:
 | Concern | Owner |
 |---------|-------|
 | ONNX parsing | onyxia-onnx |
-| Kernel-based shape inference | onyxia-planner |
-| Value propagation and constant folding | onyxia-planner |
-| WGSL preprocessing (naga_oil) | onyxia-planner |
-| Shader def resolution | onyxia-planner |
-| Dynamic dimension resolution | onyxia-planner |
-| Three-phase shape inference | onyxia-planner |
-| Broadcasting utility | onyxia-planner |
+| Kernel-based shape inference | onyxia-compiler |
+| Value propagation and constant folding | onyxia-compiler |
+| WGSL preprocessing (naga_oil) | onyxia-compiler |
+| Shader def resolution | onyxia-compiler |
+| Dynamic dimension resolution | onyxia-compiler |
+| Three-phase shape inference | onyxia-compiler |
+| Broadcasting utility | onyxia-compiler |
 | Pipeline/buffer materialization | onyxia-runtime |
 | GPU dispatch & data transfer | onyxia-runtime |
 
@@ -275,7 +275,7 @@ fn matmul_q4(/* ... */) {
 ## Data Flow
 
 ```
-User Code                   Onyxia Planner              Onyxia Runtime              GPU
+User Code                   Onyxia Compiler             Onyxia Runtime              GPU
 ──────────────────────────────────────────────────────────────────────────────────────────
                          compile(graph,
 graph = load_model()     registry,

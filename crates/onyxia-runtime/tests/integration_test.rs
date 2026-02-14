@@ -1,7 +1,7 @@
 //! Integration tests for runtime execution.
 
+use onyxia_compiler::{KernelRegistry, compile};
 use onyxia_onnx::{load_model, parser::parse_model};
-use onyxia_planner::{KernelRegistry, compile};
 use onyxia_runtime::Runtime;
 use std::collections::HashMap;
 

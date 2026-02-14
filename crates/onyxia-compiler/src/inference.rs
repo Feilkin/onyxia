@@ -318,7 +318,7 @@ impl<'a> InferenceContext<'a> {
 /// # Examples
 ///
 /// ```
-/// use onyxia_planner::inference::broadcast_shapes;
+/// use onyxia_compiler::inference::broadcast_shapes;
 ///
 /// assert_eq!(broadcast_shapes(&[&[2,3,4,5], &[5]]).unwrap(),      vec![2,3,4,5]);
 /// assert_eq!(broadcast_shapes(&[&[1,4,5], &[2,3,1,1]]).unwrap(),  vec![2,3,4,5]);

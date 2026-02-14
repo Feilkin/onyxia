@@ -6,7 +6,7 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in Rust 2024 e
 
 ```
 ┌─────────────────┐     ┌──────────────────┐      ┌─────────────────┐
-│  onyxia-onnx    │────▶│ onyxia-planner  │────▶│ onyxia-runtime  │
+│  onyxia-onnx    │────▶│ onyxia-compiler  │────▶│ onyxia-runtime  │
 │  (ONNX parser)  │     │ (execution graph)│      │ (GPU executor)  │
 └─────────────────┘     └──────────────────┘      └─────────────────┘
                                                         ▲
@@ -20,7 +20,7 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in Rust 2024 e
 | Crate | Purpose |
 |-------|---------|
 | `onyxia-onnx` | Parse ONNX protobuf models into internal IR |
-| `onyxia-planner` | Generate execution plans with pre-compiled WGSL shaders |
+| `onyxia-compiler` | Generate execution plans with pre-compiled WGSL shaders |
 | `onyxia-runtime` | Execute execution plans on GPU via `wgpu` |
 | `onyxia-cli` | CLI for testing models, generating dot graphs, benchmarking |
 
@@ -81,6 +81,6 @@ pub mod onnx {
 - For GPU code, write WGSL in separate `.wgsl` files and use `naga_oil` for runtime compilation
 
 ### Cross-Crate Communication
-- `onyxia-onnx` exports an IR that `onyxia-planner` consumes
-- `onyxia-planner` produces execution plans for `onyxia-runtime`
+- `onyxia-onnx` exports an IR that `onyxia-compiler` consumes
+- `onyxia-compiler` produces execution plans for `onyxia-runtime`
 - Keep crate boundaries clean; avoid circular dependencies

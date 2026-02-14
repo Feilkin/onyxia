@@ -5,8 +5,8 @@
 mod common;
 
 use common::make_unary_graph;
+use onyxia_compiler::{KernelRegistry, compile};
 use onyxia_onnx::DataType;
-use onyxia_planner::{KernelRegistry, compile};
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 

@@ -394,10 +394,10 @@ fn cmd_inspect(model_path: PathBuf, dynamic_dim_args: Vec<String>) -> Result<()>
     }
 
     // Infer shapes for analysis using planner's kernel-based inference
-    let registry = onyxia_planner::KernelRegistry::with_defaults();
-    onyxia_planner::resolve_dynamic_dimensions(&mut model, &dynamic_dims)
+    let registry = onyxia_compiler::KernelRegistry::with_defaults();
+    onyxia_compiler::resolve_dynamic_dimensions(&mut model, &dynamic_dims)
         .with_context(|| "Failed to resolve dynamic dimensions")?;
-    onyxia_planner::infer_shapes(&mut model, &registry)
+    onyxia_compiler::infer_shapes(&mut model, &registry)
         .with_context(|| "Failed to infer shapes")?;
 
     println!("Model: {}", model.metadata.name);
@@ -532,16 +532,16 @@ async fn cmd_run_model(
     dynamic_dims.insert("head_dim".to_string(), 256);
 
     // Resolve dynamic dimensions and infer shapes
-    let registry = onyxia_planner::KernelRegistry::with_defaults();
-    onyxia_planner::resolve_dynamic_dimensions(&mut model, &dynamic_dims)
+    let registry = onyxia_compiler::KernelRegistry::with_defaults();
+    onyxia_compiler::resolve_dynamic_dimensions(&mut model, &dynamic_dims)
         .with_context(|| "Failed to resolve dynamic dimensions")?;
-    onyxia_planner::infer_shapes(&mut model, &registry)
+    onyxia_compiler::infer_shapes(&mut model, &registry)
         .with_context(|| "Failed to infer shapes")?;
 
     println!("Compiling execution plan...");
 
     // Compile model to execution plan
-    let plan = onyxia_planner::compile(&model, &registry, &dynamic_dims)
+    let plan = onyxia_compiler::compile(&model, &registry, &dynamic_dims)
         .with_context(|| "Failed to compile model")?;
 
     println!("Initializing GPU runtime...");

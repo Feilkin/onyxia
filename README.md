@@ -5,13 +5,13 @@
 ## Architecture
 
 ```
-ONNX Model → onyxia-onnx → onyxia-planner → onyxia-runtime → GPU Execution
+ONNX Model → onyxia-onnx → onyxia-compiler → onyxia-runtime → GPU Execution
   (.onnx)    (parse → Graph)  (naga::Module    (wgpu pipelines   (results)
                                shaders)         + dispatch)
 ```
 
 - **onyxia-onnx**: Parse ONNX protobuf into a stable Graph API
-- **onyxia-planner**: Kernel-based shape inference and compilation into execution plans with pre-compiled shaders
+- **onyxia-compiler**: Kernel-based shape inference and compilation into execution plans with pre-compiled shaders
 - **onyxia-runtime**: Execute plans on GPU hardware via wgpu
 - **onyxia-cli**: Command-line tools for testing and debugging
 
@@ -77,7 +77,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
 ### Adding Custom Operations
 
 ```rust
-use onyxia_planner::{OpKernel, InferenceContext, TensorValue, PlanContext, Step, KernelRegistry, compile};
+use onyxia_compiler::{OpKernel, InferenceContext, TensorValue, PlanContext, Step, KernelRegistry, compile};
 
 struct MyCustomKernel;
 
@@ -87,7 +87,7 @@ impl OpKernel for MyCustomKernel {
     fn infer_output_shapes(
         &self,
         ctx: &InferenceContext<'_>,
-    ) -> onyxia_planner::Result<Vec<TensorShape>> {
+    ) -> onyxia_compiler::Result<Vec<TensorShape>> {
         // Define shape inference logic for this operation
         Ok(vec![ctx.input_shapes[0].clone()])
     }
@@ -95,12 +95,12 @@ impl OpKernel for MyCustomKernel {
     fn try_fold(
         &self,
         ctx: &InferenceContext<'_>,
-    ) -> onyxia_planner::Result<Vec<Option<TensorValue>>> {
+    ) -> onyxia_compiler::Result<Vec<Option<TensorValue>>> {
         // Optional: implement constant folding for compile-time evaluation
         Ok(vec![None])
     }
     
-    fn plan(&self, ctx: &mut PlanContext<'_>) -> onyxia_planner::Result<Vec<Step>> {
+    fn plan(&self, ctx: &mut PlanContext<'_>) -> onyxia_compiler::Result<Vec<Step>> {
         // Compile shader, set up bindings, return steps
         todo!()
     }
@@ -116,7 +116,7 @@ let plan = compile(&graph, &registry, &dynamic_dimensions)?;
 
 ```rust
 use onyxia_onnx::load_model;
-use onyxia_planner::{compile, KernelRegistry};
+use onyxia_compiler::{compile, KernelRegistry};
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 
@@ -198,7 +198,7 @@ cargo nextest run --run-ignored all
 | Crate | Description |
 |-------|-------------|
 | `onyxia-onnx` | ONNX protobuf parser, Graph API |
-| `onyxia-planner` | Kernel-based shape inference and execution plan compiler |
+| `onyxia-compiler` | Kernel-based shape inference and execution plan compiler |
 | `onyxia-runtime` | GPU executor via wgpu |
 | `onyxia-cli` | CLI tools for model inspection and DOT export |
 

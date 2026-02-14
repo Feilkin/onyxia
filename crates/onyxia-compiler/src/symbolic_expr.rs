@@ -10,7 +10,7 @@
 //! # Examples
 //!
 //! ```
-//! use onyxia_planner::symbolic_expr::{parse_expr, evaluate_expr};
+//! use onyxia_compiler::symbolic_expr::{parse_expr, evaluate_expr};
 //! use std::collections::HashMap;
 //!
 //! // Simple variable reference

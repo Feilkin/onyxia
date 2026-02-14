@@ -3,7 +3,7 @@
 use crate::error::{Result, RuntimeError};
 use crate::plan_executor::PlanExecutor;
 use onyxia_onnx::TensorShape;
-use onyxia_planner::ExecutionPlan;
+use onyxia_compiler::ExecutionPlan;
 use std::sync::Arc;
 
 /// Main entry point for GPU runtime.
@@ -116,7 +116,7 @@ impl Runtime {
     /// # Example
     /// ```no_run
     /// # use onyxia_runtime::Runtime;
-    /// # use onyxia_planner::ExecutionPlan;
+    /// # use onyxia_compiler::ExecutionPlan;
     /// # #[pollster::main]
     /// # async fn main() -> anyhow::Result<()> {
     /// let runtime = Runtime::new().await?;

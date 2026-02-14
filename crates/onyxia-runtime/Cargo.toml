@@ -9,7 +9,7 @@ license.workspace = true
 bytemuck = "1.25.0"
 futures = "0.3.31"
 naga = "28"
-onyxia-planner.workspace = true
+onyxia-compiler.workspace = true
 onyxia-onnx = { version = "0.1.0", path = "../onyxia-onnx" }
 pollster = { version = "0.4.0", features = ["macro"] }
 thiserror = "2.0.18"

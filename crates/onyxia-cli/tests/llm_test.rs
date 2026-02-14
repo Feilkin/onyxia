@@ -2,8 +2,8 @@
 
 use onyxia_cli::llm::{LlmConfig, LlmSession};
 use onyxia_onnx::{DataType, TensorInfo, TensorKind, TensorShape};
-use onyxia_planner::plan::ExecutionPlan;
-use onyxia_planner::{ModelMetadata, TensorRegistry};
+use onyxia_compiler::plan::ExecutionPlan;
+use onyxia_compiler::{ModelMetadata, TensorRegistry};
 use onyxia_runtime::Runtime;
 
 /// Create a minimal execution plan that mimics an LLM model structure.

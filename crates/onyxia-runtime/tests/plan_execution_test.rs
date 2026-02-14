@@ -15,7 +15,7 @@
 //! - cast_ops_test.rs: Cast
 
 use onyxia_onnx::{DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
-use onyxia_planner::{KernelRegistry, compile};
+use onyxia_compiler::{KernelRegistry, compile};
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 
@@ -23,7 +23,7 @@ use std::collections::HashMap;
 #[pollster::test]
 #[ignore] // Requires GPU
 async fn test_empty_plan() {
-    use onyxia_planner::{ExecutionPlan, ModelMetadata, TensorRegistry};
+    use onyxia_compiler::{ExecutionPlan, ModelMetadata, TensorRegistry};
 
     let runtime = Runtime::new()
         .await
@@ -160,7 +160,7 @@ async fn test_multiple_operations() {
 #[pollster::test]
 #[ignore] // Requires GPU
 async fn test_initializer_upload() {
-    use onyxia_planner::{ExecutionPlan, ModelMetadata, TensorRegistry};
+    use onyxia_compiler::{ExecutionPlan, ModelMetadata, TensorRegistry};
 
     // Create a tensor registry with a tensor that has initializer data
     let mut tensors = TensorRegistry::new();

@@ -1173,8 +1173,8 @@ dependencies = [
  "anyhow",
  "clap",
  "minijinja",
+ "onyxia-compiler",
  "onyxia-onnx",
- "onyxia-planner",
  "onyxia-runtime",
  "pollster",
  "rand 0.10.0",
@@ -1182,17 +1182,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "onyxia-onnx"
-version = "0.1.0"
-dependencies = [
- "prost",
- "prost-build",
- "thiserror",
- "tracing",
-]
-
-[[package]]
-name = "onyxia-planner"
+name = "onyxia-compiler"
 version = "0.1.0"
 dependencies = [
  "half",
@@ -1206,14 +1196,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "onyxia-onnx"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "prost-build",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "onyxia-runtime"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
  "futures",
  "naga",
+ "onyxia-compiler",
  "onyxia-onnx",
- "onyxia-planner",
  "pollster",
  "thiserror",
  "wgpu",
