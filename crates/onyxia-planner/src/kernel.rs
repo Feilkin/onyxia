@@ -308,6 +308,7 @@ impl KernelRegistry {
         registry.register("Cast", Box::new(crate::kernels::CastKernel));
         registry.register("Concat", Box::new(crate::kernels::ConcatKernel));
         registry.register("Cos", Box::new(crate::kernels::CosKernel));
+        registry.register("Equal", Box::new(crate::kernels::EqualKernel));
         registry.register("Gather", Box::new(crate::kernels::GatherKernel));
         registry.register("Sin", Box::new(crate::kernels::SinKernel));
         registry.register("Tanh", Box::new(crate::kernels::TanhKernel));

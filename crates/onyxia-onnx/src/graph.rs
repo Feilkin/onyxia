@@ -289,12 +289,16 @@ pub enum DataType {
 
 impl DataType {
     /// Size of this data type in bytes.
+    ///
+    /// Note: Bool returns 4 bytes to match GPU storage requirements. WGSL does not
+    /// support bool in storage buffers, so boolean values are represented as u32
+    /// (0 for false, 1 for true) in GPU memory.
     pub fn size(&self) -> usize {
         match self {
-            DataType::F32 | DataType::I32 | DataType::U32 => 4,
+            DataType::F32 | DataType::I32 | DataType::U32 | DataType::Bool => 4,
             DataType::F16 => 2,
             DataType::I64 => 8,
-            DataType::U8 | DataType::Bool => 1,
+            DataType::U8 => 1,
             DataType::Q4 => 1, // Packed
             DataType::Q8 => 1,
         }
