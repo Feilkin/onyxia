@@ -3,13 +3,15 @@
 use crate::error::Result;
 use crate::inference::{InferenceContext, TensorValue};
 use crate::kernel::{OpKernel, PlanContext};
-use crate::plan::Step;
+use crate::plan::{BindingDesc, Step};
 use onyxia_onnx::TensorShape;
+use std::collections::HashMap;
 
 /// Kernel for concatenating multiple tensors along an axis (ONNX Concat operator).
 ///
 /// Concatenates N input tensors end-to-end along a specified axis.
-/// Currently optimized for axis=0 concatenation using buffer copies.
+/// - axis=0: Uses efficient buffer copies
+/// - other axes: Uses compute shader with strided access
 pub struct ConcatKernel;
 
 impl OpKernel for ConcatKernel {
@@ -27,11 +29,26 @@ impl OpKernel for ConcatKernel {
         // Get the axis attribute (defaults to 0 if not specified)
         let axis: i64 = ctx.node.attr("axis").unwrap_or(0);
 
-        // For now, we only support axis=0 concatenation
-        if axis != 0 {
-            return Err(crate::error::CodegenError::UnsupportedOp(format!(
-                "Concat only supports axis=0, got axis={}",
-                axis
+        // Normalize negative axis (negative means counting from the back)
+        // Get rank from first input shape
+        let rank = match ctx.input_shapes.first() {
+            Some(TensorShape::Static(dims)) => dims.len() as i64,
+            Some(TensorShape::Unknown) => return Ok(vec![TensorShape::Unknown]),
+            _ => {
+                return Err(crate::error::CodegenError::InvalidShape(
+                    "Cannot determine rank for axis normalization".to_string(),
+                ));
+            }
+        };
+
+        let normalized_axis = if axis < 0 { rank + axis } else { axis };
+        let axis_usize = normalized_axis as usize;
+
+        // Validate axis is within bounds
+        if normalized_axis < 0 || normalized_axis >= rank {
+            return Err(crate::error::CodegenError::InvalidShape(format!(
+                "Concat axis {} out of bounds for rank {}",
+                normalized_axis, rank
             )));
         }
 
@@ -64,12 +81,11 @@ impl OpKernel for ConcatKernel {
                 ));
             }
 
-            // For axis=0, accumulate first dimension, verify other dimensions match
+            // Verify rank matches and all dimensions except concat axis match
             if i == 0 {
                 first_dims = dims.clone();
-                concat_dim_sum = dims[0];
+                concat_dim_sum = dims[axis_usize];
             } else {
-                // Verify all dimensions except axis 0 match
                 if dims.len() != first_dims.len() {
                     return Err(crate::error::CodegenError::InvalidShape(format!(
                         "Concat input {} has {} dimensions, expected {}",
@@ -80,7 +96,7 @@ impl OpKernel for ConcatKernel {
                 }
 
                 for (dim_idx, (d1, d2)) in first_dims.iter().zip(dims.iter()).enumerate() {
-                    if dim_idx != 0 && d1 != d2 {
+                    if dim_idx != axis_usize && d1 != d2 {
                         return Err(crate::error::CodegenError::InvalidShape(format!(
                             "Concat input {} dimension {} mismatch: {} vs {}",
                             i, dim_idx, d2, d1
@@ -88,13 +104,13 @@ impl OpKernel for ConcatKernel {
                     }
                 }
 
-                concat_dim_sum += dims[0];
+                concat_dim_sum += dims[axis_usize];
             }
         }
 
-        // Output shape: same as first input, but with concatenated first dimension
+        // Output shape: same as first input, but with concatenated dimension at axis
         let mut output_dims = first_dims;
-        output_dims[0] = concat_dim_sum;
+        output_dims[axis_usize] = concat_dim_sum;
 
         Ok(vec![TensorShape::Static(output_dims)])
     }
@@ -103,8 +119,16 @@ impl OpKernel for ConcatKernel {
         // If all input values are known, concatenate them
         let axis: i64 = ctx.node.attr("axis").unwrap_or(0);
 
+        // Normalize negative axis
+        let rank = match ctx.input_shapes.first() {
+            Some(TensorShape::Static(dims)) => dims.len() as i64,
+            _ => return Ok(vec![None]),
+        };
+
+        let normalized_axis = if axis < 0 { rank + axis } else { axis };
+
         // Only support axis=0 for now
-        if axis != 0 {
+        if normalized_axis != 0 {
             return Ok(vec![None]);
         }
 
@@ -169,13 +193,7 @@ impl OpKernel for ConcatKernel {
         // Get the axis attribute
         let axis: i64 = ctx.node.attr("axis").unwrap_or(0);
 
-        if axis != 0 {
-            return Err(crate::error::CodegenError::UnsupportedOp(format!(
-                "Concat only supports axis=0, got axis={}",
-                axis
-            )));
-        }
-
+        // Normalize negative axis
         let num_inputs = ctx.node.inputs.len();
         if num_inputs == 0 {
             return Err(crate::error::CodegenError::InvalidShape(
@@ -183,6 +201,36 @@ impl OpKernel for ConcatKernel {
             ));
         }
 
+        let input_info = ctx.input_info(0)?;
+        let input_shape = ctx.static_shape(&input_info.shape)?;
+        let rank = input_shape.len() as i64;
+        let normalized_axis = if axis < 0 { rank + axis } else { axis };
+        let axis_usize = normalized_axis as usize;
+
+        if normalized_axis < 0 || normalized_axis >= rank {
+            return Err(crate::error::CodegenError::InvalidShape(format!(
+                "Concat axis {} out of bounds for rank {}",
+                normalized_axis, rank
+            )));
+        }
+
+        // Optimization: use buffer copies for axis=0
+        if normalized_axis == 0 {
+            return self.plan_axis_0_buffer_copy(ctx, num_inputs);
+        }
+
+        // General case: use compute shader for arbitrary axis
+        self.plan_shader_based(ctx, num_inputs, axis_usize)
+    }
+}
+
+impl ConcatKernel {
+    /// Plan axis=0 concatenation using efficient buffer copies.
+    fn plan_axis_0_buffer_copy(
+        &self,
+        ctx: &mut PlanContext<'_>,
+        num_inputs: usize,
+    ) -> Result<Vec<Step>> {
         // Generate one CopyBuffer step per input
         // Each copies from the input buffer to the correct offset in the output buffer
         let mut steps = Vec::new();
@@ -203,6 +251,72 @@ impl OpKernel for ConcatKernel {
             });
 
             dst_offset += bytes;
+        }
+
+        Ok(steps)
+    }
+
+    /// Plan concatenation along arbitrary axis using compute shader.
+    fn plan_shader_based(
+        &self,
+        ctx: &mut PlanContext<'_>,
+        num_inputs: usize,
+        axis: usize,
+    ) -> Result<Vec<Step>> {
+        let output_info = ctx.output_info(0)?;
+        let output_shape = ctx.static_shape(&output_info.shape)?;
+
+        // Calculate outer_size and inner_size
+        let outer_size: usize = output_shape[..axis].iter().product();
+        let inner_size: usize = output_shape[axis + 1..].iter().product();
+        let output_axis_size = output_shape[axis];
+
+        // Compile shader once
+        let shader_index = ctx.compile_shader(
+            "concat",
+            include_str!("../../shaders/indexing/concat.wgsl"),
+            HashMap::new(),
+        )?;
+
+        // Generate one dispatch per input
+        let mut steps = Vec::new();
+        let mut output_axis_offset = 0;
+
+        for i in 0..num_inputs {
+            let input_info = ctx.input_info(i)?;
+            let input_shape = ctx.static_shape(&input_info.shape)?;
+            let input_axis_size = input_shape[axis];
+            let input_size: usize = input_shape.iter().product();
+
+            // Prepare immediate data (must match ConcatParams struct in shader)
+            let mut immediates_data = Vec::new();
+            immediates_data.extend_from_slice(&(outer_size as u32).to_le_bytes());
+            immediates_data.extend_from_slice(&(inner_size as u32).to_le_bytes());
+            immediates_data.extend_from_slice(&(input_axis_size as u32).to_le_bytes());
+            immediates_data.extend_from_slice(&(output_axis_size as u32).to_le_bytes());
+            immediates_data.extend_from_slice(&(output_axis_offset as u32).to_le_bytes());
+
+            // Calculate workgroups (256 threads per workgroup)
+            let workgroup_size = 256;
+            let num_workgroups = (input_size + workgroup_size - 1) / workgroup_size;
+
+            steps.push(Step::Dispatch {
+                shader_index,
+                bindings: vec![
+                    BindingDesc {
+                        buffer: ctx.input(i),
+                        read_only: true,
+                    },
+                    BindingDesc {
+                        buffer: ctx.output(0),
+                        read_only: false,
+                    },
+                ],
+                workgroups: [num_workgroups as u32, 1, 1],
+                immediates: Some(immediates_data),
+            });
+
+            output_axis_offset += input_axis_size;
         }
 
         Ok(steps)
@@ -449,5 +563,181 @@ mod tests {
         let result = ConcatKernel.infer_output_shapes(&ctx);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_concat_kernel_negative_axis() {
+        let mut node = Node::new("Concat");
+        // axis=-1 on 1D tensors should normalize to axis=0
+        node.attributes
+            .insert("axis".to_string(), AttributeValue::Int(-1i64));
+
+        let input_shapes = vec![TensorShape::Static(vec![3]), TensorShape::Static(vec![4])];
+        let input_values = vec![None; input_shapes.len()];
+
+        let graph = onyxia_onnx::Graph::new();
+        let ctx = InferenceContext::new(&node, &graph, input_shapes, input_values);
+        let output_shapes = ConcatKernel
+            .infer_output_shapes(&ctx)
+            .expect("Shape inference should succeed for negative axis on 1D tensors");
+
+        assert_eq!(output_shapes.len(), 1);
+        assert_eq!(output_shapes[0], TensorShape::Static(vec![7]));
+    }
+
+    #[test]
+    fn test_concat_kernel_negative_axis_2d() {
+        let mut node = Node::new("Concat");
+        // axis=-1 on 2D tensors normalizes to axis=1
+        node.attributes
+            .insert("axis".to_string(), AttributeValue::Int(-1i64));
+
+        let input_shapes = vec![
+            TensorShape::Static(vec![2, 5]),
+            TensorShape::Static(vec![2, 3]),
+        ];
+        let input_values = vec![None; input_shapes.len()];
+
+        let graph = onyxia_onnx::Graph::new();
+        let ctx = InferenceContext::new(&node, &graph, input_shapes, input_values);
+        let result = ConcatKernel.infer_output_shapes(&ctx);
+
+        // Should succeed: axis=-1 on 2D [2,5] and [2,3] -> [2, 8]
+        assert!(result.is_ok());
+        let output_shapes = result.unwrap();
+        assert_eq!(output_shapes.len(), 1);
+        assert_eq!(output_shapes[0], TensorShape::Static(vec![2, 8]));
+    }
+
+    #[test]
+    fn test_concat_kernel_axis_1() {
+        let mut node = Node::new("Concat");
+        // Concatenate along axis=1
+        node.attributes
+            .insert("axis".to_string(), AttributeValue::Int(1i64));
+
+        let input_shapes = vec![
+            TensorShape::Static(vec![2, 5]),
+            TensorShape::Static(vec![2, 3]),
+        ];
+        let input_values = vec![None; input_shapes.len()];
+
+        let graph = onyxia_onnx::Graph::new();
+        let ctx = InferenceContext::new(&node, &graph, input_shapes, input_values);
+        let result = ConcatKernel.infer_output_shapes(&ctx);
+
+        assert!(result.is_ok());
+        let output_shapes = result.unwrap();
+        assert_eq!(output_shapes.len(), 1);
+        assert_eq!(output_shapes[0], TensorShape::Static(vec![2, 8]));
+    }
+
+    #[test]
+    fn test_concat_kernel_3d_axis_2() {
+        let mut node = Node::new("Concat");
+        // Concatenate 3D tensors along axis=2 (last axis)
+        node.attributes
+            .insert("axis".to_string(), AttributeValue::Int(2i64));
+
+        let input_shapes = vec![
+            TensorShape::Static(vec![2, 3, 5]),
+            TensorShape::Static(vec![2, 3, 7]),
+        ];
+        let input_values = vec![None; input_shapes.len()];
+
+        let graph = onyxia_onnx::Graph::new();
+        let ctx = InferenceContext::new(&node, &graph, input_shapes, input_values);
+        let result = ConcatKernel.infer_output_shapes(&ctx);
+
+        assert!(result.is_ok());
+        let output_shapes = result.unwrap();
+        assert_eq!(output_shapes.len(), 1);
+        assert_eq!(output_shapes[0], TensorShape::Static(vec![2, 3, 12]));
+    }
+
+    #[test]
+    fn test_concat_kernel_axis_1_plan_shader() {
+        let mut graph = Graph::new();
+
+        // Input 1: [2, 3] elements
+        graph.add_tensor(TensorInfo {
+            name: "a".to_string(),
+            dtype: DataType::F32,
+            shape: TensorShape::Static(vec![2, 3]),
+            kind: TensorKind::Input,
+            initializer: None,
+        });
+
+        // Input 2: [2, 4] elements
+        graph.add_tensor(TensorInfo {
+            name: "b".to_string(),
+            dtype: DataType::F32,
+            shape: TensorShape::Static(vec![2, 4]),
+            kind: TensorKind::Input,
+            initializer: None,
+        });
+
+        // Output: [2, 7] elements
+        graph.add_tensor(TensorInfo {
+            name: "c".to_string(),
+            dtype: DataType::F32,
+            shape: TensorShape::Static(vec![2, 7]),
+            kind: TensorKind::Output,
+            initializer: None,
+        });
+
+        let mut node = Node::new("Concat");
+        node.attributes
+            .insert("axis".to_string(), AttributeValue::Int(1i64));
+        node.inputs = vec!["a".to_string(), "b".to_string()];
+        node.outputs = vec!["c".to_string()];
+
+        let input_ids = vec![0, 1];
+        let output_ids = vec![2];
+        let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
+        let mut shaders = Vec::new();
+
+        let mut ctx = crate::kernel::PlanContext::for_test(
+            &node,
+            &graph,
+            &input_ids,
+            &output_ids,
+            &dynamic_dimensions,
+            &mut shaders,
+        );
+
+        let steps = ConcatKernel
+            .plan(&mut ctx)
+            .expect("Planning should succeed");
+
+        // Should generate 2 shader dispatches (one per input)
+        assert_eq!(steps.len(), 2);
+
+        // Verify shader was compiled
+        assert_eq!(shaders.len(), 1);
+        assert_eq!(shaders[0].label, "concat");
+
+        // Verify both steps are Dispatch steps
+        for (i, step) in steps.iter().enumerate() {
+            match step {
+                Step::Dispatch {
+                    shader_index,
+                    bindings,
+                    workgroups,
+                    immediates,
+                } => {
+                    assert_eq!(*shader_index, 0); // First (and only) shader
+                    assert_eq!(bindings.len(), 2); // input and output
+                    assert_eq!(bindings[0].buffer, BufferRef::Tensor(i)); // input i
+                    assert_eq!(bindings[1].buffer, BufferRef::Tensor(2)); // output
+                    assert!(immediates.is_some());
+                    // Workgroups should be calculated based on input size
+                    assert!(workgroups[0] > 0);
+                    assert_eq!(workgroups[1], 1);
+                    assert_eq!(workgroups[2], 1);
+                }
+                _ => panic!("Expected Dispatch step"),
+            }
+        }
     }
 }
