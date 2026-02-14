@@ -230,3 +230,538 @@ async fn test_gather_embedding_e2e() {
     println!("  Token IDs: [2, 3] = [[0, 2, 4], [1, 3, 5]]");
     println!("  Output embeddings shape: [2, 3, 4]");
 }
+
+/// Helper function to create i64 tensor bytes from a slice.
+fn i64_bytes(values: &[i64]) -> Vec<u8> {
+    values.iter().flat_map(|&v| v.to_le_bytes()).collect()
+}
+
+/// End-to-end test: Slice operation with basic single-axis slicing.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_slice_basic_e2e() {
+    let mut graph = Graph::new();
+
+    // Add data input tensor [10]
+    graph.add_tensor(TensorInfo {
+        name: "data".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![10]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add starts tensor (constant)
+    graph.add_tensor(TensorInfo {
+        name: "starts".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Weight,
+        initializer: Some(i64_bytes(&[2])),
+    });
+
+    // Add ends tensor (constant)
+    graph.add_tensor(TensorInfo {
+        name: "ends".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Weight,
+        initializer: Some(i64_bytes(&[7])),
+    });
+
+    // Add output tensor [5]
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![5]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Slice node
+    let mut node = Node::new("Slice");
+    node.name = "slice_node".to_string();
+    node.inputs = vec!["data".to_string(), "starts".to_string(), "ends".to_string()];
+    node.outputs = vec!["output".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["data".to_string()];
+    graph.outputs = vec!["output".to_string()];
+
+    graph.metadata.name = "test_slice_basic".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile and load
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Data: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    let data = Tensor::from_vec((0..10).map(|x| x as f32).collect(), &[10]);
+
+    let outputs = executor
+        .run(&[("data", data)])
+        .expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected: [2, 3, 4, 5, 6]
+    assert_eq!(
+        output,
+        vec![2.0, 3.0, 4.0, 5.0, 6.0],
+        "Slice result incorrect"
+    );
+
+    println!("✓ End-to-end Slice basic test passed!");
+    println!("  Input: [0..10]");
+    println!("  Slice [2:7]: {:?}", output);
+}
+
+/// End-to-end test: Slice operation with multi-axis slicing.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_slice_multiaxis_e2e() {
+    let mut graph = Graph::new();
+
+    // Add data input tensor [4, 5, 6]
+    graph.add_tensor(TensorInfo {
+        name: "data".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4, 5, 6]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add starts tensor: [1, 0, 2]
+    graph.add_tensor(TensorInfo {
+        name: "starts".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Weight,
+        initializer: Some(i64_bytes(&[1, 0, 2])),
+    });
+
+    // Add ends tensor: [3, 4, 5]
+    graph.add_tensor(TensorInfo {
+        name: "ends".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Weight,
+        initializer: Some(i64_bytes(&[3, 4, 5])),
+    });
+
+    // Add output tensor [2, 4, 3]
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![2, 4, 3]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Slice node
+    let mut node = Node::new("Slice");
+    node.name = "slice_multiaxis".to_string();
+    node.inputs = vec!["data".to_string(), "starts".to_string(), "ends".to_string()];
+    node.outputs = vec!["output".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["data".to_string()];
+    graph.outputs = vec!["output".to_string()];
+
+    graph.metadata.name = "test_slice_multiaxis".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile and load
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Create data [4, 5, 6] with sequential values
+    let data: Vec<f32> = (0..120).map(|x| x as f32).collect();
+    let data_tensor = Tensor::from_vec(data, &[4, 5, 6]);
+
+    let outputs = executor
+        .run(&[("data", data_tensor)])
+        .expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Calculate expected output manually
+    // Slicing [1:3, 0:4, 2:5] from [4, 5, 6]
+    let mut expected = Vec::new();
+    for i in 1..3 {
+        // dim 0: 1 to 3
+        for j in 0..4 {
+            // dim 1: 0 to 4
+            for k in 2..5 {
+                // dim 2: 2 to 5
+                let idx = i * 30 + j * 6 + k;
+                expected.push(idx as f32);
+            }
+        }
+    }
+
+    assert_eq!(output, expected, "Multi-axis slice result incorrect");
+
+    println!("✓ End-to-end Slice multi-axis test passed!");
+    println!("  Input shape: [4, 5, 6]");
+    println!("  Slice [1:3, 0:4, 2:5]");
+    println!("  Output shape: [2, 4, 3]");
+}
+
+/// End-to-end test: Slice with negative indices.
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_slice_negative_indices_e2e() {
+    let mut graph = Graph::new();
+
+    // Add data input tensor [8]
+    graph.add_tensor(TensorInfo {
+        name: "data".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![8]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add starts tensor: [-5] (should be 3)
+    graph.add_tensor(TensorInfo {
+        name: "starts".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Weight,
+        initializer: Some(i64_bytes(&[-5])),
+    });
+
+    // Add ends tensor: [-1] (should be 7)
+    graph.add_tensor(TensorInfo {
+        name: "ends".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Weight,
+        initializer: Some(i64_bytes(&[-1])),
+    });
+
+    // Add output tensor [4]
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Slice node
+    let mut node = Node::new("Slice");
+    node.name = "slice_neg".to_string();
+    node.inputs = vec!["data".to_string(), "starts".to_string(), "ends".to_string()];
+    node.outputs = vec!["output".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["data".to_string()];
+    graph.outputs = vec!["output".to_string()];
+
+    graph.metadata.name = "test_slice_negative".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile and load
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Data: [0, 1, 2, 3, 4, 5, 6, 7]
+    let data = Tensor::from_vec((0..8).map(|x| x as f32).collect(), &[8]);
+
+    let outputs = executor
+        .run(&[("data", data)])
+        .expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected: [3, 4, 5, 6]
+    assert_eq!(
+        output,
+        vec![3.0, 4.0, 5.0, 6.0],
+        "Slice with negative indices incorrect"
+    );
+
+    println!("✓ End-to-end Slice negative indices test passed!");
+    println!("  Input: [0..8]");
+    println!("  Slice [-5:-1]: {:?}", output);
+}
+
+/// End-to-end test: Slice with steps > 1 (strided slicing).
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_slice_strided_e2e() {
+    let mut graph = Graph::new();
+
+    // Add data input tensor [10]
+    graph.add_tensor(TensorInfo {
+        name: "data".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![10]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add starts tensor: [0]
+    graph.add_tensor(TensorInfo {
+        name: "starts".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Weight,
+        initializer: Some(i64_bytes(&[0])),
+    });
+
+    // Add ends tensor: [10]
+    graph.add_tensor(TensorInfo {
+        name: "ends".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Weight,
+        initializer: Some(i64_bytes(&[10])),
+    });
+
+    // Add axes tensor: [0]
+    graph.add_tensor(TensorInfo {
+        name: "axes".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Weight,
+        initializer: Some(i64_bytes(&[0])),
+    });
+
+    // Add steps tensor: [2]
+    graph.add_tensor(TensorInfo {
+        name: "steps".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Weight,
+        initializer: Some(i64_bytes(&[2])),
+    });
+
+    // Add output tensor [5]
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![5]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Slice node with all 5 inputs
+    let mut node = Node::new("Slice");
+    node.name = "slice_strided".to_string();
+    node.inputs = vec![
+        "data".to_string(),
+        "starts".to_string(),
+        "ends".to_string(),
+        "axes".to_string(),
+        "steps".to_string(),
+    ];
+    node.outputs = vec!["output".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["data".to_string()];
+    graph.outputs = vec!["output".to_string()];
+
+    graph.metadata.name = "test_slice_strided".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile and load
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Data: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    let data = Tensor::from_vec((0..10).map(|x| x as f32).collect(), &[10]);
+
+    let outputs = executor
+        .run(&[("data", data)])
+        .expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected: [0, 2, 4, 6, 8] (every 2nd element)
+    assert_eq!(
+        output,
+        vec![0.0, 2.0, 4.0, 6.0, 8.0],
+        "Strided slice result incorrect"
+    );
+
+    println!("✓ End-to-end Slice strided test passed!");
+    println!("  Input: [0..10]");
+    println!("  Slice [0:10:2]: {:?}", output);
+}
+
+/// End-to-end test: Slice with negative steps (reverse slicing).
+#[pollster::test]
+#[ignore] // Requires GPU
+async fn test_slice_reverse_e2e() {
+    let mut graph = Graph::new();
+
+    // Add data input tensor [6]
+    graph.add_tensor(TensorInfo {
+        name: "data".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![6]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add starts tensor: [5]
+    graph.add_tensor(TensorInfo {
+        name: "starts".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Weight,
+        initializer: Some(i64_bytes(&[5])),
+    });
+
+    // Add ends tensor: [0]
+    graph.add_tensor(TensorInfo {
+        name: "ends".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Weight,
+        initializer: Some(i64_bytes(&[0])),
+    });
+
+    // Add axes tensor: [0]
+    graph.add_tensor(TensorInfo {
+        name: "axes".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Weight,
+        initializer: Some(i64_bytes(&[0])),
+    });
+
+    // Add steps tensor: [-1]
+    graph.add_tensor(TensorInfo {
+        name: "steps".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Weight,
+        initializer: Some(i64_bytes(&[-1])),
+    });
+
+    // Add output tensor [5]
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![5]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create Slice node
+    let mut node = Node::new("Slice");
+    node.name = "slice_reverse".to_string();
+    node.inputs = vec![
+        "data".to_string(),
+        "starts".to_string(),
+        "ends".to_string(),
+        "axes".to_string(),
+        "steps".to_string(),
+    ];
+    node.outputs = vec!["output".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["data".to_string()];
+    graph.outputs = vec!["output".to_string()];
+
+    graph.metadata.name = "test_slice_reverse".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph.validate().expect("Graph validation should succeed");
+
+    // Compile and load
+    let registry = KernelRegistry::with_defaults();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+    let mut executor = runtime
+        .load_model(plan)
+        .await
+        .expect("Plan loading should succeed");
+
+    // Data: [0, 1, 2, 3, 4, 5]
+    let data = Tensor::from_vec((0..6).map(|x| x as f32).collect(), &[6]);
+
+    let outputs = executor
+        .run(&[("data", data)])
+        .expect("Execution should succeed");
+
+    let output = outputs["output"]
+        .to_vec::<f32>()
+        .expect("Should convert to f32");
+
+    // Expected: [5, 4, 3, 2, 1] (reversed from 5 to 1)
+    assert_eq!(
+        output,
+        vec![5.0, 4.0, 3.0, 2.0, 1.0],
+        "Reverse slice result incorrect"
+    );
+
+    println!("✓ End-to-end Slice reverse test passed!");
+    println!("  Input: [0..6]");
+    println!("  Slice [5:0:-1]: {:?}", output);
+}
