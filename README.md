@@ -11,7 +11,7 @@ ONNX Model → onyxia-onnx → onyxia-compiler → onyxia-runtime → GPU Execut
 ```
 
 - **onyxia-onnx**: Parse ONNX protobuf into a stable Graph API
-- **onyxia-compiler**: Kernel-based shape inference and compilation into execution plans with pre-compiled shaders
+- **onyxia-compiler**: Shape inference and compilation into execution plans with pre-compiled shaders
 - **onyxia-runtime**: Execute plans on GPU hardware via wgpu
 - **onyxia-cli**: Command-line tools for testing and debugging
 
@@ -31,42 +31,42 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
 ### What Works
 
 - ✅ **ONNX parsing** with stable Graph API
-- ✅ **Kernel-based shape inference** — three-phase: dynamic dim substitution → forward inference with value propagation → static-only planning
+- ✅ **Operator-based shape inference** — three-phase: dynamic dim substitution → forward inference with value propagation → static-only planning
 - ✅ **DOT graph visualization** (full, layers, summary views)
-- ✅ **Extensible kernel system** — users add operations via `OpKernel` trait
+- ✅ **Extensible operator system** — users add operations via `Operator` trait
 - ✅ **Shader compilation** — WGSL → `naga::Module` via naga_oil at plan time
 - ✅ **Dynamic dimension resolution** at plan time
 - ✅ **GPU execution** with buffer management and compute dispatch
 - ✅ **End-to-end pipeline** verified
 - ✅ **101 tests passing**, 22 GPU tests skipped in CI
 
-### Built-in Kernels
+### Built-in operators
 
-| Kernel | ONNX Op | Category |
+| Operator | ONNX Op | Category |
 |--------|---------|----------|
-| `AddKernel` | Add | Elementwise |
-| `SubKernel` | Sub | Elementwise |
-| `MulKernel` | Mul | Elementwise |
-| `GeluKernel` | Gelu | Activation |
-| `RmsNormKernel` | SimplifiedLayerNormalization | Normalization |
-| `MatMulF32Kernel` | MatMul | Matrix multiplication |
-| `MatMulNBitsKernel` | MatMulNBits | Quantized matmul |
-| `CastKernel` | Cast | Type conversion |
-| `ConstantKernel` | Constant | Metadata |
-| `ShapeKernel` | Shape | Metadata |
-| `ReshapeKernel` | Reshape | Shape manipulation |
-| `UnsqueezeKernel` | Unsqueeze | Shape manipulation |
-| `TransposeKernel` | Transpose | Shape manipulation |
-| `ConcatKernel` | Concat | Shape manipulation |
-| `GatherKernel` | Gather | Indexing |
-| `ReduceMeanKernel` | ReduceMean | Reduction |
-| `ReduceSumKernel` | ReduceSum | Reduction |
-| `RotaryEmbeddingKernel` | RotaryEmbedding | Attention |
-| `GroupQueryAttentionKernel` | GroupQueryAttention | Attention |
+| `AddOperator` | Add | Elementwise |
+| `SubOperator` | Sub | Elementwise |
+| `MulOperator` | Mul | Elementwise |
+| `GeluOperator` | Gelu | Activation |
+| `RmsNormOperator` | SimplifiedLayerNormalization | Normalization |
+| `MatMulF32Operator` | MatMul | Matrix multiplication |
+| `MatMulNBitsOperator` | MatMulNBits | Quantized matmul |
+| `CastOperator` | Cast | Type conversion |
+| `ConstantOperator` | Constant | Metadata |
+| `ShapeOperator` | Shape | Metadata |
+| `ReshapeOperator` | Reshape | Shape manipulation |
+| `UnsqueezeOperator` | Unsqueeze | Shape manipulation |
+| `TransposeOperator` | Transpose | Shape manipulation |
+| `ConcatOperator` | Concat | Shape manipulation |
+| `GatherOperator` | Gather | Indexing |
+| `ReduceMeanOperator` | ReduceMean | Reduction |
+| `ReduceSumOperator` | ReduceSum | Reduction |
+| `RotaryEmbeddingOperator` | RotaryEmbedding | Attention |
+| `GroupQueryAttentionOperator` | GroupQueryAttention | Attention |
 
 ### What's Next
 
-- 🔜 More kernels for broader ONNX operation coverage
+- 🔜 More operators for broader ONNX operation coverage
 - 🔜 Quantized model support — 4-bit, 8-bit via `MatMulNBits`
 - 🔜 KV cache management for efficient LLM generation
 - 🔜 Performance optimizations (fusion, tiling, memory pooling)
@@ -77,11 +77,11 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
 ### Adding Custom Operations
 
 ```rust
-use onyxia_compiler::{OpKernel, InferenceContext, TensorValue, PlanContext, Step, KernelRegistry, compile};
+use onyxia_compiler::{OpKernel, InferenceContext, TensorValue, PlanContext, Step, OperatorRegistery, compile};
 
-struct MyCustomKernel;
+struct MyCustomOperator;
 
-impl OpKernel for MyCustomKernel {
+impl OpKernel for MyCustomOperator {
     fn name(&self) -> &str { "MyCustomOp" }
     
     fn infer_output_shapes(
@@ -107,8 +107,8 @@ impl OpKernel for MyCustomKernel {
 }
 
 // Register and compile
-let mut registry = KernelRegistry::with_defaults();
-registry.register("MyCustomOp", Box::new(MyCustomKernel));
+let mut registry = OperatorRegistry::with_defaults();
+registry.register("MyCustomOp", Box::new(MyCustomOperator));
 let plan = compile(&graph, &registry, &dynamic_dimensions)?;
 ```
 
@@ -116,7 +116,7 @@ let plan = compile(&graph, &registry, &dynamic_dimensions)?;
 
 ```rust
 use onyxia_onnx::load_model;
-use onyxia_compiler::{compile, KernelRegistry};
+use onyxia_compiler::{compile, OperatorRegistry};
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 
@@ -126,7 +126,7 @@ async fn main() -> anyhow::Result<()> {
     let graph = load_model("model.onnx")?;
 
     // Compile to execution plan
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let dynamic_dimensions = HashMap::from([
         ("batch".to_string(), 1),
         ("sequence".to_string(), 512),
@@ -198,7 +198,7 @@ cargo nextest run --run-ignored all
 | Crate | Description |
 |-------|-------------|
 | `onyxia-onnx` | ONNX protobuf parser, Graph API |
-| `onyxia-compiler` | Kernel-based shape inference and execution plan compiler |
+| `onyxia-compiler` | Shape inference and execution plan compiler |
 | `onyxia-runtime` | GPU executor via wgpu |
 | `onyxia-cli` | CLI tools for model inspection and DOT export |
 
@@ -209,18 +209,6 @@ The `models/` directory contains sample ONNX models for testing:
 - **Gemma 3 270m** (quantized LLM): `models/gemma-3-270m-it-ONNX/onnx/model_q4.onnx`
   - 18 transformer layers, 4 attention heads, vocab size 262K
   - Uses `MatMulNBits` (4-bit quantized weights), `GroupQueryAttention`, `RotaryEmbedding`
-
-## Development Roadmap
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full development plan:
-
-- ✅ Phase 1: Graph and Parser Foundation
-- ✅ Phase 2: Planner and Kernel System
-- ✅ Phase 3: Runtime Execution
-- 🔜 Phase 4: Quantization Support
-- 🔜 Phase 5: Attention and KV Cache
-- 🔜 Phase 6: Optimizations
-- 🔜 Phase 7: Polish and Advanced Features
 
 ## License
 

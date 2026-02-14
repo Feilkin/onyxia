@@ -9,13 +9,13 @@
 //! ## Phase 2: Forward Shape and Value Inference
 //!
 //! Runs a single forward pass over the graph in topological order, using
-//! kernel-defined `infer_output_shapes` and `try_fold` rules. Propagates both
+//! operator-defined `infer_output_shapes` and `try_fold` rules. Propagates both
 //! shapes and constant values (for data-dependent shape inference like Reshape
 //! reading a computed shape tensor).
 
 use crate::error::{CodegenError, Result};
 use crate::inference::{InferenceContext, TensorValue};
-use crate::kernel::KernelRegistry;
+use crate::operator::OperatorRegistry;
 use crate::scheduler::Scheduler;
 use crate::symbolic_expr::{evaluate_expr, parse_expr};
 use onyxia_onnx::{Dimension, Graph, TensorId, TensorShape};
@@ -76,15 +76,15 @@ pub fn resolve_dynamic_dimensions(
     Ok(())
 }
 
-/// Phase 2: Forward shape and value inference using kernel-defined rules.
+/// Phase 2: Forward shape and value inference using operator-defined rules.
 ///
-/// Runs a single forward pass over the graph's nodes in topological order,
-/// calling each kernel's `infer_output_shapes` and `try_fold` to resolve
+/// Makes a single forward pass over the graph in topological order,
+/// calling each operator's `infer_output_shapes` and `try_fold` to resolve
 /// `Unknown` shapes and propagate constant values.
 ///
 /// Must be called **after** [`resolve_dynamic_dimensions`] — all shapes are
 /// guaranteed to be either `Static`, `Unknown`, or `Absent` (no `Named` dims).
-pub fn infer_shapes(graph: &mut Graph, registry: &KernelRegistry) -> Result<()> {
+pub fn infer_shapes(graph: &mut Graph, registry: &OperatorRegistry) -> Result<()> {
     debug!(
         "Phase 2: Starting forward shape and value inference ({} nodes, {} tensors)",
         graph.nodes.len(),
@@ -149,14 +149,14 @@ pub fn infer_shapes(graph: &mut Graph, registry: &KernelRegistry) -> Result<()> 
             continue;
         }
 
-        // Look up kernel
-        let kernel = match registry.get(&node.op_type) {
+        // Look up operator
+        let operator = match registry.get(&node.op_type) {
             Some(k) => k,
             None => {
                 warn!(
                     node = node.name.as_str(),
                     op_type = node.op_type.as_str(),
-                    "No kernel registered for operator, cannot infer shape"
+                    "No operator registered for operator, cannot infer shape"
                 );
                 continue;
             }
@@ -167,7 +167,7 @@ pub fn infer_shapes(graph: &mut Graph, registry: &KernelRegistry) -> Result<()> 
             let ctx = InferenceContext::new(node, graph, input_shapes, input_values);
 
             // Infer output shapes
-            let shapes = match kernel.infer_output_shapes(&ctx) {
+            let shapes = match operator.infer_output_shapes(&ctx) {
                 Ok(shapes) => shapes,
                 Err(e) => {
                     warn!(
@@ -186,13 +186,13 @@ pub fn infer_shapes(graph: &mut Graph, registry: &KernelRegistry) -> Result<()> 
                     op_type = node.op_type.as_str(),
                     expected = node.outputs.len(),
                     got = shapes.len(),
-                    "Kernel returned wrong number of output shapes"
+                    "Operator returned wrong number of output shapes"
                 );
                 continue;
             }
 
             // Try constant folding
-            let values = match kernel.try_fold(&ctx) {
+            let values = match operator.try_fold(&ctx) {
                 Ok(values) => values,
                 Err(e) => {
                     debug!(
@@ -211,7 +211,7 @@ pub fn infer_shapes(graph: &mut Graph, registry: &KernelRegistry) -> Result<()> 
                     op_type = node.op_type.as_str(),
                     expected = node.outputs.len(),
                     got = values.len(),
-                    "Kernel returned wrong number of output values from try_fold"
+                    "Operator returned wrong number of output values from try_fold"
                 );
                 continue;
             }

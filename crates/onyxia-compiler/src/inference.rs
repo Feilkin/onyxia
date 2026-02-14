@@ -194,9 +194,9 @@ impl TensorValue {
     }
 }
 
-/// Context provided to OpKernel during shape and value inference.
+/// Context provided to OpOperator during shape and value inference.
 ///
-/// Gives kernels read-only access to everything they need:
+/// Gives operators read-only access to everything they need:
 /// input shapes, input values, node attributes, and the graph.
 pub struct InferenceContext<'a> {
     /// The ONNX node being analyzed.
@@ -210,7 +210,7 @@ pub struct InferenceContext<'a> {
     /// Constant-folded values of input tensors, if known.
     /// `None` means the value is not statically known (e.g., user input).
     /// `Some(v)` means the tensor was folded to a constant by an upstream
-    /// kernel's `try_fold`, or is an initializer.
+    /// operator's `try_fold`, or is an initializer.
     pub input_values: Vec<Option<TensorValue>>,
 
     /// The full graph (for accessing initializer data, tensor metadata).

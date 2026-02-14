@@ -5,7 +5,7 @@
 mod common;
 
 use common::make_unary_graph;
-use onyxia_compiler::{KernelRegistry, compile};
+use onyxia_compiler::{OperatorRegistry, compile};
 use onyxia_onnx::DataType;
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
@@ -19,7 +19,7 @@ async fn test_gelu_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile and execute
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
@@ -72,7 +72,7 @@ async fn test_cos_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile and execute
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
@@ -132,7 +132,7 @@ async fn test_sin_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile and execute
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
@@ -192,7 +192,7 @@ async fn test_tanh_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile and execute
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
@@ -278,7 +278,7 @@ async fn test_sqrt_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile and execute
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
@@ -376,7 +376,7 @@ async fn test_sqrt_multidim_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile and execute
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
@@ -430,7 +430,7 @@ async fn test_neg_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile and execute
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
@@ -487,7 +487,7 @@ async fn test_neg_multidim_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile and execute
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
@@ -541,7 +541,7 @@ async fn test_neg_special_values_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile and execute
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new().await.expect("Runtime init should succeed");

@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use onyxia_compiler::{compile, KernelRegistry};
+//! use onyxia_compiler::{compile, OperatorRegistry};
 //! use onyxia_onnx::Graph;
 //! use std::collections::HashMap;
 //!
@@ -15,7 +15,7 @@
 //! # let graph = onyxia_onnx::Graph::new();
 //!
 //! // Compile to execution plan
-//! let registry = KernelRegistry::with_defaults();
+//! let registry = OperatorRegistry::with_defaults();
 //! let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
 //! let plan = compile(&graph, &registry, &dynamic_dimensions)?;
 //!
@@ -26,15 +26,15 @@
 
 pub mod error;
 pub mod inference;
-pub mod kernel;
-pub mod kernels;
+pub mod operator;
+pub mod operators;
 pub mod plan;
 pub mod scheduler;
 pub mod shape_inference;
 pub mod symbolic_expr;
 
 pub use error::{CodegenError, Result};
-pub use kernel::{KernelRegistry, OpKernel, PlanContext};
+pub use operator::{OpOperator, OperatorRegistry, PlanContext};
 pub use plan::{
     BindingDesc, BufferRef, CompiledShader, ExecutionPlan, ModelMetadata, PlannedOp,
     ScratchBufferDesc, ShaderIndex, Step, TensorRegistry,
@@ -46,7 +46,7 @@ use scheduler::Scheduler;
 
 /// Compile an ONNX graph into an execution plan.
 ///
-/// This is the main entry point for the planner crate. Uses the provided kernel
+/// This is the main entry point for the planner crate. Uses the provided operator
 /// registry to map ONNX operations to GPU steps. `dynamic_dimensions` provides
 /// concrete values for symbolic dimensions (e.g., {"batch": 1, "sequence": 512}),
 /// allowing all shader defs to be fully resolved at plan time.
@@ -54,7 +54,7 @@ use scheduler::Scheduler;
 /// # Arguments
 ///
 /// * `graph` - The ONNX graph to compile
-/// * `registry` - Kernel registry mapping op_types to implementations
+/// * `registry` - Operator registry mapping op_types to implementations
 /// * `dynamic_dimensions` - Concrete values for symbolic dimensions
 ///
 /// # Returns
@@ -63,21 +63,21 @@ use scheduler::Scheduler;
 ///
 /// # Errors
 ///
-/// - `CodegenError::UnsupportedOp` if an operation has no registered kernel
+/// - `CodegenError::UnsupportedOp` if an operation has no registered operator
 /// - `CodegenError::InvalidShape` if a dynamic dimension is not provided
 /// - `CodegenError::InvalidShape` if any tensor has Unknown shape
 ///
 /// # Example
 ///
 /// ```rust
-/// use onyxia_compiler::{compile, KernelRegistry};
+/// use onyxia_compiler::{compile, OperatorRegistry};
 /// use onyxia_onnx::Graph;
 /// use std::collections::HashMap;
 ///
 /// # fn example(graph: &Graph) -> Result<(), Box<dyn std::error::Error>> {
-/// let registry = KernelRegistry::with_defaults();
+/// let registry = OperatorRegistry::with_defaults();
 /// let dynamic_dimensions: HashMap<String, usize> = HashMap::new();
-/// let plan = compile(graph, &registry, &dynamic_dimensions)?;
+/// let plan = compile(graph, &registry, &dynamic_dimensions)?
 /// println!("Compiled {} operations", plan.operations.len());
 /// # Ok(())
 /// # }
@@ -85,7 +85,7 @@ use scheduler::Scheduler;
 #[tracing::instrument(skip_all, fields(num_nodes = graph.nodes.len(), num_tensors = graph.tensor_info.len()))]
 pub fn compile(
     graph: &Graph,
-    registry: &KernelRegistry,
+    registry: &OperatorRegistry,
     dynamic_dimensions: &std::collections::HashMap<String, usize>,
 ) -> Result<ExecutionPlan> {
     use onyxia_onnx::TensorShape;
@@ -98,7 +98,7 @@ pub fn compile(
         g
     };
 
-    // Phase 2: Iterative forward shape inference using kernel-defined rules
+    // Phase 2: Iterative forward shape inference using operator-defined rules
     {
         let _span = tracing::debug_span!("shape_inference").entered();
         shape_inference::infer_shapes(&mut graph, registry)?;
@@ -164,8 +164,8 @@ pub fn compile(
         for &node_id in &ordered_nodes {
             let node = &graph.nodes[node_id];
 
-            // Look up kernel by op_type
-            let kernel = registry
+            // Look up operator by op_type
+            let operator = registry
                 .get(&node.op_type)
                 .ok_or_else(|| CodegenError::UnsupportedOp(node.op_type.clone()))?;
 
@@ -207,8 +207,8 @@ pub fn compile(
                 &mut shaders,
             );
 
-            // Call kernel.plan() → get Vec<Step>
-            let steps = kernel.plan(&mut ctx)?;
+            // Call operator.plan() → get Vec<Step>
+            let steps = operator.plan(&mut ctx)?;
 
             // Build PlannedOp from the node + steps + scratch buffers
             let planned_op = PlannedOp {
@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn test_compile_basic() {
         let graph = make_add_graph();
-        let registry = KernelRegistry::with_defaults();
+        let registry = OperatorRegistry::with_defaults();
         let dynamic_dimensions = std::collections::HashMap::new();
 
         let result = compile(&graph, &registry, &dynamic_dimensions);
@@ -397,7 +397,7 @@ mod tests {
         graph.inputs = vec!["input".into()];
         graph.outputs = vec!["output".into()];
 
-        let registry = KernelRegistry::with_defaults();
+        let registry = OperatorRegistry::with_defaults();
         let dynamic_dimensions = std::collections::HashMap::new();
 
         let result = compile(&graph, &registry, &dynamic_dimensions);
@@ -457,7 +457,7 @@ mod tests {
         graph.inputs = vec!["a".into(), "b".into()];
         graph.outputs = vec!["c".into()];
 
-        let registry = KernelRegistry::with_defaults();
+        let registry = OperatorRegistry::with_defaults();
         // Empty dynamic_dimensions - missing "batch"
         let dynamic_dimensions = std::collections::HashMap::new();
 
@@ -524,7 +524,7 @@ mod tests {
         graph.inputs = vec!["a".into(), "b".into()];
         graph.outputs = vec!["c".into()];
 
-        let registry = KernelRegistry::with_defaults();
+        let registry = OperatorRegistry::with_defaults();
         let mut dynamic_dimensions = std::collections::HashMap::new();
         dynamic_dimensions.insert("batch".to_string(), 2);
 
@@ -577,7 +577,7 @@ mod tests {
         graph.inputs = vec!["input".into()];
         graph.outputs = vec!["output".into()];
 
-        let registry = KernelRegistry::with_defaults();
+        let registry = OperatorRegistry::with_defaults();
         let dynamic_dimensions = std::collections::HashMap::new();
 
         let result = compile(&graph, &registry, &dynamic_dimensions);

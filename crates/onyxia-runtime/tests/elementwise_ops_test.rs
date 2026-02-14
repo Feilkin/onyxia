@@ -6,7 +6,7 @@ mod common;
 
 use common::make_binary_elementwise_graph;
 use onyxia_onnx::{DataType, Graph, TensorInfo, TensorKind, TensorShape};
-use onyxia_compiler::{KernelRegistry, compile};
+use onyxia_compiler::{OperatorRegistry, compile};
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 
@@ -19,7 +19,7 @@ async fn test_add_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile to ExecutionPlan
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     // Verify plan structure
@@ -71,7 +71,7 @@ async fn test_sub_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile to ExecutionPlan
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     // Verify plan structure
@@ -115,7 +115,7 @@ async fn test_mul_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile to ExecutionPlan
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     // Initialize runtime and load plan
@@ -154,7 +154,7 @@ async fn test_div_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile to ExecutionPlan
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     // Verify plan structure
@@ -197,7 +197,7 @@ async fn test_div_by_one_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile to ExecutionPlan
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     // Initialize runtime and load plan
@@ -285,7 +285,7 @@ async fn test_div_broadcast_scalar_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile to ExecutionPlan
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     // Initialize runtime and load plan
@@ -328,7 +328,7 @@ async fn test_div_by_zero_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile to ExecutionPlan
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     // Initialize runtime and load plan
@@ -426,7 +426,7 @@ async fn test_equal_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile to ExecutionPlan
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     // Initialize runtime and load plan
@@ -513,7 +513,7 @@ async fn test_equal_broadcast_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile and execute
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new()
@@ -599,7 +599,7 @@ async fn test_greater_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile to ExecutionPlan
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     // Initialize runtime and load plan
@@ -689,7 +689,7 @@ async fn test_greater_broadcast_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile and execute
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new()
@@ -784,7 +784,7 @@ async fn test_where_basic_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile and execute
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new()
@@ -876,7 +876,7 @@ async fn test_where_all_true_e2e() {
     graph.metadata.producer_name = "onyxia_test".to_string();
     graph.metadata.model_version = 1;
 
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new()
@@ -965,7 +965,7 @@ async fn test_where_all_false_e2e() {
     graph.metadata.producer_name = "onyxia_test".to_string();
     graph.metadata.model_version = 1;
 
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new()
@@ -1055,7 +1055,7 @@ async fn test_where_scalar_condition_e2e() {
     graph.metadata.producer_name = "onyxia_test".to_string();
     graph.metadata.model_version = 1;
 
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new()
@@ -1101,7 +1101,7 @@ async fn test_pow_basic_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile to ExecutionPlan
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     // Verify plan structure
@@ -1148,7 +1148,7 @@ async fn test_pow_zero_exponent_e2e() {
     let graph = make_binary_elementwise_graph("Pow", "pow_node", DataType::F32, &[4]);
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new()
@@ -1192,7 +1192,7 @@ async fn test_pow_one_exponent_e2e() {
     let graph = make_binary_elementwise_graph("Pow", "pow_node", DataType::F32, &[4]);
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new()
@@ -1238,7 +1238,7 @@ async fn test_pow_fractional_exponent_e2e() {
     let graph = make_binary_elementwise_graph("Pow", "pow_node", DataType::F32, &[4]);
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new()
@@ -1325,7 +1325,7 @@ async fn test_pow_broadcast_scalar_e2e() {
 
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new()
@@ -1375,7 +1375,7 @@ async fn test_max_basic_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile to ExecutionPlan
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     // Verify plan structure
@@ -1464,7 +1464,7 @@ async fn test_max_broadcast_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile to ExecutionPlan
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     // Initialize runtime and load plan
@@ -1508,7 +1508,7 @@ async fn test_max_negative_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile to ExecutionPlan
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     // Initialize runtime and load plan
@@ -1596,7 +1596,7 @@ async fn test_max_three_inputs_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile to ExecutionPlan
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     // Should have 1 operation with 2 steps (chained pairwise max)

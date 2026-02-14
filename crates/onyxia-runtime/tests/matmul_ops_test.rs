@@ -3,7 +3,7 @@
 //! Tests: MatMul, MatMulNBits (Q4 quantization)
 
 use onyxia_onnx::{DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
-use onyxia_compiler::{KernelRegistry, compile};
+use onyxia_compiler::{OperatorRegistry, compile};
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 
@@ -51,7 +51,7 @@ async fn test_matmul_e2e() {
     graph.outputs = vec!["C".to_string()];
 
     // Compile and execute
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
@@ -180,7 +180,7 @@ async fn test_matmul_q4_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile to ExecutionPlan
-    let registry = KernelRegistry::with_defaults();
+    let registry = OperatorRegistry::with_defaults();
     let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     // Initialize runtime

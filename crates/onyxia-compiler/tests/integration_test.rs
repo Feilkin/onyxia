@@ -1,7 +1,7 @@
 //! Test compilation of the Gemma 3 270m model.
 
 use onyxia_onnx::load_and_parse_model;
-use onyxia_compiler::{KernelRegistry, compile};
+use onyxia_compiler::{OperatorRegistry, compile};
 use std::collections::HashMap;
 
 #[test]
@@ -43,8 +43,8 @@ fn test_compile_gemma_model() {
         }
     };
 
-    // Create kernel registry with default kernels
-    let registry = KernelRegistry::with_defaults();
+    // Create operator registry with default operators
+    let registry = OperatorRegistry::with_defaults();
 
     // Provide dynamic dimensions for the model
     // Note: Model contains expressions like "sequence_length * num_attention_heads"

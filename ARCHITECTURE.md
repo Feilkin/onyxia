@@ -38,11 +38,11 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in 3 main stag
 ### onyxia-compiler
 
 **Responsibilities:**
-- **Kernel-based shape inference** — each `OpKernel` implements `infer_output_shapes()` for its operation, called once in topological order with value propagation for data-dependent shape inference
+- **Operator-based shape inference** — each `OpOperator` implements `infer_output_shapes()` for its operation, called once in topological order with value propagation for data-dependent shape inference
 - Schedule operations (topological sort with `petgraph`)
 - Resolve all dynamic dimensions to static shapes at plan time
 - Compile WGSL shaders to `naga::Module` using `naga_oil` (the only crate that touches WGSL)
-- Map ONNX operations to GPU steps via `OpKernel` trait + `KernelRegistry`
+- Map ONNX operations to GPU steps via `OpOperator` trait + `OperatorRegistry`
 - Deduplicate compiled shaders across operations
 - Produce `ExecutionPlan` with all shapes resolved and shaders pre-compiled
 
@@ -51,21 +51,21 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in 3 main stag
 - `PlannedOp`: One ONNX node → name, op_type, inputs, outputs, steps, scratch buffers
 - `Step`: Dispatch (shader + bindings + workgroups), CopyBuffer, WriteBuffer
 - `CompiledShader`: label + `naga::Module` + entry point name
-- `OpKernel` trait: `infer_output_shapes(&self, ctx: &InferenceContext) -> Result<Vec<TensorShape>>`, optional `try_fold(&self, ctx: &InferenceContext) -> Result<Vec<Option<TensorValue>>>`, and `plan(&self, ctx: &mut PlanContext) -> Result<Vec<Step>>`
-- `InferenceContext`: Provides node, graph, input shapes, and constant-folded input values to kernels during shape inference
+- `OpOperator` trait: `infer_output_shapes(&self, ctx: &InferenceContext) -> Result<Vec<TensorShape>>`, optional `try_fold(&self, ctx: &InferenceContext) -> Result<Vec<Option<TensorValue>>>`, and `plan(&self, ctx: &mut PlanContext) -> Result<Vec<Step>>`
+- `InferenceContext`: Provides node, graph, input shapes, and constant-folded input values to operators during shape inference
 - `TensorValue`: Represents compile-time constant values for data-dependent shape inference
-- `KernelRegistry`: Maps op_type strings to `Box<dyn OpKernel>`
-- `PlanContext`: Gives kernels access to node info, tensor shapes, shader compilation, scratch allocation
+- `OperatorRegistry`: Maps op_type strings to `Box<dyn OpOperator>`
+- `PlanContext`: Gives operators access to node info, tensor shapes, shader compilation, scratch allocation
 
-**Built-in Kernels (19):**
-- Elementwise: `AddKernel`, `SubKernel`, `MulKernel`
-- Activation: `GeluKernel`
-- Normalization: `RmsNormKernel`
-- Matrix math: `MatMulF32Kernel`, `MatMulNBitsKernel`
-- Metadata: `ConstantKernel`, `ShapeKernel`, `CastKernel`
-- Shape manipulation: `ReshapeKernel`, `UnsqueezeKernel`, `TransposeKernel`, `ConcatKernel`
-- Indexing/reduction: `GatherKernel`, `ReduceSumKernel`
-- Attention: `RotaryEmbeddingKernel`, `GroupQueryAttentionKernel`
+**Built-in Operators (19):**
+- Elementwise: `AddOperator`, `SubOperator`, `MulOperator`
+- Activation: `GeluOperator`
+- Normalization: `RmsNormOperator`
+- Matrix math: `MatMulF32Operator`, `MatMulNBitsOperator`
+- Metadata: `ConstantOperator`, `ShapeOperator`, `CastOperator`
+- Shape manipulation: `ReshapeOperator`, `UnsqueezeOperator`, `TransposeOperator`, `ConcatOperator`
+- Indexing/reduction: `GatherOperator`, `ReduceSumOperator`
+- Attention: `RotaryEmbeddingOperator`, `GroupQueryAttentionOperator`
 
 ### onyxia-runtime
 
@@ -92,10 +92,10 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in 3 main stag
 
 ### 1. Extensible Operation System
 
-Operations are added by implementing `OpKernel`:
+Operations are added by implementing `OpOperator`:
 
 ```rust
-pub trait OpKernel: Send + Sync {
+pub trait OpOperator: Send + Sync {
     fn name(&self) -> &str;
     
     // Shape inference: given input shapes and values, return output shapes
@@ -117,20 +117,20 @@ pub trait OpKernel: Send + Sync {
 }
 ```
 
-Users register custom kernels via `KernelRegistry`:
+Users register custom operators via `OperatorRegistry`:
 
 ```rust
-let mut registry = KernelRegistry::with_defaults();
-registry.register("MyCustomOp", Box::new(MyCustomKernel));
+let mut registry = OperatorRegistry::with_defaults();
+registry.register("MyCustomOp", Box::new(MyCustomOperator));
 let plan = compile(&graph, &registry, &dynamic_dimensions)?;
 ```
 
 **Benefits:**
 - ✅ Users add operations without modifying library code
-- ✅ Shape inference co-located with kernel implementation
+- ✅ Shape inference co-located with operator implementation
 - ✅ One ONNX node can emit multiple GPU steps (no 1:1 assumption)
-- ✅ Kernels can allocate scratch buffers for multi-pass algorithms
-- ✅ No centralized match block — kernels define their own shape logic
+- ✅ Operators can allocate scratch buffers for multi-pass algorithms
+- ✅ No centralized match block — operators define their own shape logic
 
 ### 2. Planner Compiles Shaders, Runtime Executes Them
 
@@ -160,7 +160,7 @@ Each crate has a **single, well-defined responsibility**:
 | Concern | Owner |
 |---------|-------|
 | ONNX parsing | onyxia-onnx |
-| Kernel-based shape inference | onyxia-compiler |
+| Operator-based shape inference | onyxia-compiler |
 | Value propagation and constant folding | onyxia-compiler |
 | WGSL preprocessing (naga_oil) | onyxia-compiler |
 | Shader def resolution | onyxia-compiler |
@@ -217,10 +217,10 @@ var<workgroup> tile: array<f32, #{TILE_SIZE} * #{BLOCK_SIZE}>;
 Replace all `Dynamic(Named(...))` dimensions with concrete `Static` values from the user-provided `dynamic_dimensions` map. After this phase, no `Named` dimensions remain.
 
 **Phase 2 — Forward Shape and Value Inference:**
-Run a single forward pass over the graph in topological order, calling each kernel's `infer_output_shapes()` and `try_fold()` to resolve `Unknown` shapes and propagate constant values. This enables data-dependent shape inference where operations like Reshape read their target shape from computed tensors like `Shape → Gather → Concat`.
+Run a single forward pass over the graph in topological order, calling each operator's `infer_output_shapes()` and `try_fold()` to resolve `Unknown` shapes and propagate constant values. This enables data-dependent shape inference where operations like Reshape read their target shape from computed tensors like `Shape → Gather → Concat`.
 
 **Phase 3 — Planning (Static Only):**
-All shapes must be `Static` before planning. Kernels call `ctx.static_shape()` which only accepts `TensorShape::Static` — any remaining `Dynamic` or `Unknown` shapes are errors.
+All shapes must be `Static` before planning. Operators call `ctx.static_shape()` which only accepts `TensorShape::Static` — any remaining `Dynamic` or `Unknown` shapes are errors.
 
 ```rust
 let dynamic_dimensions = HashMap::from([
@@ -307,19 +307,19 @@ outputs ←───────────────────────
 - [x] DOT graph visualization (full, layers, summary)
 - [x] Integration test with Gemma 3 270m model
 
-### Phase 2: Planner and Kernel System ✅ COMPLETED
+### Phase 2: Planner and Operator System ✅ COMPLETED
 - [x] ExecutionPlan types: Step, PlannedOp, BufferRef, CompiledShader, TensorRegistry
 - [x] Topological scheduling with petgraph
 - [x] Three-phase shape inference: dynamic dim substitution → forward inference with value propagation → static-only planning
-- [x] `OpKernel` trait with `InferenceContext` and optional `try_fold` for constant folding
+- [x] `OpOperator` trait with `InferenceContext` and optional `try_fold` for constant folding
 - [x] `TensorValue` type for compile-time constant propagation
-- [x] `KernelRegistry` for extensible operation mapping
+- [x] `OperatorRegistry` for extensible operation mapping
 - [x] `PlanContext` with shader compilation, `static_shape()`, scratch allocation
 - [x] `InferenceContext` with input shapes and values for data-dependent shape inference
 - [x] `compile()` entry point with integrated shape inference
 - [x] Dynamic dimension resolution at plan time
 - [x] Shader deduplication
-- [x] 19 built-in kernels covering all Gemma 3 270m ops
+- [x] 19 built-in operators covering all Gemma 3 270m ops
 - [x] Broadcasting utility for ONNX-compliant multidirectional broadcasting
 - [x] Error handling and unit tests (101 tests)
 
