@@ -2,8 +2,9 @@
 //!
 //! Tests: RMSNorm (SimplifiedLayerNormalization)
 
-use onyxia_compiler::{OperatorRegistry, compile};
+use onyxia_compiler::CompilerPipeline;
 use onyxia_onnx::{AttributeValue, DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
+use onyxia_operators::core_operator_registry;
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 
@@ -53,8 +54,10 @@ async fn test_rmsnorm_e2e() {
     graph.outputs = vec!["output".to_string()];
 
     // Compile and execute
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
     let mut executor = runtime

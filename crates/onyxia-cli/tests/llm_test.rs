@@ -1,13 +1,13 @@
 //! Integration tests for LLM session functionality.
 
 use onyxia_cli::llm::{LlmConfig, LlmSession};
-use onyxia_compiler::plan::ExecutionPlan;
+use onyxia_compiler::plan::CompiledModel;
 use onyxia_compiler::{ModelMetadata, TensorRegistry};
 use onyxia_onnx::{DataType, TensorInfo, TensorKind, TensorShape};
 use onyxia_runtime::Runtime;
 
 /// Create a minimal execution plan that mimics an LLM model structure.
-fn create_minimal_llm_plan(num_layers: usize, vocab_size: usize) -> ExecutionPlan {
+fn create_minimal_llm_plan(num_layers: usize, vocab_size: usize) -> CompiledModel {
     let mut tensors = TensorRegistry::new();
 
     // Register input tensors (what the model expects)
@@ -113,7 +113,7 @@ fn create_minimal_llm_plan(num_layers: usize, vocab_size: usize) -> ExecutionPla
 
     outputs.push(logits_id);
 
-    ExecutionPlan {
+    CompiledModel {
         operations: Vec::new(), // No actual operations for this minimal plan
         shaders: Vec::new(),
         tensors,

@@ -4,6 +4,10 @@ use onyxia_core::{BindingDesc, InferenceCtx, Operator, PlanCtx, Result, Step, Te
 use std::collections::HashMap;
 
 /// GELU (Gaussian Error Linear Unit) activation operator.
+///
+/// GELU(x) = x * Φ(x) where Φ(x) is the cumulative distribution function
+/// of the standard normal distribution.
+/// Uses tanh approximation for efficiency.
 pub struct GeluOp;
 
 impl Operator for GeluOp {
@@ -12,13 +16,57 @@ impl Operator for GeluOp {
     }
 
     fn infer_output_shapes(&self, ctx: &InferenceCtx) -> Result<Vec<TensorShape>> {
-        let _ = ctx;
-        todo!("Shape inference for Gelu - will be implemented in Task 025")
+        // Gelu is a unary operation: output shape equals input shape
+        if ctx.input_count() == 0 {
+            return Err(onyxia_core::Error::ShapeInference(
+                "Gelu requires one input".to_string(),
+            ));
+        }
+        let shape = ctx.input_shape(0)?;
+        Ok(vec![shape.clone()])
     }
 
     fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {
-        let _ = ctx;
-        todo!("Planning for Gelu - will be implemented in Task 025")
+        // Get output tensor and shape
+        let output_tensor = ctx.output_tensor(0)?;
+        let output_shape = ctx.static_dims(&output_tensor.shape)?;
+        let num_elements: usize = output_shape.iter().product();
+
+        // Configure workgroup size
+        let workgroup_size: u32 = 256;
+        let num_workgroups = (num_elements as u32 + workgroup_size - 1) / workgroup_size;
+
+        // Prepare shader definitions
+        let mut shader_defs = HashMap::new();
+        shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());
+
+        // Compile shader
+        let shader_index = ctx.compile_shader(
+            "gelu",
+            include_str!("../../shaders/activation/gelu.wgsl"),
+            &shader_defs,
+        )?;
+
+        // Encode immediate data
+        let mut immediates_data = Vec::new();
+        immediates_data.extend_from_slice(&(num_elements as u32).to_le_bytes());
+
+        // Create dispatch step
+        Ok(vec![Step::Dispatch {
+            shader_index,
+            bindings: vec![
+                BindingDesc {
+                    buffer: ctx.input(0)?,
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.output(0)?,
+                    read_only: false,
+                },
+            ],
+            workgroups: [num_workgroups, 1, 1],
+            immediates: Some(immediates_data),
+        }])
     }
 }
 

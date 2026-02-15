@@ -14,8 +14,9 @@
 //! - reduction_ops_test.rs: ReduceSum
 //! - cast_ops_test.rs: Cast
 
-use onyxia_compiler::{OperatorRegistry, compile};
+use onyxia_compiler::CompilerPipeline;
 use onyxia_onnx::{DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
+use onyxia_operators::core_operator_registry;
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 
@@ -23,14 +24,14 @@ use std::collections::HashMap;
 #[pollster::test]
 #[ignore] // Requires GPU
 async fn test_empty_plan() {
-    use onyxia_compiler::{ExecutionPlan, ModelMetadata, TensorRegistry};
+    use onyxia_core::{CompiledModel, ModelMetadata, TensorRegistry};
 
     let runtime = Runtime::new()
         .await
         .expect("Runtime initialization should succeed");
 
     // Create an empty execution plan
-    let plan = ExecutionPlan {
+    let plan = CompiledModel {
         operations: Vec::new(),
         shaders: Vec::new(),
         tensors: TensorRegistry::new(),
@@ -38,9 +39,9 @@ async fn test_empty_plan() {
         outputs: Vec::new(),
         metadata: ModelMetadata {
             name: "test_empty".to_string(),
-            version: 1,
+            model_version: 1,
             ir_version: 9,
-            producer: "test".to_string(),
+            producer_name: "test".to_string(),
         },
     };
 
@@ -126,8 +127,10 @@ async fn test_multiple_operations() {
     graph.metadata.model_version = 1;
 
     // Compile and execute
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     assert_eq!(plan.operations.len(), 2, "Should have 2 operations");
 
@@ -160,7 +163,7 @@ async fn test_multiple_operations() {
 #[pollster::test]
 #[ignore] // Requires GPU
 async fn test_initializer_upload() {
-    use onyxia_compiler::{ExecutionPlan, ModelMetadata, TensorRegistry};
+    use onyxia_core::{CompiledModel, ModelMetadata, TensorRegistry};
 
     // Create a tensor registry with a tensor that has initializer data
     let mut tensors = TensorRegistry::new();
@@ -182,7 +185,7 @@ async fn test_initializer_upload() {
     });
 
     // Create empty plan (no operations, just the initializer tensor)
-    let plan = ExecutionPlan {
+    let plan = CompiledModel {
         operations: Vec::new(),
         shaders: Vec::new(),
         tensors,
@@ -190,7 +193,7 @@ async fn test_initializer_upload() {
         outputs: Vec::new(),
         metadata: ModelMetadata {
             name: "test_initializer".to_string(),
-            version: 1,
+            model_version: 1,
             ir_version: 9,
             producer: "onyxia_test".to_string(),
         },
@@ -273,8 +276,10 @@ async fn test_add_with_bias_e2e() {
     graph.metadata.model_version = 1;
 
     // Compile and execute
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     assert_eq!(plan.operations.len(), 1, "Should have 1 operation");
 
@@ -366,7 +371,7 @@ async fn test_gemma_initializers_load() {
 
     // Compile the model
     println!("Compiling model...");
-    let registry = OperatorRegistry::with_defaults();
+    let registry = core_operator_registry();
 
     // Provide dynamic dimensions for the model
     // These values come from config.json in the model directory

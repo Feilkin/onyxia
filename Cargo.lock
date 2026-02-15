@@ -1174,7 +1174,9 @@ dependencies = [
  "clap",
  "minijinja",
  "onyxia-compiler",
+ "onyxia-core",
  "onyxia-onnx",
+ "onyxia-operators",
  "onyxia-runtime",
  "pollster",
  "rand 0.10.0",
@@ -1223,8 +1225,11 @@ dependencies = [
 name = "onyxia-operators"
 version = "0.1.0"
 dependencies = [
+ "onyxia-compiler",
  "onyxia-core",
  "onyxia-onnx",
+ "onyxia-runtime",
+ "pollster",
  "thiserror",
  "tracing",
 ]
@@ -1236,7 +1241,7 @@ dependencies = [
  "bytemuck",
  "futures",
  "naga",
- "onyxia-compiler",
+ "onyxia-core",
  "onyxia-onnx",
  "pollster",
  "thiserror",

@@ -2,8 +2,9 @@
 //!
 //! Tests: Cast
 
-use onyxia_compiler::{OperatorRegistry, compile};
+use onyxia_compiler::CompilerPipeline;
 use onyxia_onnx::{AttributeValue, DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
+use onyxia_operators::core_operator_registry;
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 
@@ -53,8 +54,10 @@ async fn test_cast_i64_to_f32_e2e() {
     // Validate and compile
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     // Initialize runtime
     let runtime = Runtime::new()

@@ -77,7 +77,7 @@ async fn test_generate_gemma_impl(
     dynamic_dims.insert("head_dim".to_string(), 256);
 
     // Resolve dynamic dimensions and infer shapes
-    let registry = onyxia_compiler::OperatorRegistry::with_defaults();
+    let registry = onyxia_compiler::onyxia_operators::core_operator_registry();
     onyxia_compiler::resolve_dynamic_dimensions(&mut model, &dynamic_dims)?;
     onyxia_compiler::infer_shapes(&mut model, &registry)?;
 
@@ -215,7 +215,7 @@ async fn test_sampling_variance_impl(
     dynamic_dims.insert("num_key_value_heads".to_string(), 1);
     dynamic_dims.insert("head_dim".to_string(), 256);
 
-    let registry = onyxia_compiler::OperatorRegistry::with_defaults();
+    let registry = onyxia_compiler::onyxia_operators::core_operator_registry();
     onyxia_compiler::resolve_dynamic_dimensions(&mut model, &dynamic_dims)?;
     onyxia_compiler::infer_shapes(&mut model, &registry)?;
 
@@ -331,7 +331,7 @@ async fn test_deterministic_generation_impl(
     dynamic_dims.insert("num_key_value_heads".to_string(), 1);
     dynamic_dims.insert("head_dim".to_string(), 256);
 
-    let registry = onyxia_compiler::OperatorRegistry::with_defaults();
+    let registry = onyxia_compiler::onyxia_operators::core_operator_registry();
     onyxia_compiler::resolve_dynamic_dimensions(&mut model, &dynamic_dims)?;
     onyxia_compiler::infer_shapes(&mut model, &registry)?;
 

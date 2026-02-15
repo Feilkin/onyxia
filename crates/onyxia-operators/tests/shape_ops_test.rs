@@ -2,8 +2,9 @@
 //!
 //! Tests: Reshape, Transpose, Concat
 
-use onyxia_compiler::{OperatorRegistry, compile};
+use onyxia_compiler::CompilerPipeline;
 use onyxia_onnx::{AttributeValue, DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
+use onyxia_operators::core_operator_registry;
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 
@@ -52,8 +53,10 @@ async fn test_reshape_e2e() {
     graph.outputs = vec!["output".to_string()];
 
     // Compile and execute
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
     let mut executor = runtime
@@ -132,9 +135,11 @@ async fn test_transpose_2d_e2e() {
     let graph = make_transpose_graph();
     graph.validate().expect("Graph validation should succeed");
 
-    // Compile to ExecutionPlan
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    // Compile to CompiledModel
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     // Initialize runtime
     let runtime = Runtime::new()
@@ -228,8 +233,10 @@ async fn test_concat_e2e() {
     let graph = make_concat_graph();
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -328,8 +335,10 @@ async fn test_expand_single_dimension_e2e() {
     let graph = make_expand_graph(vec![3, 1], vec![3, 5], vec![3, 5]);
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -376,8 +385,10 @@ async fn test_expand_new_dimensions_e2e() {
     let graph = make_expand_graph(vec![3, 4], vec![2, 3, 4], vec![2, 3, 4]);
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -430,8 +441,10 @@ async fn test_expand_multiple_dimensions_e2e() {
     let graph = make_expand_graph(vec![1, 3, 1], vec![2, 3, 5], vec![2, 3, 5]);
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -485,8 +498,10 @@ async fn test_expand_identity_e2e() {
     let graph = make_expand_graph(vec![3, 4], vec![3, 4], vec![3, 4]);
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -584,8 +599,10 @@ async fn test_constantofshape_default_value_e2e() {
     let graph = make_constantofshape_graph(vec![2, 3], vec![2, 3], None);
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -618,8 +635,10 @@ async fn test_constantofshape_custom_value_e2e() {
     let graph = make_constantofshape_graph(vec![3, 4], vec![3, 4], Some(1.0));
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -652,8 +671,10 @@ async fn test_constantofshape_1d_e2e() {
     let graph = make_constantofshape_graph(vec![5], vec![5], Some(2.5));
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -686,8 +707,10 @@ async fn test_constantofshape_3d_e2e() {
     let graph = make_constantofshape_graph(vec![2, 3, 4], vec![2, 3, 4], Some(-1.0));
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -720,8 +743,10 @@ async fn test_constantofshape_scalar_e2e() {
     let graph = make_constantofshape_graph(vec![], vec![], Some(42.0));
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -884,8 +909,10 @@ async fn test_range_integer_step_1_e2e() {
     let graph = make_range_graph_i64(0, 5, 1);
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -918,8 +945,10 @@ async fn test_range_integer_step_2_e2e() {
     let graph = make_range_graph_i64(2, 10, 2);
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -952,8 +981,10 @@ async fn test_range_negative_step_e2e() {
     let graph = make_range_graph_i64(10, 0, -2);
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -986,8 +1017,10 @@ async fn test_range_float_e2e() {
     let graph = make_range_graph_f32(0.0, 2.5, 0.5);
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -1029,8 +1062,10 @@ async fn test_range_empty_e2e() {
     let graph = make_range_graph_i64(5, 5, 1);
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await

@@ -1,7 +1,8 @@
 //! Integration tests for runtime execution.
 
-use onyxia_compiler::{OperatorRegistry, compile};
+use onyxia_compiler::CompilerPipeline;
 use onyxia_onnx::{load_model, parser::parse_model};
+use onyxia_operators::core_operator_registry;
 use onyxia_runtime::Runtime;
 use std::collections::HashMap;
 
@@ -41,7 +42,7 @@ async fn test_runtime_load_gemma_model() {
     };
 
     // Create kernel registry
-    let registry = OperatorRegistry::with_defaults();
+    let registry = core_operator_registry();
 
     // Specify dynamic dimensions for the model
     let dynamic_dimensions = HashMap::from([
@@ -122,7 +123,7 @@ async fn test_runtime_load_gemma_full_precision() {
     };
 
     // Create kernel registry
-    let registry = OperatorRegistry::with_defaults();
+    let registry = core_operator_registry();
 
     // Specify dynamic dimensions for the model
     let dynamic_dimensions = HashMap::from([

@@ -2,8 +2,9 @@
 //!
 //! Tests: Gather (simple and embedding lookup)
 
-use onyxia_compiler::{OperatorRegistry, compile};
+use onyxia_compiler::CompilerPipeline;
 use onyxia_onnx::{AttributeValue, DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
+use onyxia_operators::core_operator_registry;
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 
@@ -63,9 +64,11 @@ async fn test_gather_e2e() {
     let graph = make_gather_graph();
     graph.validate().expect("Graph validation should succeed");
 
-    // Compile to ExecutionPlan
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    // Compile to CompiledModel
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     // Initialize runtime
     let runtime = Runtime::new()
@@ -168,8 +171,10 @@ async fn test_gather_embedding_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile and load
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -296,8 +301,10 @@ async fn test_slice_basic_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile and load
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -390,8 +397,10 @@ async fn test_slice_multiaxis_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile and load
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -496,8 +505,10 @@ async fn test_slice_negative_indices_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile and load
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -614,8 +625,10 @@ async fn test_slice_strided_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile and load
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -732,8 +745,10 @@ async fn test_slice_reverse_e2e() {
     graph.validate().expect("Graph validation should succeed");
 
     // Compile and load
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -815,9 +830,11 @@ async fn test_trilu_upper_triangle_e2e() {
     let graph = make_trilu_graph(1);
     graph.validate().expect("Graph validation should succeed");
 
-    // Compile to ExecutionPlan
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    // Compile to CompiledModel
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     // Initialize runtime
     let runtime = Runtime::new()
@@ -881,9 +898,11 @@ async fn test_trilu_lower_triangle_e2e() {
     let graph = make_trilu_graph(0);
     graph.validate().expect("Graph validation should succeed");
 
-    // Compile to ExecutionPlan
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    // Compile to CompiledModel
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     // Initialize runtime
     let runtime = Runtime::new()
@@ -989,9 +1008,11 @@ async fn test_trilu_batched_e2e() {
     let graph = make_trilu_batched_graph(1);
     graph.validate().expect("Graph validation should succeed");
 
-    // Compile to ExecutionPlan
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    // Compile to CompiledModel
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     // Initialize runtime
     let runtime = Runtime::new()
@@ -1104,9 +1125,11 @@ async fn test_trilu_nonsquare_e2e() {
     let graph = make_trilu_nonsquare_graph(1);
     graph.validate().expect("Graph validation should succeed");
 
-    // Compile to ExecutionPlan
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    // Compile to CompiledModel
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     // Initialize runtime
     let runtime = Runtime::new()
@@ -1241,9 +1264,11 @@ async fn test_scatternd_none_e2e() {
     let graph = make_scatternd_graph("none");
     graph.validate().expect("Graph validation should succeed");
 
-    // Compile to ExecutionPlan
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    // Compile to CompiledModel
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     // Initialize runtime
     let runtime = Runtime::new()
@@ -1313,9 +1338,11 @@ async fn test_scatternd_add_e2e() {
     let graph = make_scatternd_graph("add");
     graph.validate().expect("Graph validation should succeed");
 
-    // Compile to ExecutionPlan
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    // Compile to CompiledModel
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     // Initialize runtime
     let runtime = Runtime::new()
@@ -1451,9 +1478,11 @@ async fn test_scatternd_1d_e2e() {
     let graph = make_scatternd_1d_graph();
     graph.validate().expect("Graph validation should succeed");
 
-    // Compile to ExecutionPlan
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    // Compile to CompiledModel
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     // Initialize runtime
     let runtime = Runtime::new()

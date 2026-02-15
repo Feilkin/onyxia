@@ -14,8 +14,10 @@ name = "onyxia"
 path = "src/main.rs"
 
 [dependencies]
+onyxia-core.workspace = true
 onyxia-onnx.workspace = true
 onyxia-compiler.workspace = true
+onyxia-operators.workspace = true
 onyxia-runtime.workspace = true
 clap = { version = "4.5.58", features = ["derive"] }
 pollster = "0.4.0"

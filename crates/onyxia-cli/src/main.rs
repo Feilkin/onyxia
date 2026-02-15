@@ -393,12 +393,13 @@ fn cmd_inspect(model_path: PathBuf, dynamic_dim_args: Vec<String>) -> Result<()>
         dynamic_dims.insert(name, value);
     }
 
-    // Infer shapes for analysis using planner's operator-based inference
-    let registry = onyxia_compiler::OperatorRegistry::with_defaults();
-    onyxia_compiler::resolve_dynamic_dimensions(&mut model, &dynamic_dims)
-        .with_context(|| "Failed to resolve dynamic dimensions")?;
-    onyxia_compiler::infer_shapes(&mut model, &registry)
-        .with_context(|| "Failed to infer shapes")?;
+    // Resolve dimensions and infer shapes using the compiler pipeline
+    let registry = onyxia_operators::core_operator_registry();
+    let mut pipeline = onyxia_compiler::CompilerPipeline::new(dynamic_dims.clone());
+    // Just run up to inference stage to get shapes, don't need full compilation
+    pipeline
+        .compile(&model, &registry)
+        .with_context(|| "Failed to compile model for analysis")?;
 
     println!("Model: {}", model.metadata.name);
     println!("  IR version: {}", model.metadata.ir_version);
@@ -531,17 +532,13 @@ async fn cmd_run_model(
     dynamic_dims.insert("num_key_value_heads".to_string(), 1);
     dynamic_dims.insert("head_dim".to_string(), 256);
 
-    // Resolve dynamic dimensions and infer shapes
-    let registry = onyxia_compiler::OperatorRegistry::with_defaults();
-    onyxia_compiler::resolve_dynamic_dimensions(&mut model, &dynamic_dims)
-        .with_context(|| "Failed to resolve dynamic dimensions")?;
-    onyxia_compiler::infer_shapes(&mut model, &registry)
-        .with_context(|| "Failed to infer shapes")?;
+    // Resolve dynamic dimensions and compile to execution plan
+    let registry = onyxia_operators::core_operator_registry();
+    let mut pipeline = onyxia_compiler::CompilerPipeline::new(dynamic_dims);
 
     println!("Compiling execution plan...");
-
-    // Compile model to execution plan
-    let plan = onyxia_compiler::compile(&model, &registry, &dynamic_dims)
+    let plan = pipeline
+        .compile(&model, &registry)
         .with_context(|| "Failed to compile model")?;
 
     println!("Initializing GPU runtime...");

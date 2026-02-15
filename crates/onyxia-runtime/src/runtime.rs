@@ -2,8 +2,7 @@
 
 use crate::error::{Result, RuntimeError};
 use crate::plan_executor::PlanExecutor;
-use onyxia_compiler::ExecutionPlan;
-use onyxia_onnx::TensorShape;
+use onyxia_core::CompiledModel;
 use std::sync::Arc;
 
 /// Main entry point for GPU runtime.
@@ -67,22 +66,22 @@ impl Runtime {
         })
     }
 
-    /// Calculate maximum buffer size from an execution plan.
+    /// Calculate maximum buffer size from a compiled model.
     ///
-    /// All shapes are static in an execution plan, so this is straightforward.
-    fn calculate_max_buffer_size(plan: &ExecutionPlan) -> Result<u64> {
+    /// All shapes are static in a compiled model, so this is straightforward.
+    fn calculate_max_buffer_size(plan: &CompiledModel) -> Result<u64> {
         let mut max_size = 0u64;
 
         for tensor_info in plan.tensors.all() {
             let size = match &tensor_info.shape {
-                TensorShape::Static(dims) => {
+                onyxia_core::TensorShape::Static(dims) => {
                     let element_count: usize = dims.iter().product();
                     let element_size = tensor_info.dtype.size();
                     (element_count * element_size) as u64
                 }
-                TensorShape::Dynamic(_) | TensorShape::Unknown | TensorShape::Absent => {
+                onyxia_core::TensorShape::Symbolic(_) | onyxia_core::TensorShape::Absent => {
                     return Err(RuntimeError::TensorError(format!(
-                        "Tensor '{}' in execution plan has non-static shape. \
+                        "Tensor '{}' in compiled model has non-static shape. \
                          All shapes should be resolved at plan time.",
                         tensor_info.name
                     )));
@@ -102,13 +101,13 @@ impl Runtime {
         Ok(max_size)
     }
 
-    /// Load an execution plan into a model executor.
+    /// Load a compiled model into a model executor.
     ///
     /// This creates a GPU device and materializes pre-compiled shaders into pipelines.
     /// Dynamic dimensions are already resolved at plan-time, so all shapes are static.
     ///
     /// # Arguments
-    /// * `plan` - Pre-compiled execution plan with resolved shapes and naga modules
+    /// * `plan` - Compiled model with resolved shapes and naga modules
     ///
     /// # Errors
     /// Returns an error if device creation or resource materialization fails.
@@ -116,16 +115,16 @@ impl Runtime {
     /// # Example
     /// ```no_run
     /// # use onyxia_runtime::Runtime;
-    /// # use onyxia_compiler::ExecutionPlan;
+    /// # use onyxia_core::CompiledModel;
     /// # #[pollster::main]
     /// # async fn main() -> anyhow::Result<()> {
     /// let runtime = Runtime::new().await?;
-    /// # let plan: ExecutionPlan = todo!();
+    /// # let plan: CompiledModel = todo!();
     /// let executor = runtime.load_model(plan).await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn load_model(&self, plan: ExecutionPlan) -> Result<PlanExecutor> {
+    pub async fn load_model(&self, plan: CompiledModel) -> Result<PlanExecutor> {
         // Calculate maximum buffer size needed
         let max_buffer_size = Self::calculate_max_buffer_size(&plan)?;
 

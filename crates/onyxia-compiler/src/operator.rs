@@ -297,65 +297,19 @@ impl OperatorRegistry {
         }
     }
 
+    // Old with_defaults method - replaced by onyxia_operators::core_operator_registry()
+    // Commented out because the operators module is being migrated (tasks 024-025)
+    /*
     /// Create a registry pre-loaded with all built-in operators.
     ///
     /// Registers all implemented operators (Add, Mul, Gelu, RMSNorm, MatMulF32, Cast)
     pub fn with_defaults() -> Self {
         let mut registry = Self::new();
         registry.register("Add", Box::new(crate::operators::AddOperator));
-        registry.register("Mul", Box::new(crate::operators::MulOperator));
-        registry.register("Sub", Box::new(crate::operators::SubOperator));
-        registry.register("Div", Box::new(crate::operators::DivOperator));
-        registry.register("Pow", Box::new(crate::operators::PowOperator));
-        registry.register("Cast", Box::new(crate::operators::CastOperator));
-        registry.register("Concat", Box::new(crate::operators::ConcatOperator));
-        registry.register("Cos", Box::new(crate::operators::CosOperator));
-        registry.register("Equal", Box::new(crate::operators::EqualOperator));
-        registry.register("Expand", Box::new(crate::operators::ExpandOperator));
-        registry.register("Gather", Box::new(crate::operators::GatherOperator));
-        registry.register("Greater", Box::new(crate::operators::GreaterOperator));
-        registry.register("Max", Box::new(crate::operators::MaxOperator));
-        registry.register("Sin", Box::new(crate::operators::SinOperator));
-        registry.register("Sqrt", Box::new(crate::operators::SqrtOperator));
-        registry.register("Neg", Box::new(crate::operators::NegOperator));
-        registry.register("Tanh", Box::new(crate::operators::TanhOperator));
-        registry.register("Gelu", Box::new(crate::operators::GeluOperator));
-        registry.register(
-            "GroupQueryAttention",
-            Box::new(crate::operators::GroupQueryAttentionOperator),
-        );
-        registry.register(
-            "SimplifiedLayerNormalization",
-            Box::new(crate::operators::RmsNormOperator),
-        );
-        registry.register("MatMul", Box::new(crate::operators::MatMulF32Operator));
-        registry.register(
-            "MatMulNBits",
-            Box::new(crate::operators::MatMulNBitsOperator),
-        );
-        registry.register("Constant", Box::new(crate::operators::ConstantOperator));
-        registry.register(
-            "ConstantOfShape",
-            Box::new(crate::operators::ConstantOfShapeOperator),
-        );
-        registry.register("Shape", Box::new(crate::operators::ShapeOperator));
-        registry.register("Reshape", Box::new(crate::operators::ReshapeOperator));
-        registry.register("Range", Box::new(crate::operators::RangeOperator));
-        registry.register("ScatterND", Box::new(crate::operators::ScatterNDOperator));
-        registry.register("Slice", Box::new(crate::operators::SliceOperator));
-        registry.register("Softmax", Box::new(crate::operators::SoftmaxOperator));
-        registry.register("ReduceMean", Box::new(crate::operators::ReduceMeanOperator));
-        registry.register("ReduceSum", Box::new(crate::operators::ReduceSumOperator));
-        registry.register(
-            "RotaryEmbedding",
-            Box::new(crate::operators::RotaryEmbeddingOperator),
-        );
-        registry.register("Transpose", Box::new(crate::operators::TransposeOperator));
-        registry.register("Trilu", Box::new(crate::operators::TriluOperator));
-        registry.register("Unsqueeze", Box::new(crate::operators::UnsqueezeOperator));
-        registry.register("Where", Box::new(crate::operators::WhereOperator));
+        ...
         registry
     }
+    */
 
     /// Register an operator for an op_type string.
     ///
@@ -377,7 +331,8 @@ impl OperatorRegistry {
 
 impl Default for OperatorRegistry {
     fn default() -> Self {
-        Self::with_defaults()
+        // Return empty registry - use onyxia_operators::core_operator_registry() instead
+        Self::new()
     }
 }
 
@@ -644,6 +599,8 @@ mod tests {
         }
     }
 
+    // Test commented out - operators being migrated to onyxia-operators
+    /*
     #[test]
     fn test_with_defaults() {
         let registry = OperatorRegistry::with_defaults();
@@ -652,6 +609,7 @@ mod tests {
         let add_operator = registry.get("Add").unwrap();
         assert_eq!(add_operator.name(), "Add");
     }
+    */
 
     #[test]
     fn test_plan_context_helpers() {

@@ -2,8 +2,9 @@
 //!
 //! Tests: ReduceSum, ReduceMean
 
-use onyxia_compiler::{OperatorRegistry, compile};
+use onyxia_compiler::CompilerPipeline;
 use onyxia_onnx::{AttributeValue, DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
+use onyxia_operators::core_operator_registry;
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 
@@ -58,8 +59,10 @@ async fn test_reducesum_e2e() {
     let graph = make_reducesum_graph();
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -142,8 +145,10 @@ async fn test_reducemean_e2e() {
     let graph = make_reducemean_graph();
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await
@@ -227,8 +232,10 @@ async fn test_reducemean_2d_e2e() {
     let graph = make_reducemean_2d_graph();
     graph.validate().expect("Graph validation should succeed");
 
-    let registry = OperatorRegistry::with_defaults();
-    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+    let registry = core_operator_registry();
+    let plan = CompilerPipeline::new(HashMap::new())
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
 
     let runtime = Runtime::new()
         .await

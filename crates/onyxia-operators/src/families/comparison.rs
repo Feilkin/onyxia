@@ -2,7 +2,12 @@
 //!
 //! Covers: Equal, Greater
 
-use onyxia_core::{InferenceCtx, Operator, PlanCtx, Result, Step, TensorShape};
+use onyxia_core::{
+    BindingDesc, FoldCtx, InferenceCtx, Operator, PlanCtx, Result, Step, TensorShape, TensorValue,
+};
+use std::collections::HashMap;
+
+use crate::helpers::infer_elementwise_broadcast;
 
 /// Comparison operator family.
 ///
@@ -18,7 +23,9 @@ use onyxia_core::{InferenceCtx, Operator, PlanCtx, Result, Step, TensorShape};
 pub struct ComparisonOp {
     name: &'static str,
     shader_source: &'static str,
-    fold_fn: fn(f32, f32) -> bool,
+    fold_fn_f32: fn(f32, f32) -> bool,
+    fold_fn_i64: fn(i64, i64) -> bool,
+    fold_fn_i32: fn(i32, i32) -> bool,
 }
 
 impl ComparisonOp {
@@ -27,7 +34,9 @@ impl ComparisonOp {
         Self {
             name: "Equal",
             shader_source: include_str!("../../shaders/elementwise/equal.wgsl"),
-            fold_fn: |a, b| a == b,
+            fold_fn_f32: |a, b| a == b,
+            fold_fn_i64: |a, b| a == b,
+            fold_fn_i32: |a, b| a == b,
         }
     }
 
@@ -36,7 +45,9 @@ impl ComparisonOp {
         Self {
             name: "Greater",
             shader_source: include_str!("../../shaders/elementwise/greater.wgsl"),
-            fold_fn: |a, b| a > b,
+            fold_fn_f32: |a, b| a > b,
+            fold_fn_i64: |a, b| a > b,
+            fold_fn_i32: |a, b| a > b,
         }
     }
 }
@@ -48,27 +59,107 @@ impl Operator for ComparisonOp {
 
     fn infer_output_shapes(&self, ctx: &InferenceCtx) -> Result<Vec<TensorShape>> {
         // Comparison operations use NumPy-style broadcasting
-        // Output dtype is Bool
-        // TODO: Implement in Tasks 024/025
-        let _ = (ctx, self.shader_source, self.fold_fn);
-        todo!(
-            "Shape inference for {} - will be implemented in Tasks 024/025",
-            self.name
-        )
+        infer_elementwise_broadcast(ctx)
+    }
+
+    fn try_fold(&self, ctx: &FoldCtx) -> Result<Vec<Option<TensorValue>>> {
+        // Try to constant-fold if both inputs are known
+        if !ctx.all_inputs_have_values() {
+            return Ok(vec![None]);
+        }
+
+        let a = ctx.input_value(0);
+        let b = ctx.input_value(1);
+
+        // Only fold values with same shape for simplicity
+        let result = match (a, b) {
+            (Some(TensorValue::F32(a_vals)), Some(TensorValue::F32(b_vals)))
+                if a_vals.len() == b_vals.len() =>
+            {
+                let result: Vec<bool> = a_vals
+                    .iter()
+                    .zip(b_vals.iter())
+                    .map(|(&a, &b)| (self.fold_fn_f32)(a, b))
+                    .collect();
+                Some(TensorValue::Bool(result))
+            }
+            (Some(TensorValue::I64(a_vals)), Some(TensorValue::I64(b_vals)))
+                if a_vals.len() == b_vals.len() =>
+            {
+                let result: Vec<bool> = a_vals
+                    .iter()
+                    .zip(b_vals.iter())
+                    .map(|(&a, &b)| (self.fold_fn_i64)(a, b))
+                    .collect();
+                Some(TensorValue::Bool(result))
+            }
+            (Some(TensorValue::I32(a_vals)), Some(TensorValue::I32(b_vals)))
+                if a_vals.len() == b_vals.len() =>
+            {
+                let result: Vec<bool> = a_vals
+                    .iter()
+                    .zip(b_vals.iter())
+                    .map(|(&a, &b)| (self.fold_fn_i32)(a, b))
+                    .collect();
+                Some(TensorValue::Bool(result))
+            }
+            _ => None,
+        };
+
+        Ok(vec![result])
     }
 
     fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {
-        // TODO: Implement planning logic in Tasks 024/025
-        // This will:
-        // 1. Get output shape and compute workgroup sizing
-        // 2. Encode immediates (shape metadata)
-        // 3. Create binding layout (2 read-only inputs + 1 output)
-        // 4. Compile WGSL shader
-        // 5. Emit dispatch step
-        let _ = (ctx, self.shader_source, self.fold_fn);
-        todo!(
-            "Planning for {} - will be implemented in Tasks 024/025",
-            self.name
-        )
+        // Get output tensor and shape
+        let output_tensor = ctx.output_tensor(0)?;
+        let output_shape = ctx.static_dims(&output_tensor.shape)?;
+        let num_elements: usize = output_shape.iter().product();
+
+        // Configure workgroup size
+        let workgroup_size: u32 = 256;
+        let num_workgroups = (num_elements as u32 + workgroup_size - 1) / workgroup_size;
+
+        // Prepare shader definitions
+        let mut shader_defs = HashMap::new();
+        shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());
+
+        // Compile shader
+        let shader_index = ctx.compile_shader(self.name, self.shader_source, &shader_defs)?;
+
+        // Get input shapes for immediate data
+        let input_a_tensor = ctx.input_tensor(0)?;
+        let input_a_shape = ctx.static_dims(&input_a_tensor.shape)?;
+        let a_size: u32 = input_a_shape.iter().product::<usize>() as u32;
+
+        let input_b_tensor = ctx.input_tensor(1)?;
+        let input_b_shape = ctx.static_dims(&input_b_tensor.shape)?;
+        let b_size: u32 = input_b_shape.iter().product::<usize>() as u32;
+
+        // Encode immediate data (must match ImmediateConstants struct in shader)
+        let mut immediates_data = Vec::new();
+        immediates_data.extend_from_slice(&(num_elements as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&a_size.to_le_bytes());
+        immediates_data.extend_from_slice(&b_size.to_le_bytes());
+
+        // Create dispatch step with bindings and immediates
+        Ok(vec![Step::Dispatch {
+            shader_index,
+            bindings: vec![
+                BindingDesc {
+                    buffer: ctx.input(0)?,
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.input(1)?,
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.output(0)?,
+                    read_only: false,
+                },
+            ],
+            workgroups: [num_workgroups, 1, 1],
+            immediates: Some(immediates_data),
+        }])
     }
 }

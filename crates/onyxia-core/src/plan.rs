@@ -206,6 +206,15 @@ impl TensorRegistry {
     pub fn all(&self) -> &[TensorMetadata] {
         &self.tensors
     }
+
+    /// Find tensor by name.
+    pub fn find_by_name(&self, name: &str) -> Option<(IrTensorId, &TensorMetadata)> {
+        self.tensors
+            .iter()
+            .enumerate()
+            .find(|(_, metadata)| metadata.name == name)
+            .map(|(i, metadata)| (IrTensorId::new(i), metadata))
+    }
 }
 
 /// Metadata for a single tensor.
