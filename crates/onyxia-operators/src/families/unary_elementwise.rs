@@ -2,7 +2,10 @@
 //!
 //! Covers: Cos, Sin, Sqrt, Neg, Tanh
 
-use onyxia_core::{InferenceCtx, Operator, PlanCtx, Result, Step, TensorShape};
+use onyxia_core::{
+    BindingDesc, FoldCtx, InferenceCtx, Operator, PlanCtx, Result, Step, TensorShape,
+};
+use std::collections::HashMap;
 
 /// Unary elementwise operator family.
 ///
@@ -74,26 +77,51 @@ impl Operator for UnaryElementwiseOp {
 
     fn infer_output_shapes(&self, ctx: &InferenceCtx) -> Result<Vec<TensorShape>> {
         // Unary elementwise operations preserve input shape
-        // TODO: Implement in Tasks 024/025
-        let _ = (ctx, self.shader_source, self.fold_fn);
-        todo!(
-            "Shape inference for {} - will be implemented in Tasks 024/025",
-            self.name
-        )
+        let shape = ctx.input_shape(0)?;
+        Ok(vec![shape.clone()])
+    }
+
+    fn try_fold(&self, ctx: &FoldCtx) -> Result<Vec<Option<onyxia_core::TensorValue>>> {
+        // Use the helper from FoldCtx to fold unary F32 operations
+        ctx.unary_fold_f32(self.fold_fn)
     }
 
     fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {
-        // TODO: Implement planning logic in Tasks 024/025
-        // This will:
-        // 1. Get output shape and compute workgroup sizing
-        // 2. Encode immediates (shape metadata)
-        // 3. Create binding layout (1 read-only input + 1 output)
-        // 4. Compile WGSL shader
-        // 5. Emit dispatch step
-        let _ = (ctx, self.shader_source, self.fold_fn);
-        todo!(
-            "Planning for {} - will be implemented in Tasks 024/025",
-            self.name
-        )
+        // Get output tensor and shape
+        let output_tensor = ctx.output_tensor(0)?;
+        let output_shape = ctx.static_dims(&output_tensor.shape)?;
+        let num_elements: usize = output_shape.iter().product();
+
+        // Configure workgroup size
+        let workgroup_size: u32 = 256;
+        let num_workgroups = (num_elements as u32 + workgroup_size - 1) / workgroup_size;
+
+        // Prepare shader definitions
+        let mut shader_defs = HashMap::new();
+        shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());
+
+        // Compile shader
+        let shader_index = ctx.compile_shader(self.name, self.shader_source, &shader_defs)?;
+
+        // Encode immediate data (must match ImmediateConstants struct in shader)
+        let mut immediates_data = Vec::new();
+        immediates_data.extend_from_slice(&(num_elements as u32).to_le_bytes());
+
+        // Create dispatch step with bindings and immediates
+        Ok(vec![Step::Dispatch {
+            shader_index,
+            bindings: vec![
+                BindingDesc {
+                    buffer: ctx.input(0)?,
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.output(0)?,
+                    read_only: false,
+                },
+            ],
+            workgroups: [num_workgroups, 1, 1],
+            immediates: Some(immediates_data),
+        }])
     }
 }

@@ -27,6 +27,7 @@ pub mod families;
 pub mod operators;
 pub mod passes;
 
+mod helpers;
 mod registry;
 
 // Re-export operator types
