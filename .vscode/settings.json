@@ -6,6 +6,9 @@
         "cargo check": true,
         "cargo clippy": true,
         "cargo fmt": true,
-        "git add": true
+        "git add": true,
+        "git commit": true,
+        "git status": true,
+        "git log": true,
     }
 }
