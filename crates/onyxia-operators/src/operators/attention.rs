@@ -4,6 +4,8 @@ use onyxia_core::{BindingDesc, InferenceCtx, Operator, PlanCtx, Result, Step, Te
 use std::collections::HashMap;
 
 /// Rotary positional embedding operator.
+///
+/// Used in transformer attention to inject positional information.
 pub struct RotaryEmbeddingOp;
 
 impl Operator for RotaryEmbeddingOp {
@@ -12,13 +14,20 @@ impl Operator for RotaryEmbeddingOp {
     }
 
     fn infer_output_shapes(&self, ctx: &InferenceCtx) -> Result<Vec<TensorShape>> {
-        let _ = ctx;
-        todo!("Shape inference for RotaryEmbedding - will be implemented in Task 025")
+        if ctx.input_count() == 0 {
+            return Err(onyxia_core::Error::ShapeInference(
+                "RotaryEmbedding requires at least one input".to_string(),
+            ));
+        }
+        // Output shape = input shape (same tensor with rotated values)
+        Ok(vec![ctx.input_shape(0)?.clone()])
     }
 
-    fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {
-        let _ = ctx;
-        todo!("Planning for RotaryEmbedding - will be implemented in Task 025")
+    fn plan(&self, _ctx: &mut PlanCtx) -> Result<Vec<Step>> {
+        // TODO: Implement RotaryEmbedding GPU planning
+        Err(onyxia_core::Error::Planning(
+            "RotaryEmbedding GPU planning not yet implemented".to_string(),
+        ))
     }
 }
 

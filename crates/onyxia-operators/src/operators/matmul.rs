@@ -158,6 +158,8 @@ impl Operator for MatMulF32Op {
 }
 
 /// Quantized (4-bit) matrix multiplication operator.
+///
+/// Performs matrix multiplication with quantized weights (typically 4-bit).
 pub struct MatMulNBitsOp;
 
 impl Operator for MatMulNBitsOp {
@@ -166,12 +168,45 @@ impl Operator for MatMulNBitsOp {
     }
 
     fn infer_output_shapes(&self, ctx: &InferenceCtx) -> Result<Vec<TensorShape>> {
-        let _ = ctx;
-        todo!("Shape inference for MatMulNBits - will be implemented in Tasks 024/025")
+        if ctx.input_count() == 0 {
+            return Err(onyxia_core::Error::ShapeInference(
+                "MatMulNBits requires at least one input (activations)".to_string(),
+            ));
+        }
+
+        let a_dims = match ctx.input_shape(0)? {
+            TensorShape::Static(dims) => dims,
+            _ => {
+                return Err(onyxia_core::Error::ShapeInference(
+                    "MatMulNBits requires static input shape".to_string(),
+                ));
+            }
+        };
+
+        if a_dims.len() < 2 {
+            return Err(onyxia_core::Error::ShapeInference(format!(
+                "MatMulNBits requires at least 2D activation tensor, got: {:?}",
+                a_dims
+            )));
+        }
+
+        // Read N from attributes (output dimension)
+        let n = ctx.attr_i64("N")? as usize;
+
+        // Output shape: preserve batch dimensions from A, replace last two dims with [M, N]
+        let m = a_dims[a_dims.len() - 2];
+
+        let mut output_dims = a_dims[..a_dims.len() - 2].to_vec();
+        output_dims.push(m);
+        output_dims.push(n);
+
+        Ok(vec![TensorShape::Static(output_dims)])
     }
 
-    fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {
-        let _ = ctx;
-        todo!("Planning for MatMulNBits - will be implemented in Tasks 024/025")
+    fn plan(&self, _ctx: &mut PlanCtx) -> Result<Vec<Step>> {
+        // TODO: Implement MatMulNBits GPU planning
+        Err(onyxia_core::Error::Planning(
+            "MatMulNBits GPU planning not yet implemented".to_string(),
+        ))
     }
 }

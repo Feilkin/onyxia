@@ -35,7 +35,6 @@
 pub mod error;
 pub mod inference;
 pub mod operator;
-// pub mod operators; // Operators still here but can't compile until tasks 024-025 (shaders moved)
 pub mod passes;
 pub mod plan;
 pub mod scheduler;

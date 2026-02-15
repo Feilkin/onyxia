@@ -130,8 +130,7 @@ async fn test_multiple_operations() {
 
     // Compile and execute
     let registry = core_operator_registry();
-    let plan = compile(&graph, &registry, &HashMap::new())
-        .expect("Compilation should succeed");
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     assert_eq!(plan.operations.len(), 2, "Should have 2 operations");
 
@@ -277,8 +276,7 @@ async fn test_add_with_bias_e2e() {
 
     // Compile and execute
     let registry = core_operator_registry();
-    let plan = compile(&graph, &registry, &HashMap::new())
-        .expect("Compilation should succeed");
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
 
     assert_eq!(plan.operations.len(), 1, "Should have 1 operation");
 
