@@ -6,192 +6,116 @@
 //! shape from upstream Shape/Gather/Concat chains.
 
 use crate::error::{CodegenError, Result};
+pub use onyxia_core::types::{TensorData, TensorValue};
 use onyxia_onnx::{DataType, Graph, Node, TensorInfo, TensorShape};
 
-/// A tensor value known at compile time (for value propagation).
-///
-/// Used to enable data-dependent shape inference: e.g., Reshape reads its
-/// target shape from an upstream Concat whose values were propagated from
-/// Shape and Gather.
-///
-/// Only small tensors are stored (shape-metadata, indices, axes).
-/// Large weight tensors should NOT be wrapped in TensorValue.
-#[derive(Debug, Clone, PartialEq)]
-pub enum TensorValue {
-    I64(Vec<i64>),
-    I32(Vec<i32>),
-    F32(Vec<f32>),
-    Bool(Vec<bool>),
-    U8(Vec<u8>),
-}
+/// Parse a TensorValue from ONNX initializer bytes.
+pub fn parse_tensor_value_from_initializer(
+    tensor_info: &TensorInfo,
+) -> Result<Option<TensorValue>> {
+    let Some(ref bytes) = tensor_info.initializer else {
+        return Ok(None);
+    };
 
-impl TensorValue {
-    /// Get the number of elements in this tensor value.
-    pub fn len(&self) -> usize {
-        match self {
-            TensorValue::I64(v) => v.len(),
-            TensorValue::I32(v) => v.len(),
-            TensorValue::F32(v) => v.len(),
-            TensorValue::Bool(v) => v.len(),
-            TensorValue::U8(v) => v.len(),
-        }
-    }
+    let TensorShape::Static(ref dims) = tensor_info.shape else {
+        return Ok(None);
+    };
 
-    /// Check if this tensor value is empty.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Try to get as i64 slice.
-    pub fn as_i64(&self) -> Option<&[i64]> {
-        match self {
-            TensorValue::I64(v) => Some(v),
-            _ => None,
-        }
-    }
-
-    /// Try to get as i32 slice.
-    pub fn as_i32(&self) -> Option<&[i32]> {
-        match self {
-            TensorValue::I32(v) => Some(v),
-            _ => None,
-        }
-    }
-
-    /// Try to get as f32 slice.
-    pub fn as_f32(&self) -> Option<&[f32]> {
-        match self {
-            TensorValue::F32(v) => Some(v),
-            _ => None,
-        }
-    }
-
-    /// Cast this value to a different type.
-    pub fn cast(&self, target_dtype: DataType) -> Result<TensorValue> {
-        match (self, target_dtype) {
-            (TensorValue::I64(v), DataType::I64) => Ok(TensorValue::I64(v.clone())),
-            (TensorValue::I64(v), DataType::I32) => {
-                Ok(TensorValue::I32(v.iter().map(|&x| x as i32).collect()))
-            }
-            (TensorValue::I64(v), DataType::F32) => {
-                Ok(TensorValue::F32(v.iter().map(|&x| x as f32).collect()))
-            }
-            (TensorValue::I32(v), DataType::I32) => Ok(TensorValue::I32(v.clone())),
-            (TensorValue::I32(v), DataType::I64) => {
-                Ok(TensorValue::I64(v.iter().map(|&x| x as i64).collect()))
-            }
-            (TensorValue::I32(v), DataType::F32) => {
-                Ok(TensorValue::F32(v.iter().map(|&x| x as f32).collect()))
-            }
-            (TensorValue::F32(v), DataType::F32) => Ok(TensorValue::F32(v.clone())),
-            (TensorValue::F32(v), DataType::I32) => {
-                Ok(TensorValue::I32(v.iter().map(|&x| x as i32).collect()))
-            }
-            (TensorValue::F32(v), DataType::I64) => {
-                Ok(TensorValue::I64(v.iter().map(|&x| x as i64).collect()))
-            }
-            _ => Err(CodegenError::UnsupportedOp(format!(
-                "Cast from {:?} to {:?} not supported in constant folding",
-                self, target_dtype
-            ))),
-        }
-    }
-
-    /// Parse a TensorValue from initializer bytes.
-    pub fn from_initializer(tensor_info: &TensorInfo) -> Result<Option<Self>> {
-        let Some(ref bytes) = tensor_info.initializer else {
-            return Ok(None);
+    let element_count: usize = dims.iter().product();
+    if element_count == 0 {
+        // Empty tensor — return empty vec of appropriate type
+        let data = match tensor_info.dtype {
+            DataType::I64 => TensorData::I64(vec![]),
+            DataType::I32 => TensorData::I32(vec![]),
+            DataType::F32 => TensorData::F32(vec![]),
+            DataType::Bool => TensorData::Bool(vec![]),
+            DataType::U8 => TensorData::U8(vec![]),
+            _ => return Ok(None), // Other types not needed for shape inference
         };
-
-        let TensorShape::Static(ref dims) = tensor_info.shape else {
-            return Ok(None);
-        };
-
-        let element_count: usize = dims.iter().product();
-        if element_count == 0 {
-            // Empty tensor — return empty vec of appropriate type
-            return Ok(Some(match tensor_info.dtype {
-                DataType::I64 => TensorValue::I64(vec![]),
-                DataType::I32 => TensorValue::I32(vec![]),
-                DataType::F32 => TensorValue::F32(vec![]),
-                DataType::Bool => TensorValue::Bool(vec![]),
-                DataType::U8 => TensorValue::U8(vec![]),
-                _ => return Ok(None), // Other types not needed for shape inference
-            }));
-        }
-
-        match tensor_info.dtype {
-            DataType::I64 => {
-                if bytes.len() != element_count * 8 {
-                    return Err(CodegenError::InvalidShape(format!(
-                        "I64 initializer for {} has {} bytes, expected {}",
-                        tensor_info.name,
-                        bytes.len(),
-                        element_count * 8
-                    )));
-                }
-                let values: Vec<i64> = bytes
-                    .chunks_exact(8)
-                    .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
-                    .collect();
-                Ok(Some(TensorValue::I64(values)))
-            }
-            DataType::I32 => {
-                if bytes.len() != element_count * 4 {
-                    return Err(CodegenError::InvalidShape(format!(
-                        "I32 initializer for {} has {} bytes, expected {}",
-                        tensor_info.name,
-                        bytes.len(),
-                        element_count * 4
-                    )));
-                }
-                let values: Vec<i32> = bytes
-                    .chunks_exact(4)
-                    .map(|chunk| i32::from_le_bytes(chunk.try_into().unwrap()))
-                    .collect();
-                Ok(Some(TensorValue::I32(values)))
-            }
-            DataType::F32 => {
-                if bytes.len() != element_count * 4 {
-                    return Err(CodegenError::InvalidShape(format!(
-                        "F32 initializer for {} has {} bytes, expected {}",
-                        tensor_info.name,
-                        bytes.len(),
-                        element_count * 4
-                    )));
-                }
-                let values: Vec<f32> = bytes
-                    .chunks_exact(4)
-                    .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
-                    .collect();
-                Ok(Some(TensorValue::F32(values)))
-            }
-            DataType::Bool => {
-                if bytes.len() != element_count {
-                    return Err(CodegenError::InvalidShape(format!(
-                        "Bool initializer for {} has {} bytes, expected {}",
-                        tensor_info.name,
-                        bytes.len(),
-                        element_count
-                    )));
-                }
-                let values: Vec<bool> = bytes.iter().map(|&b| b != 0).collect();
-                Ok(Some(TensorValue::Bool(values)))
-            }
-            DataType::U8 => {
-                if bytes.len() != element_count {
-                    return Err(CodegenError::InvalidShape(format!(
-                        "U8 initializer for {} has {} bytes, expected {}",
-                        tensor_info.name,
-                        bytes.len(),
-                        element_count
-                    )));
-                }
-                Ok(Some(TensorValue::U8(bytes.clone())))
-            }
-            _ => Ok(None), // Other types not needed for shape inference
-        }
+        return Ok(Some(TensorValue::new(
+            data,
+            dims.clone(),
+            tensor_info.dtype,
+        )));
     }
+
+    let data = match tensor_info.dtype {
+        DataType::I64 => {
+            if bytes.len() != element_count * 8 {
+                return Err(CodegenError::InvalidShape(format!(
+                    "I64 initializer for {} has {} bytes, expected {}",
+                    tensor_info.name,
+                    bytes.len(),
+                    element_count * 8
+                )));
+            }
+            let values: Vec<i64> = bytes
+                .chunks_exact(8)
+                .map(|chunk| i64::from_le_bytes(chunk.try_into().unwrap()))
+                .collect();
+            TensorData::I64(values)
+        }
+        DataType::I32 => {
+            if bytes.len() != element_count * 4 {
+                return Err(CodegenError::InvalidShape(format!(
+                    "I32 initializer for {} has {} bytes, expected {}",
+                    tensor_info.name,
+                    bytes.len(),
+                    element_count * 4
+                )));
+            }
+            let values: Vec<i32> = bytes
+                .chunks_exact(4)
+                .map(|chunk| i32::from_le_bytes(chunk.try_into().unwrap()))
+                .collect();
+            TensorData::I32(values)
+        }
+        DataType::F32 => {
+            if bytes.len() != element_count * 4 {
+                return Err(CodegenError::InvalidShape(format!(
+                    "F32 initializer for {} has {} bytes, expected {}",
+                    tensor_info.name,
+                    bytes.len(),
+                    element_count * 4
+                )));
+            }
+            let values: Vec<f32> = bytes
+                .chunks_exact(4)
+                .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+                .collect();
+            TensorData::F32(values)
+        }
+        DataType::Bool => {
+            if bytes.len() != element_count {
+                return Err(CodegenError::InvalidShape(format!(
+                    "Bool initializer for {} has {} bytes, expected {}",
+                    tensor_info.name,
+                    bytes.len(),
+                    element_count
+                )));
+            }
+            let values: Vec<bool> = bytes.iter().map(|&b| b != 0).collect();
+            TensorData::Bool(values)
+        }
+        DataType::U8 => {
+            if bytes.len() != element_count {
+                return Err(CodegenError::InvalidShape(format!(
+                    "U8 initializer for {} has {} bytes, expected {}",
+                    tensor_info.name,
+                    bytes.len(),
+                    element_count
+                )));
+            }
+            TensorData::U8(bytes.clone())
+        }
+        _ => return Ok(None), // Other types not needed for shape inference
+    };
+
+    Ok(Some(TensorValue::new(
+        data,
+        dims.clone(),
+        tensor_info.dtype,
+    )))
 }
 
 /// Context provided to Operator during shape and value inference.
@@ -265,11 +189,7 @@ impl<'a> InferenceContext<'a> {
     /// Get the constant-folded value of the nth input as i64 slice.
     pub fn input_value_as_i64(&self, n: usize) -> Result<Option<&[i64]>> {
         match self.input_value(n)? {
-            Some(TensorValue::I64(v)) => Ok(Some(v)),
-            Some(_) => Err(CodegenError::InvalidShape(format!(
-                "Node {} ({}): input {} is not I64",
-                self.node.name, self.node.op_type, n
-            ))),
+            Some(val) => Ok(val.as_i64()),
             None => Ok(None),
         }
     }
@@ -277,11 +197,7 @@ impl<'a> InferenceContext<'a> {
     /// Get the constant-folded value of the nth input as i32 slice.
     pub fn input_value_as_i32(&self, n: usize) -> Result<Option<&[i32]>> {
         match self.input_value(n)? {
-            Some(TensorValue::I32(v)) => Ok(Some(v)),
-            Some(_) => Err(CodegenError::InvalidShape(format!(
-                "Node {} ({}): input {} is not I32",
-                self.node.name, self.node.op_type, n
-            ))),
+            Some(val) => Ok(val.as_i32()),
             None => Ok(None),
         }
     }
@@ -471,16 +387,21 @@ mod tests {
             initializer: Some(vec![1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0]),
         };
 
-        let value = TensorValue::from_initializer(&tensor_info)
+        let value = parse_tensor_value_from_initializer(&tensor_info)
             .unwrap()
             .unwrap();
-        assert_eq!(value, TensorValue::I64(vec![1, 2]));
+        let expected = TensorValue::new(TensorData::I64(vec![1, 2]), vec![2], DataType::I64);
+        assert_eq!(value.as_i64(), expected.as_i64());
+        assert_eq!(value.shape, expected.shape);
     }
 
     #[test]
     fn test_tensor_value_cast() {
-        let value = TensorValue::I64(vec![1, 2, 3]);
+        let value = TensorValue::new(TensorData::I64(vec![1, 2, 3]), vec![3], DataType::I64);
         let casted = value.cast(DataType::F32).unwrap();
-        assert_eq!(casted, TensorValue::F32(vec![1.0, 2.0, 3.0]));
+        let expected =
+            TensorValue::new(TensorData::F32(vec![1.0, 2.0, 3.0]), vec![3], DataType::F32);
+        assert_eq!(casted.as_f32(), expected.as_f32());
+        assert_eq!(casted.shape, expected.shape);
     }
 }

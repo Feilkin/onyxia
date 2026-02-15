@@ -101,7 +101,7 @@ pub fn infer_shapes(graph: &mut Graph, registry: &OperatorRegistry) -> Result<()
     let mut value_map: HashMap<TensorId, TensorValue> = HashMap::new();
 
     for (tensor_id, tensor_info) in graph.tensor_info.iter().enumerate() {
-        if let Some(value) = TensorValue::from_initializer(tensor_info)? {
+        if let Some(value) = crate::inference::parse_tensor_value_from_initializer(tensor_info)? {
             value_map.insert(tensor_id, value);
             debug!(
                 tensor = tensor_info.name.as_str(),

@@ -174,7 +174,12 @@ mod tests {
             if let (Some(a), Some(b)) = (a, b) {
                 if a.len() == b.len() {
                     let result: Vec<f32> = a.iter().zip(b.iter()).map(|(x, y)| x + y).collect();
-                    return Ok(vec![Some(TensorValue::F32(result))]);
+                    let input_shape = ctx.input_value(0).unwrap().shape.clone();
+                    return Ok(vec![Some(TensorValue::new(
+                        onyxia_core::TensorData::F32(result),
+                        input_shape,
+                        onyxia_core::DataType::F32,
+                    ))]);
                 }
             }
 
@@ -223,7 +228,11 @@ mod tests {
             TensorShape::Static(vec![2]),
             TensorKind::Weight,
         );
-        a_tensor.value = Some(TensorValue::F32(vec![1.0, 2.0]));
+        a_tensor.value = Some(TensorValue::new(
+            onyxia_core::TensorData::F32(vec![1.0, 2.0]),
+            vec![2],
+            onyxia_core::DataType::F32,
+        ));
         let a_id = graph.add_tensor(a_tensor);
 
         let mut b_tensor = TensorDef::new(
@@ -232,7 +241,11 @@ mod tests {
             TensorShape::Static(vec![2]),
             TensorKind::Weight,
         );
-        b_tensor.value = Some(TensorValue::F32(vec![3.0, 4.0]));
+        b_tensor.value = Some(TensorValue::new(
+            onyxia_core::TensorData::F32(vec![3.0, 4.0]),
+            vec![2],
+            onyxia_core::DataType::F32,
+        ));
         let b_id = graph.add_tensor(b_tensor);
 
         // Create output tensor

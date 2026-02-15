@@ -28,7 +28,7 @@ pub use plan::{
 };
 pub use registry::OperatorRegistry;
 pub use symbolic_expr::{BinOpKind, SymbolicExpr};
-pub use types::{DataType, SymbolicDim, TensorKind, TensorShape, TensorValue};
+pub use types::{DataType, SymbolicDim, TensorData, TensorKind, TensorShape, TensorValue};
 
 /// Result type using the crate's error type.
 pub type Result<T> = std::result::Result<T, Error>;

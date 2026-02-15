@@ -227,16 +227,22 @@ impl<'a> FoldCtx<'a> {
             return Ok(vec![None]);
         }
 
-        let a = self
+        let val_a = self
             .ctx
             .input_value(0)
-            .and_then(|v| v.as_f32())
-            .ok_or_else(|| Error::ConstantFolding("Input 0 is not f32".to_string()))?;
+            .ok_or_else(|| Error::ConstantFolding("Input 0 has no value".to_string()))?;
 
-        let b = self
+        let val_b = self
             .ctx
             .input_value(1)
-            .and_then(|v| v.as_f32())
+            .ok_or_else(|| Error::ConstantFolding("Input 1 has no value".to_string()))?;
+
+        let a = val_a
+            .as_f32()
+            .ok_or_else(|| Error::ConstantFolding("Input 0 is not f32".to_string()))?;
+
+        let b = val_b
+            .as_f32()
             .ok_or_else(|| Error::ConstantFolding("Input 1 is not f32".to_string()))?;
 
         // Simple element-wise operation (no broadcasting for now)
@@ -244,9 +250,16 @@ impl<'a> FoldCtx<'a> {
             return Ok(vec![None]); // Skip folding if shapes don't match
         }
 
-        let result: Vec<f32> = a.iter().zip(b.iter()).map(|(&x, &y)| op(x, y)).collect();
+        let result_data: Vec<f32> = a.iter().zip(b.iter()).map(|(&x, &y)| op(x, y)).collect();
 
-        Ok(vec![Some(TensorValue::F32(result))])
+        // Use shape from first input (they're the same for element-wise ops)
+        let result = TensorValue::new(
+            crate::types::TensorData::F32(result_data),
+            val_a.shape.clone(),
+            crate::types::DataType::F32,
+        );
+
+        Ok(vec![Some(result)])
     }
 
     /// Apply a unary operation to an f32 input and return the result.
@@ -258,15 +271,24 @@ impl<'a> FoldCtx<'a> {
             return Ok(vec![None]);
         }
 
-        let input = self
+        let val = self
             .ctx
             .input_value(0)
-            .and_then(|v| v.as_f32())
+            .ok_or_else(|| Error::ConstantFolding("Input 0 has no value".to_string()))?;
+
+        let input = val
+            .as_f32()
             .ok_or_else(|| Error::ConstantFolding("Input 0 is not f32".to_string()))?;
 
-        let result: Vec<f32> = input.iter().map(|&x| op(x)).collect();
+        let result_data: Vec<f32> = input.iter().map(|&x| op(x)).collect();
 
-        Ok(vec![Some(TensorValue::F32(result))])
+        let result = TensorValue::new(
+            crate::types::TensorData::F32(result_data),
+            val.shape.clone(),
+            crate::types::DataType::F32,
+        );
+
+        Ok(vec![Some(result)])
     }
 }
 
@@ -592,7 +614,7 @@ impl<'a> PlanCtx<'a> {
 mod tests {
     use super::*;
     use crate::ir::{IrGraph, IrNode, TensorDef};
-    use crate::types::{DataType, TensorKind, TensorShape};
+    use crate::types::{DataType, TensorData, TensorKind, TensorShape};
 
     #[test]
     fn test_inference_ctx_input_shape() {
@@ -660,7 +682,11 @@ mod tests {
                 TensorShape::Static(vec![2]),
                 TensorKind::Input,
             );
-            t.value = Some(TensorValue::F32(vec![1.0, 2.0]));
+            t.value = Some(TensorValue::new(
+                TensorData::F32(vec![1.0, 2.0]),
+                vec![2],
+                DataType::F32,
+            ));
             t
         });
 
@@ -671,7 +697,11 @@ mod tests {
                 TensorShape::Static(vec![2]),
                 TensorKind::Input,
             );
-            t.value = Some(TensorValue::F32(vec![3.0, 4.0]));
+            t.value = Some(TensorValue::new(
+                TensorData::F32(vec![3.0, 4.0]),
+                vec![2],
+                DataType::F32,
+            ));
             t
         });
 

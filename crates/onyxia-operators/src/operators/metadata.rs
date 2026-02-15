@@ -1,7 +1,8 @@
 //! Metadata and constant operators.
 
 use onyxia_core::{
-    BindingDesc, Error, InferenceCtx, Operator, PlanCtx, Result, Step, TensorShape, TensorValue,
+    BindingDesc, DataType, Error, InferenceCtx, Operator, PlanCtx, Result, Step, TensorData,
+    TensorShape, TensorValue,
 };
 use std::collections::HashMap;
 
@@ -199,7 +200,12 @@ impl Operator for ShapeOp {
 
         // Convert to i64 values
         let values: Vec<i64> = shape_slice.iter().map(|&dim| dim as i64).collect();
-        Ok(vec![Some(TensorValue::I64(values))])
+        let result = TensorValue::new(
+            TensorData::I64(values.clone()),
+            vec![values.len()],
+            DataType::I64,
+        );
+        Ok(vec![Some(result)])
     }
 
     fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {

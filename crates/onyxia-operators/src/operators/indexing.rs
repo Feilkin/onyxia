@@ -1,7 +1,8 @@
 //! Indexing and data access operators.
 
 use onyxia_core::{
-    BindingDesc, FoldCtx, InferenceCtx, Operator, PlanCtx, Result, Step, TensorShape, TensorValue,
+    BindingDesc, DataType, FoldCtx, InferenceCtx, Operator, PlanCtx, Result, Step, TensorData,
+    TensorShape, TensorValue,
 };
 use std::collections::HashMap;
 
@@ -103,8 +104,10 @@ impl Operator for GatherOp {
 
             // Only support 1D data for now (e.g., selecting scalars from a list)
             if data_shape.len() == 1 {
-                let result = match (data_val, indices_val) {
-                    (TensorValue::I64(data), TensorValue::I64(indices)) => {
+                let indices_shape = &indices_val.shape;
+
+                let result = match (&data_val.data, &indices_val.data) {
+                    (TensorData::I64(data), TensorData::I64(indices)) => {
                         let mut result = Vec::new();
                         for &idx in indices {
                             let idx_usize = idx as usize;
@@ -117,9 +120,13 @@ impl Operator for GatherOp {
                             }
                             result.push(data[idx_usize]);
                         }
-                        TensorValue::I64(result)
+                        TensorValue::new(
+                            TensorData::I64(result),
+                            indices_shape.clone(),
+                            DataType::I64,
+                        )
                     }
-                    (TensorValue::I32(data), TensorValue::I64(indices)) => {
+                    (TensorData::I32(data), TensorData::I64(indices)) => {
                         let mut result = Vec::new();
                         for &idx in indices {
                             let idx_usize = idx as usize;
@@ -132,7 +139,11 @@ impl Operator for GatherOp {
                             }
                             result.push(data[idx_usize]);
                         }
-                        TensorValue::I32(result)
+                        TensorValue::new(
+                            TensorData::I32(result),
+                            indices_shape.clone(),
+                            DataType::I32,
+                        )
                     }
                     _ => return Ok(vec![None]),
                 };
@@ -247,9 +258,9 @@ impl Operator for SliceOp {
         };
 
         // Parse starts and ends as i64 arrays
-        let starts = match starts_val {
-            TensorValue::I64(v) => v,
-            TensorValue::I32(v) => &v.iter().map(|&x| x as i64).collect::<Vec<_>>(),
+        let starts = match &starts_val.data {
+            TensorData::I64(v) => v,
+            TensorData::I32(v) => &v.iter().map(|&x| x as i64).collect::<Vec<_>>(),
             _ => {
                 return Err(onyxia_core::Error::ShapeInference(
                     "Slice starts must be integer type".to_string(),
@@ -257,9 +268,9 @@ impl Operator for SliceOp {
             }
         };
 
-        let ends = match ends_val {
-            TensorValue::I64(v) => v,
-            TensorValue::I32(v) => &v.iter().map(|&x| x as i64).collect::<Vec<_>>(),
+        let ends = match &ends_val.data {
+            TensorData::I64(v) => v,
+            TensorData::I32(v) => &v.iter().map(|&x| x as i64).collect::<Vec<_>>(),
             _ => {
                 return Err(onyxia_core::Error::ShapeInference(
                     "Slice ends must be integer type".to_string(),
@@ -270,8 +281,8 @@ impl Operator for SliceOp {
         // Get optional axes and steps inputs
         let axes: Vec<usize> = if ctx.input_count() > 3 {
             if let Some(axes_val) = ctx.input_value(3) {
-                match axes_val {
-                    TensorValue::I64(v) => v
+                match &axes_val.data {
+                    TensorData::I64(v) => v
                         .iter()
                         .map(|&a| {
                             if a < 0 {
@@ -281,7 +292,7 @@ impl Operator for SliceOp {
                             }
                         })
                         .collect(),
-                    TensorValue::I32(v) => v
+                    TensorData::I32(v) => v
                         .iter()
                         .map(|&a| {
                             if a < 0 {
@@ -306,9 +317,9 @@ impl Operator for SliceOp {
 
         let steps: Vec<i64> = if ctx.input_count() > 4 {
             if let Some(steps_val) = ctx.input_value(4) {
-                match steps_val {
-                    TensorValue::I64(v) => v.clone(),
-                    TensorValue::I32(v) => v.iter().map(|&x| x as i64).collect(),
+                match &steps_val.data {
+                    TensorData::I64(v) => v.clone(),
+                    TensorData::I32(v) => v.iter().map(|&x| x as i64).collect(),
                     _ => {
                         return Err(onyxia_core::Error::ShapeInference(
                             "Slice steps must be integer type".to_string(),
@@ -394,22 +405,22 @@ impl Operator for SliceOp {
             .input_value(2)
             .ok_or_else(|| onyxia_core::Error::Planning("Slice ends not constant".into()))?;
 
-        let starts: Vec<i64> = match starts_val {
-            TensorValue::I64(v) => v.clone(),
-            TensorValue::I32(v) => v.iter().map(|&x| x as i64).collect(),
+        let starts: Vec<i64> = match &starts_val.data {
+            TensorData::I64(v) => v.clone(),
+            TensorData::I32(v) => v.iter().map(|&x| x as i64).collect(),
             _ => return Err(onyxia_core::Error::Planning("Invalid starts type".into())),
         };
 
-        let ends: Vec<i64> = match ends_val {
-            TensorValue::I64(v) => v.clone(),
-            TensorValue::I32(v) => v.iter().map(|&x| x as i64).collect(),
+        let ends: Vec<i64> = match &ends_val.data {
+            TensorData::I64(v) => v.clone(),
+            TensorData::I32(v) => v.iter().map(|&x| x as i64).collect(),
             _ => return Err(onyxia_core::Error::Planning("Invalid ends type".into())),
         };
 
         let axes: Vec<usize> = if ctx.input_count() > 3 {
             if let Some(axes_val) = ctx.input_value(3) {
-                match axes_val {
-                    TensorValue::I64(v) => v
+                match &axes_val.data {
+                    TensorData::I64(v) => v
                         .iter()
                         .map(|&a| {
                             if a < 0 {
@@ -419,7 +430,7 @@ impl Operator for SliceOp {
                             }
                         })
                         .collect(),
-                    TensorValue::I32(v) => v
+                    TensorData::I32(v) => v
                         .iter()
                         .map(|&a| {
                             if a < 0 {
@@ -440,9 +451,9 @@ impl Operator for SliceOp {
 
         let steps: Vec<i64> = if ctx.input_count() > 4 {
             if let Some(steps_val) = ctx.input_value(4) {
-                match steps_val {
-                    TensorValue::I64(v) => v.clone(),
-                    TensorValue::I32(v) => v.iter().map(|&x| x as i64).collect(),
+                match &steps_val.data {
+                    TensorData::I64(v) => v.clone(),
+                    TensorData::I32(v) => v.iter().map(|&x| x as i64).collect(),
                     _ => return Err(onyxia_core::Error::Planning("Invalid steps type".into())),
                 }
             } else {
@@ -750,8 +761,8 @@ impl Operator for RangeOp {
         let delta_val = ctx.input_value(2);
 
         if let (Some(start), Some(limit), Some(delta)) = (start_val, limit_val, delta_val) {
-            let size = match (start, limit, delta) {
-                (TensorValue::I64(s), TensorValue::I64(l), TensorValue::I64(d)) => {
+            let size = match (&start.data, &limit.data, &delta.data) {
+                (TensorData::I64(s), TensorData::I64(l), TensorData::I64(d)) => {
                     if s.len() == 1 && l.len() == 1 && d.len() == 1 {
                         let (s, l, d) = (s[0], l[0], d[0]);
                         if d == 0 {
@@ -766,7 +777,7 @@ impl Operator for RangeOp {
                         ));
                     }
                 }
-                (TensorValue::F32(s), TensorValue::F32(l), TensorValue::F32(d)) => {
+                (TensorData::F32(s), TensorData::F32(l), TensorData::F32(d)) => {
                     if s.len() == 1 && l.len() == 1 && d.len() == 1 {
                         let (s, l, d) = (s[0], l[0], d[0]);
                         if d == 0.0 {
@@ -807,8 +818,8 @@ impl Operator for RangeOp {
             return Ok(vec![None]);
         };
 
-        let result = match (start, limit, delta) {
-            (TensorValue::I64(s), TensorValue::I64(l), TensorValue::I64(d)) => {
+        let result = match (&start.data, &limit.data, &delta.data) {
+            (TensorData::I64(s), TensorData::I64(l), TensorData::I64(d)) => {
                 if s.len() != 1 || l.len() != 1 || d.len() != 1 {
                     return Err(onyxia_core::Error::ConstantFolding(
                         "Range inputs must be scalars".to_string(),
@@ -822,9 +833,9 @@ impl Operator for RangeOp {
                 }
                 let size = ((limit - start) as f64 / delta as f64).ceil() as usize;
                 let values: Vec<i64> = (0..size).map(|i| start + i as i64 * delta).collect();
-                TensorValue::I64(values)
+                TensorValue::new(TensorData::I64(values), vec![size], DataType::I64)
             }
-            (TensorValue::F32(s), TensorValue::F32(l), TensorValue::F32(d)) => {
+            (TensorData::F32(s), TensorData::F32(l), TensorData::F32(d)) => {
                 if s.len() != 1 || l.len() != 1 || d.len() != 1 {
                     return Err(onyxia_core::Error::ConstantFolding(
                         "Range inputs must be scalars".to_string(),
@@ -838,7 +849,7 @@ impl Operator for RangeOp {
                 }
                 let size = ((limit - start) / delta).ceil() as usize;
                 let values: Vec<f32> = (0..size).map(|i| start + i as f32 * delta).collect();
-                TensorValue::F32(values)
+                TensorValue::new(TensorData::F32(values), vec![size], DataType::F32)
             }
             _ => return Ok(vec![None]),
         };
@@ -876,11 +887,11 @@ impl Operator for RangeOp {
             .ok_or_else(|| onyxia_core::Error::Planning("Range delta not constant".into()))?;
 
         // Extract scalar values (currently only supporting F32)
-        let (start, delta) = match (start_val, delta_val) {
-            (TensorValue::F32(s), TensorValue::F32(d)) if s.len() == 1 && d.len() == 1 => {
+        let (start, delta) = match (&start_val.data, &delta_val.data) {
+            (TensorData::F32(s), TensorData::F32(d)) if s.len() == 1 && d.len() == 1 => {
                 (s[0], d[0])
             }
-            (TensorValue::I64(s), TensorValue::I64(d)) if s.len() == 1 && d.len() == 1 => {
+            (TensorData::I64(s), TensorData::I64(d)) if s.len() == 1 && d.len() == 1 => {
                 // Convert I64 to F32 for the shader
                 (s[0] as f32, d[0] as f32)
             }
@@ -963,13 +974,17 @@ impl Operator for TriluOp {
         let upper: i64 = ctx.attr_i64("upper").unwrap_or(1);
 
         let k: i64 = if ctx.input_count() > 1 {
-            if let Some(TensorValue::I64(k_vals)) = ctx.input_value(1) {
-                if k_vals.len() != 1 {
-                    return Err(onyxia_core::Error::ConstantFolding(
-                        "Trilu k must be scalar".to_string(),
-                    ));
+            if let Some(k_val) = ctx.input_value(1) {
+                if let TensorData::I64(k_vals) = &k_val.data {
+                    if k_vals.len() != 1 {
+                        return Err(onyxia_core::Error::ConstantFolding(
+                            "Trilu k must be scalar".to_string(),
+                        ));
+                    }
+                    k_vals[0]
+                } else {
+                    0
                 }
-                k_vals[0]
             } else {
                 0
             }
@@ -977,8 +992,8 @@ impl Operator for TriluOp {
             0
         };
 
-        match input {
-            TensorValue::F32(vals) => {
+        match &input.data {
+            TensorData::F32(vals) => {
                 let batch_size: usize = input_shape[..rank - 2].iter().product();
                 let matrix_size = m * n;
                 let mut result = vals.clone();
@@ -999,7 +1014,11 @@ impl Operator for TriluOp {
                     }
                 }
 
-                Ok(vec![Some(TensorValue::F32(result))])
+                Ok(vec![Some(TensorValue::new(
+                    TensorData::F32(result),
+                    input.shape.clone(),
+                    DataType::F32,
+                ))])
             }
             _ => Ok(vec![None]),
         }
@@ -1027,8 +1046,8 @@ impl Operator for TriluOp {
         // Get k from second input (if provided) or default to 0
         let k: i32 = if ctx.input_count() > 1 {
             if let Some(k_val) = ctx.input_value(1) {
-                match k_val {
-                    TensorValue::I64(v) => {
+                match &k_val.data {
+                    TensorData::I64(v) => {
                         if v.len() != 1 {
                             return Err(onyxia_core::Error::Planning(
                                 "Trilu k must be scalar".to_string(),
@@ -1036,7 +1055,7 @@ impl Operator for TriluOp {
                         }
                         v[0] as i32
                     }
-                    TensorValue::I32(v) => {
+                    TensorData::I32(v) => {
                         if v.len() != 1 {
                             return Err(onyxia_core::Error::Planning(
                                 "Trilu k must be scalar".to_string(),

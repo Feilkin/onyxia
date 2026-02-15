@@ -3,7 +3,8 @@
 //! Covers: Equal, Greater
 
 use onyxia_core::{
-    BindingDesc, FoldCtx, InferenceCtx, Operator, PlanCtx, Result, Step, TensorShape, TensorValue,
+    BindingDesc, DataType, FoldCtx, InferenceCtx, Operator, PlanCtx, Result, Step, TensorData,
+    TensorShape, TensorValue,
 };
 use std::collections::HashMap;
 
@@ -73,35 +74,46 @@ impl Operator for ComparisonOp {
 
         // Only fold values with same shape for simplicity
         let result = match (a, b) {
-            (Some(TensorValue::F32(a_vals)), Some(TensorValue::F32(b_vals)))
-                if a_vals.len() == b_vals.len() =>
-            {
-                let result: Vec<bool> = a_vals
-                    .iter()
-                    .zip(b_vals.iter())
-                    .map(|(&a, &b)| (self.fold_fn_f32)(a, b))
-                    .collect();
-                Some(TensorValue::Bool(result))
-            }
-            (Some(TensorValue::I64(a_vals)), Some(TensorValue::I64(b_vals)))
-                if a_vals.len() == b_vals.len() =>
-            {
-                let result: Vec<bool> = a_vals
-                    .iter()
-                    .zip(b_vals.iter())
-                    .map(|(&a, &b)| (self.fold_fn_i64)(a, b))
-                    .collect();
-                Some(TensorValue::Bool(result))
-            }
-            (Some(TensorValue::I32(a_vals)), Some(TensorValue::I32(b_vals)))
-                if a_vals.len() == b_vals.len() =>
-            {
-                let result: Vec<bool> = a_vals
-                    .iter()
-                    .zip(b_vals.iter())
-                    .map(|(&a, &b)| (self.fold_fn_i32)(a, b))
-                    .collect();
-                Some(TensorValue::Bool(result))
+            (Some(a_val), Some(b_val)) if a_val.len() == b_val.len() => {
+                match (&a_val.data, &b_val.data) {
+                    (TensorData::F32(a_vals), TensorData::F32(b_vals)) => {
+                        let result: Vec<bool> = a_vals
+                            .iter()
+                            .zip(b_vals.iter())
+                            .map(|(&a, &b)| (self.fold_fn_f32)(a, b))
+                            .collect();
+                        Some(TensorValue::new(
+                            TensorData::Bool(result),
+                            a_val.shape.clone(),
+                            DataType::Bool,
+                        ))
+                    }
+                    (TensorData::I64(a_vals), TensorData::I64(b_vals)) => {
+                        let result: Vec<bool> = a_vals
+                            .iter()
+                            .zip(b_vals.iter())
+                            .map(|(&a, &b)| (self.fold_fn_i64)(a, b))
+                            .collect();
+                        Some(TensorValue::new(
+                            TensorData::Bool(result),
+                            a_val.shape.clone(),
+                            DataType::Bool,
+                        ))
+                    }
+                    (TensorData::I32(a_vals), TensorData::I32(b_vals)) => {
+                        let result: Vec<bool> = a_vals
+                            .iter()
+                            .zip(b_vals.iter())
+                            .map(|(&a, &b)| (self.fold_fn_i32)(a, b))
+                            .collect();
+                        Some(TensorValue::new(
+                            TensorData::Bool(result),
+                            a_val.shape.clone(),
+                            DataType::Bool,
+                        ))
+                    }
+                    _ => None,
+                }
             }
             _ => None,
         };

@@ -222,7 +222,11 @@ mod tests {
             TensorShape::Static(vec![2]),
             TensorKind::Weight,
         );
-        const_tensor.value = Some(TensorValue::F32(vec![1.0, 2.0]));
+        const_tensor.value = Some(TensorValue::new(
+            onyxia_core::TensorData::F32(vec![1.0, 2.0]),
+            vec![2],
+            onyxia_core::DataType::F32,
+        ));
         let const_id = graph.add_tensor(const_tensor);
 
         // Create output with a folded value
@@ -232,7 +236,11 @@ mod tests {
             TensorShape::Static(vec![2]),
             TensorKind::Intermediate,
         );
-        output.value = Some(TensorValue::F32(vec![3.0, 4.0]));
+        output.value = Some(TensorValue::new(
+            onyxia_core::TensorData::F32(vec![3.0, 4.0]),
+            vec![2],
+            onyxia_core::DataType::F32,
+        ));
         let output_id = graph.add_tensor(output);
 
         // Add node (should be skipped since output is folded)
@@ -307,7 +315,11 @@ mod tests {
             TensorShape::Static(vec![2]),
             TensorKind::Intermediate,
         );
-        folded.value = Some(TensorValue::F32(vec![1.0, 2.0]));
+        folded.value = Some(TensorValue::new(
+            onyxia_core::TensorData::F32(vec![1.0, 2.0]),
+            vec![2],
+            onyxia_core::DataType::F32,
+        ));
         let folded_id = graph.add_tensor(folded);
 
         // Node with one unfolded output

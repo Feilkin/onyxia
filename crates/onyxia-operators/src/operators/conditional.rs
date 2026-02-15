@@ -1,7 +1,8 @@
 //! Conditional operators.
 
 use onyxia_core::{
-    FoldCtx, InferenceCtx, Operator, PlanCtx, Result, Step, TensorShape, TensorValue,
+    DataType, FoldCtx, InferenceCtx, Operator, PlanCtx, Result, Step, TensorData, TensorShape,
+    TensorValue,
 };
 
 /// Where operator - selects elements from two tensors based on a condition.
@@ -30,31 +31,39 @@ impl Operator for WhereOp {
             return Ok(vec![None]);
         };
 
-        match (condition, x, y) {
-            (TensorValue::Bool(cond), TensorValue::F32(x_vals), TensorValue::F32(y_vals))
-                if cond.len() == x_vals.len() && cond.len() == y_vals.len() =>
-            {
-                let result: Vec<f32> = cond
-                    .iter()
-                    .zip(x_vals.iter())
-                    .zip(y_vals.iter())
-                    .map(|((c, x), y)| if *c { *x } else { *y })
-                    .collect();
-                Ok(vec![Some(TensorValue::F32(result))])
+        if condition.len() == x.len() && condition.len() == y.len() {
+            match (&condition.data, &x.data, &y.data) {
+                (TensorData::Bool(cond), TensorData::F32(x_vals), TensorData::F32(y_vals)) => {
+                    let result: Vec<f32> = cond
+                        .iter()
+                        .zip(x_vals.iter())
+                        .zip(y_vals.iter())
+                        .map(|((c, x), y)| if *c { *x } else { *y })
+                        .collect();
+                    return Ok(vec![Some(TensorValue::new(
+                        TensorData::F32(result),
+                        x.shape.clone(),
+                        DataType::F32,
+                    ))]);
+                }
+                (TensorData::Bool(cond), TensorData::I64(x_vals), TensorData::I64(y_vals)) => {
+                    let result: Vec<i64> = cond
+                        .iter()
+                        .zip(x_vals.iter())
+                        .zip(y_vals.iter())
+                        .map(|((c, x), y)| if *c { *x } else { *y })
+                        .collect();
+                    return Ok(vec![Some(TensorValue::new(
+                        TensorData::I64(result),
+                        x.shape.clone(),
+                        DataType::I64,
+                    ))]);
+                }
+                _ => {}
             }
-            (TensorValue::Bool(cond), TensorValue::I64(x_vals), TensorValue::I64(y_vals))
-                if cond.len() == x_vals.len() && cond.len() == y_vals.len() =>
-            {
-                let result: Vec<i64> = cond
-                    .iter()
-                    .zip(x_vals.iter())
-                    .zip(y_vals.iter())
-                    .map(|((c, x), y)| if *c { *x } else { *y })
-                    .collect();
-                Ok(vec![Some(TensorValue::I64(result))])
-            }
-            _ => Ok(vec![None]),
         }
+
+        Ok(vec![None])
     }
 
     fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {

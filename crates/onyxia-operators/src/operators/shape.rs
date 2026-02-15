@@ -1,8 +1,8 @@
 //! Shape manipulation operators.
 
 use onyxia_core::{
-    BindingDesc, DataType, FoldCtx, InferenceCtx, Operator, PlanCtx, Result, Step, TensorShape,
-    TensorValue,
+    BindingDesc, DataType, FoldCtx, InferenceCtx, Operator, PlanCtx, Result, Step, TensorData,
+    TensorShape, TensorValue,
 };
 use std::collections::HashMap;
 
@@ -50,8 +50,8 @@ impl Operator for ReshapeOp {
         };
 
         // Parse i64 shape from the value
-        let target_shape = match target_shape_val {
-            TensorValue::I64(v) => v.as_slice(),
+        let target_shape = match &target_shape_val.data {
+            TensorData::I64(v) => v.as_slice(),
             _ => {
                 return Err(onyxia_core::Error::ShapeInference(
                     "Reshape shape input must be I64".to_string(),
@@ -193,8 +193,8 @@ impl Operator for UnsqueezeOp {
                 ));
             };
 
-            match axes_val {
-                TensorValue::I64(v) => v.clone(),
+            match &axes_val.data {
+                TensorData::I64(v) => v.clone(),
                 _ => {
                     return Err(onyxia_core::Error::ShapeInference(
                         "Unsqueeze axes input must be I64".to_string(),
@@ -334,6 +334,9 @@ impl Operator for TransposeOp {
             .map(|p| p.to_vec())
             .unwrap_or_else(|_| (0..rank as i64).rev().collect());
 
+        // Compute output shape before helper function
+        let output_shape: Vec<usize> = perm.iter().map(|&p| input_shape[p as usize]).collect();
+
         // Helper function to transpose values
         fn transpose_values<T: Clone>(values: &[T], input_shape: &[usize], perm: &[i64]) -> Vec<T> {
             let rank = input_shape.len();
@@ -373,14 +376,32 @@ impl Operator for TransposeOp {
             result
         }
 
-        let result = match input {
-            TensorValue::F32(vals) => TensorValue::F32(transpose_values(vals, input_shape, &perm)),
-            TensorValue::I64(vals) => TensorValue::I64(transpose_values(vals, input_shape, &perm)),
-            TensorValue::I32(vals) => TensorValue::I32(transpose_values(vals, input_shape, &perm)),
-            TensorValue::Bool(vals) => {
-                TensorValue::Bool(transpose_values(vals, input_shape, &perm))
-            }
-            TensorValue::U8(vals) => TensorValue::U8(transpose_values(vals, input_shape, &perm)),
+        let result = match &input.data {
+            TensorData::F32(vals) => TensorValue::new(
+                TensorData::F32(transpose_values(vals, input_shape, &perm)),
+                output_shape.clone(),
+                DataType::F32,
+            ),
+            TensorData::I64(vals) => TensorValue::new(
+                TensorData::I64(transpose_values(vals, input_shape, &perm)),
+                output_shape.clone(),
+                DataType::I64,
+            ),
+            TensorData::I32(vals) => TensorValue::new(
+                TensorData::I32(transpose_values(vals, input_shape, &perm)),
+                output_shape.clone(),
+                DataType::I32,
+            ),
+            TensorData::Bool(vals) => TensorValue::new(
+                TensorData::Bool(transpose_values(vals, input_shape, &perm)),
+                output_shape.clone(),
+                DataType::Bool,
+            ),
+            TensorData::U8(vals) => TensorValue::new(
+                TensorData::U8(transpose_values(vals, input_shape, &perm)),
+                output_shape.clone(),
+                DataType::U8,
+            ),
         };
 
         Ok(vec![Some(result)])
@@ -579,24 +600,32 @@ impl Operator for ConcatOp {
             return Ok(vec![None]);
         }
 
-        let result = match all_values[0] {
-            TensorValue::I64(_) => {
+        let result = match &all_values[0].data {
+            TensorData::I64(_) => {
                 let mut concat_vals = Vec::new();
                 for val in all_values {
-                    if let TensorValue::I64(v) = val {
+                    if let TensorData::I64(v) = &val.data {
                         concat_vals.extend_from_slice(v);
                     }
                 }
-                TensorValue::I64(concat_vals)
+                TensorValue::new(
+                    TensorData::I64(concat_vals.clone()),
+                    vec![concat_vals.len()],
+                    DataType::I64,
+                )
             }
-            TensorValue::F32(_) => {
+            TensorData::F32(_) => {
                 let mut concat_vals = Vec::new();
                 for val in all_values {
-                    if let TensorValue::F32(v) = val {
+                    if let TensorData::F32(v) = &val.data {
                         concat_vals.extend_from_slice(v);
                     }
                 }
-                TensorValue::F32(concat_vals)
+                TensorValue::new(
+                    TensorData::F32(concat_vals.clone()),
+                    vec![concat_vals.len()],
+                    DataType::F32,
+                )
             }
             _ => return Ok(vec![None]),
         };
@@ -723,8 +752,8 @@ impl Operator for ExpandOp {
             ));
         };
 
-        let target_shape = match target_shape_val {
-            TensorValue::I64(v) => v.as_slice(),
+        let target_shape = match &target_shape_val.data {
+            TensorData::I64(v) => v.as_slice(),
             _ => {
                 return Err(onyxia_core::Error::ShapeInference(
                     "Expand shape input must be I64".to_string(),
