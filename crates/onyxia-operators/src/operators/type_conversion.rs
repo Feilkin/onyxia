@@ -72,7 +72,7 @@ impl Operator for CastOp {
         // Prepare shader definitions
         let mut shader_defs = HashMap::new();
         shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());
-        shader_defs.insert(shader_def.to_string(), "true".to_string());
+        shader_defs.insert(shader_def.to_string(), "1".to_string()); // Use "1" for boolean defines
 
         // Compile shader
         let shader_index = ctx.compile_shader(
