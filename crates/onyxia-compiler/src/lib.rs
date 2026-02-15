@@ -5,10 +5,13 @@
 //!
 //! The compiler is organized as a pipeline of passes that run in stages:
 //! 1. **Resolution** - Resolve symbolic dimensions to concrete values
-//! 2. **Inference** - Propagate tensor shapes through the graph
-//! 3. **Folding** - Evaluate constant operations at compile time
+//! 2. **Folding** - Evaluate constant operations at compile time
+//! 3. **Inference** - Propagate tensor shapes through the graph (skips folded nodes)
 //! 4. **Optimization** - Apply graph transformations (custom passes)
 //! 5. **Planning** - Generate GPU execution steps
+//!
+//! By running constant folding before shape inference, we avoid unnecessary shape
+//! inference for operations that can be completely evaluated at compile time.
 //!
 //! # Example
 //!
@@ -59,9 +62,13 @@ use std::collections::HashMap;
 
 /// Compiler pipeline with pluggable passes.
 ///
-/// The pipeline runs in fixed stages: Resolution → Inference → Folding →
+/// The pipeline runs in fixed stages: Resolution → Folding → Inference →
 /// Optimization → Planning. Built-in passes are registered in their respective
 /// stages, and custom passes can be added via `add_pass()`.
+///
+/// By running constant folding before shape inference, nodes with constant inputs
+/// are folded first, and their output shapes are inferred from the folded values,
+/// avoiding unnecessary shape inference calls.
 pub struct CompilerPipeline {
     /// All passes to run, ordered by (stage, registration order).
     passes: Vec<Box<dyn Pass>>,
@@ -76,12 +83,15 @@ impl CompilerPipeline {
     /// The built-in passes are:
     /// - `SymbolicResolutionPass` (Resolution stage)
     /// - `InitializeConstantsPass` (Resolution stage)
-    /// - `ShapeInferencePass` (Inference stage)
     /// - `ConstantFoldingPass` (Folding stage)
+    /// - `ShapeInferencePass` (Inference stage)
     /// - `PlanningPass` (Planning stage)
     ///
     /// The Optimization stage is empty by default. Custom passes can be added
     /// via `add_pass()`.
+    ///
+    /// Note: Constant folding runs before shape inference so that fully-folded
+    /// nodes don't need shape inference at all.
     pub fn new(dynamic_dimensions: HashMap<String, usize>) -> Self {
         let mut pipeline = Self {
             passes: Vec::new(),
@@ -91,8 +101,8 @@ impl CompilerPipeline {
         // Register built-in passes
         pipeline.add_pass(SymbolicResolutionPass::new(dynamic_dimensions));
         pipeline.add_pass(InitializeConstantsPass::new());
-        pipeline.add_pass(ShapeInferencePass::new());
         pipeline.add_pass(ConstantFoldingPass::new());
+        pipeline.add_pass(ShapeInferencePass::new());
         pipeline.add_pass(PlanningPass::new());
 
         pipeline
@@ -117,7 +127,7 @@ impl CompilerPipeline {
     /// # Process
     ///
     /// 1. Convert ONNX graph to IR via `IrGraph::from_onnx()`
-    /// 2. Run all passes in stage order (Resolution → Inference → Folding → Optimization → Planning)
+    /// 2. Run all passes in stage order (Resolution → Folding → Inference → Optimization → Planning)
     /// 3. Extract the compiled model from the planning pass
     ///
     /// # Arguments

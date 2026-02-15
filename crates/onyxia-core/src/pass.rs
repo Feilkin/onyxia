@@ -17,18 +17,21 @@ pub enum Stage {
     /// fully static shapes.
     Resolution,
 
-    /// Shape inference (propagate shapes through the graph).
-    ///
-    /// Passes in this stage call `Operator::infer_output_shapes()` for each
-    /// node in topological order, resolving output shapes from input shapes.
-    Inference,
-
     /// Constant folding (evaluate operations at compile time).
     ///
     /// Passes in this stage call `Operator::try_fold()` for nodes where all
     /// inputs are known constants, replacing the node's outputs with folded
-    /// values.
+    /// values. Folded nodes don't need shape inference since their output
+    /// shapes are determined by the folded values.
     Folding,
+
+    /// Shape inference (propagate shapes through the graph).
+    ///
+    /// Passes in this stage call `Operator::infer_output_shapes()` for each
+    /// non-folded node in topological order, resolving output shapes from
+    /// input shapes. Nodes that were fully folded in the previous stage are
+    /// skipped since their shapes are already known.
+    Inference,
 
     /// Graph rewriting and optimization (dead code elimination, fusion, etc.).
     ///
@@ -128,9 +131,9 @@ mod tests {
 
     #[test]
     fn test_stage_ordering() {
-        assert!(Stage::Resolution < Stage::Inference);
-        assert!(Stage::Inference < Stage::Folding);
-        assert!(Stage::Folding < Stage::Optimization);
+        assert!(Stage::Resolution < Stage::Folding);
+        assert!(Stage::Folding < Stage::Inference);
+        assert!(Stage::Inference < Stage::Optimization);
         assert!(Stage::Optimization < Stage::Planning);
     }
 }

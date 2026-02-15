@@ -4,9 +4,7 @@
 //! This is necessary for operators like Reshape, Slice, Expand, etc. that need constant
 //! shape/parameter inputs during shape inference.
 
-use onyxia_core::{
-    Error, IrGraph, OperatorRegistry, Pass, Result, Stage, TensorValue,
-};
+use onyxia_core::{Error, IrGraph, OperatorRegistry, Pass, Result, Stage, TensorValue};
 
 /// Pass that initializes tensor values from initializers.
 ///
@@ -106,7 +104,10 @@ mod tests {
 
         // Check that the tensor now has a value
         let tensor = graph.tensor(tensor_id).unwrap();
-        assert!(tensor.has_value(), "Tensor should have a value after initialization");
+        assert!(
+            tensor.has_value(),
+            "Tensor should have a value after initialization"
+        );
 
         let value = tensor.value.as_ref().unwrap();
         assert_eq!(value.as_i64(), Some(&[6][..]));
@@ -138,7 +139,10 @@ mod tests {
         let changed = pass.run(&mut graph, &registry).unwrap();
 
         // Should not change anything
-        assert!(!changed, "Pass should not change already initialized tensors");
+        assert!(
+            !changed,
+            "Pass should not change already initialized tensors"
+        );
     }
 
     #[test]

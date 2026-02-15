@@ -8,9 +8,12 @@ use onyxia_core::{Error, InferenceCtx, IrGraph, IrNode, OperatorRegistry, Pass, 
 /// Pass that infers output shapes for all operations in the graph.
 ///
 /// Walks the graph in topological order, calling `Operator::infer_output_shapes()`
-/// for each node. Since `TensorShape::Unknown` doesn't exist in onyxia-core, any
-/// failure to infer a shape results in a descriptive error rather than silently
-/// propagating unknown shapes.
+/// for each node. Skips nodes that were fully folded in the previous stage, since
+/// their output shapes are already determined by the folded values.
+///
+/// This pass runs after constant folding, which means chains like
+/// Shape→Gather→Concat→Reshape can be completely folded before shape inference
+/// runs, eliminating unnecessary shape inference calls.
 pub struct ShapeInferencePass;
 
 impl ShapeInferencePass {
@@ -86,6 +89,20 @@ impl Pass for ShapeInferencePass {
 
         for node_id in topo_order {
             let node = graph.node(node_id)?.clone();
+
+            // Skip nodes that are fully folded (all outputs have constant values)
+            // Their shapes are already determined by the folded values
+            let all_outputs_folded = node.outputs.iter().all(|&tensor_id| {
+                graph
+                    .tensor(tensor_id)
+                    .map(|t| t.has_value())
+                    .unwrap_or(false)
+            });
+
+            if all_outputs_folded {
+                continue;
+            }
+
             let node_changed = self.infer_node(&node, graph, registry)?;
             changed = changed || node_changed;
         }
