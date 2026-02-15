@@ -63,7 +63,7 @@ async fn test_generate_gemma_impl(
     println!("Loading model from {}...", model_path.display());
 
     // Load and parse ONNX model
-    let mut model = onyxia_onnx::load_and_parse_model(&model_path)?;
+    let model = onyxia_onnx::load_and_parse_model(&model_path)?;
 
     // Set up dynamic dimensions - use max sequence length so buffers can handle variable inputs
     let mut dynamic_dims = std::collections::HashMap::new();
@@ -76,14 +76,10 @@ async fn test_generate_gemma_impl(
     dynamic_dims.insert("num_key_value_heads".to_string(), 1);
     dynamic_dims.insert("head_dim".to_string(), 256);
 
-    // Resolve dynamic dimensions and infer shapes
-    let registry = onyxia_compiler::onyxia_operators::core_operator_registry();
-    onyxia_compiler::resolve_dynamic_dimensions(&mut model, &dynamic_dims)?;
-    onyxia_compiler::infer_shapes(&mut model, &registry)?;
-
     println!("Compiling execution plan...");
 
-    // Compile model
+    // Compile model with new pipeline
+    let registry = onyxia_operators::core_operator_registry();
     let plan = onyxia_compiler::compile(&model, &registry, &dynamic_dims)?;
 
     println!("Plan has {} operations", plan.operations.len());
@@ -204,7 +200,7 @@ async fn test_sampling_variance_impl(
     tokenizer_dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Load model (same as previous test)
-    let mut model = onyxia_onnx::load_and_parse_model(&model_path)?;
+    let model = onyxia_onnx::load_and_parse_model(&model_path)?;
     let mut dynamic_dims = std::collections::HashMap::new();
     dynamic_dims.insert("batch_size".to_string(), 1);
     dynamic_dims.insert("sequence_length".to_string(), 128); // Max length for buffer allocation
@@ -215,10 +211,7 @@ async fn test_sampling_variance_impl(
     dynamic_dims.insert("num_key_value_heads".to_string(), 1);
     dynamic_dims.insert("head_dim".to_string(), 256);
 
-    let registry = onyxia_compiler::onyxia_operators::core_operator_registry();
-    onyxia_compiler::resolve_dynamic_dimensions(&mut model, &dynamic_dims)?;
-    onyxia_compiler::infer_shapes(&mut model, &registry)?;
-
+    let registry = onyxia_operators::core_operator_registry();
     let plan = onyxia_compiler::compile(&model, &registry, &dynamic_dims)?;
     let runtime = onyxia_runtime::Runtime::new().await?;
     let executor = runtime.load_model(plan).await?;
@@ -320,7 +313,7 @@ async fn test_deterministic_generation_impl(
     tokenizer_dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Load model
-    let mut model = onyxia_onnx::load_and_parse_model(&model_path)?;
+    let model = onyxia_onnx::load_and_parse_model(&model_path)?;
     let mut dynamic_dims = std::collections::HashMap::new();
     dynamic_dims.insert("batch_size".to_string(), 1);
     dynamic_dims.insert("sequence_length".to_string(), 128); // Max length for buffer allocation
@@ -331,10 +324,7 @@ async fn test_deterministic_generation_impl(
     dynamic_dims.insert("num_key_value_heads".to_string(), 1);
     dynamic_dims.insert("head_dim".to_string(), 256);
 
-    let registry = onyxia_compiler::onyxia_operators::core_operator_registry();
-    onyxia_compiler::resolve_dynamic_dimensions(&mut model, &dynamic_dims)?;
-    onyxia_compiler::infer_shapes(&mut model, &registry)?;
-
+    let registry = onyxia_operators::core_operator_registry();
     let plan = onyxia_compiler::compile(&model, &registry, &dynamic_dims)?;
     let runtime = onyxia_runtime::Runtime::new().await?;
     let executor = runtime.load_model(plan).await?;

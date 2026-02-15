@@ -1,9 +1,8 @@
 //! Integration tests for LLM session functionality.
 
 use onyxia_cli::llm::{LlmConfig, LlmSession};
-use onyxia_compiler::plan::CompiledModel;
-use onyxia_compiler::{ModelMetadata, TensorRegistry};
-use onyxia_onnx::{DataType, TensorInfo, TensorKind, TensorShape};
+use onyxia_core::{CompiledModel, ModelMetadata, TensorMetadata, TensorRegistry, TensorShape};
+use onyxia_onnx::DataType;
 use onyxia_runtime::Runtime;
 
 /// Create a minimal execution plan that mimics an LLM model structure.
@@ -11,90 +10,70 @@ fn create_minimal_llm_plan(num_layers: usize, vocab_size: usize) -> CompiledMode
     let mut tensors = TensorRegistry::new();
 
     // Register input tensors (what the model expects)
-    let _input_ids = tensors.add(TensorInfo {
-        name: "input_ids".to_string(),
-        dtype: DataType::I64,
-        shape: TensorShape::Static(vec![1, 1]), // batch=1, seq=1 for decode
-        kind: TensorKind::Input,
-        initializer: None,
-    });
+    let _input_ids = tensors.add(TensorMetadata::new(
+        "input_ids".to_string(),
+        DataType::I64,
+        TensorShape::Static(vec![1, 1]), // batch=1, seq=1 for decode
+    ));
 
-    let _attention_mask = tensors.add(TensorInfo {
-        name: "attention_mask".to_string(),
-        dtype: DataType::I64,
-        shape: TensorShape::Static(vec![1, 1]),
-        kind: TensorKind::Input,
-        initializer: None,
-    });
+    let _attention_mask = tensors.add(TensorMetadata::new(
+        "attention_mask".to_string(),
+        DataType::I64,
+        TensorShape::Static(vec![1, 1]),
+    ));
 
-    let _position_ids = tensors.add(TensorInfo {
-        name: "position_ids".to_string(),
-        dtype: DataType::I64,
-        shape: TensorShape::Static(vec![1, 1]),
-        kind: TensorKind::Input,
-        initializer: None,
-    });
+    let _position_ids = tensors.add(TensorMetadata::new(
+        "position_ids".to_string(),
+        DataType::I64,
+        TensorShape::Static(vec![1, 1]),
+    ));
 
-    let _past_seq_len = tensors.add(TensorInfo {
-        name: "past_sequence_length".to_string(),
-        dtype: DataType::I64,
-        shape: TensorShape::Static(vec![1]),
-        kind: TensorKind::Input,
-        initializer: None,
-    });
+    let _past_seq_len = tensors.add(TensorMetadata::new(
+        "past_sequence_length".to_string(),
+        DataType::I64,
+        TensorShape::Static(vec![1]),
+    ));
 
-    let _total_seq_len = tensors.add(TensorInfo {
-        name: "total_sequence_length".to_string(),
-        dtype: DataType::I64,
-        shape: TensorShape::Static(vec![1]),
-        kind: TensorKind::Input,
-        initializer: None,
-    });
+    let _total_seq_len = tensors.add(TensorMetadata::new(
+        "total_sequence_length".to_string(),
+        DataType::I64,
+        TensorShape::Static(vec![1]),
+    ));
 
-    let _seqlens_k = tensors.add(TensorInfo {
-        name: "seqlens_k".to_string(),
-        dtype: DataType::I64,
-        shape: TensorShape::Static(vec![1]),
-        kind: TensorKind::Input,
-        initializer: None,
-    });
+    let _seqlens_k = tensors.add(TensorMetadata::new(
+        "seqlens_k".to_string(),
+        DataType::I64,
+        TensorShape::Static(vec![1]),
+    ));
 
     // Register KV cache input/output pairs for each layer
     let mut inputs = vec![];
     let mut outputs = vec![];
 
     for layer in 0..num_layers {
-        let past_key_id = tensors.add(TensorInfo {
-            name: format!("past_key_values.{}.key", layer),
-            dtype: DataType::F32,
-            shape: TensorShape::Static(vec![1, 1, 64, 128]), // [batch, heads, seq, dim]
-            kind: TensorKind::Input,
-            initializer: None,
-        });
+        let past_key_id = tensors.add(TensorMetadata::new(
+            format!("past_key_values.{}.key", layer),
+            DataType::F32,
+            TensorShape::Static(vec![1, 1, 64, 128]), // [batch, heads, seq, dim]
+        ));
 
-        let past_value_id = tensors.add(TensorInfo {
-            name: format!("past_key_values.{}.value", layer),
-            dtype: DataType::F32,
-            shape: TensorShape::Static(vec![1, 1, 64, 128]),
-            kind: TensorKind::Input,
-            initializer: None,
-        });
+        let past_value_id = tensors.add(TensorMetadata::new(
+            format!("past_key_values.{}.value", layer),
+            DataType::F32,
+            TensorShape::Static(vec![1, 1, 64, 128]),
+        ));
 
-        let present_key_id = tensors.add(TensorInfo {
-            name: format!("present.{}.key", layer),
-            dtype: DataType::F32,
-            shape: TensorShape::Static(vec![1, 1, 64, 128]),
-            kind: TensorKind::Output,
-            initializer: None,
-        });
+        let present_key_id = tensors.add(TensorMetadata::new(
+            format!("present.{}.key", layer),
+            DataType::F32,
+            TensorShape::Static(vec![1, 1, 64, 128]),
+        ));
 
-        let present_value_id = tensors.add(TensorInfo {
-            name: format!("present.{}.value", layer),
-            dtype: DataType::F32,
-            shape: TensorShape::Static(vec![1, 1, 64, 128]),
-            kind: TensorKind::Output,
-            initializer: None,
-        });
+        let present_value_id = tensors.add(TensorMetadata::new(
+            format!("present.{}.value", layer),
+            DataType::F32,
+            TensorShape::Static(vec![1, 1, 64, 128]),
+        ));
 
         inputs.push(past_key_id);
         inputs.push(past_value_id);
@@ -103,13 +82,11 @@ fn create_minimal_llm_plan(num_layers: usize, vocab_size: usize) -> CompiledMode
     }
 
     // Register logits output
-    let logits_id = tensors.add(TensorInfo {
-        name: "logits".to_string(),
-        dtype: DataType::F32,
-        shape: TensorShape::Static(vec![1, vocab_size]),
-        kind: TensorKind::Output,
-        initializer: None,
-    });
+    let logits_id = tensors.add(TensorMetadata::new(
+        "logits".to_string(),
+        DataType::F32,
+        TensorShape::Static(vec![1, vocab_size]),
+    ));
 
     outputs.push(logits_id);
 
@@ -119,11 +96,12 @@ fn create_minimal_llm_plan(num_layers: usize, vocab_size: usize) -> CompiledMode
         tensors,
         inputs,
         outputs,
+        symbolic_bindings: vec![],
         metadata: ModelMetadata {
             name: "minimal_llm_test".to_string(),
-            version: 1,
             ir_version: 9,
-            producer: "test".to_string(),
+            producer_name: "test".to_string(),
+            model_version: 1,
         },
     }
 }
