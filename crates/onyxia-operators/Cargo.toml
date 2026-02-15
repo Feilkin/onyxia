@@ -1,0 +1,12 @@
+[package]
+name = "onyxia-operators"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+onyxia-core = { workspace = true }
+onyxia-onnx = { workspace = true }
+thiserror = "2.0.18"
+tracing = "0.1.44"

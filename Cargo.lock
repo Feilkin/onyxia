@@ -1220,6 +1220,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "onyxia-operators"
+version = "0.1.0"
+dependencies = [
+ "onyxia-core",
+ "onyxia-onnx",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "onyxia-runtime"
 version = "0.1.0"
 dependencies = [

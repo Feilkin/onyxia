@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/onyxia-core",
     "crates/onyxia-onnx",
+    "crates/onyxia-operators",
     "crates/onyxia-compiler",
     "crates/onyxia-runtime",
     "crates/onyxia-cli",
@@ -26,6 +27,7 @@ repository = "https://github.com/your-org/onyxia"
 # Workspace crates
 onyxia-core = { path = "crates/onyxia-core" }
 onyxia-onnx = { path = "crates/onyxia-onnx" }
+onyxia-operators = { path = "crates/onyxia-operators" }
 onyxia-compiler = { path = "crates/onyxia-compiler" }
 onyxia-runtime = { path = "crates/onyxia-runtime" }
 
