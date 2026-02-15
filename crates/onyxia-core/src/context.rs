@@ -555,6 +555,21 @@ impl<'a> PlanCtx<'a> {
         }
     }
 
+    pub fn attr_tensor(&self, key: &str) -> Result<Vec<u8>> {
+        let attr = self
+            .node
+            .get_attribute(key)
+            .ok_or_else(|| Error::Attribute(format!("Missing attribute: {}", key)))?;
+
+        match attr {
+            AttributeValue::Tensor(bytes) => Ok(bytes.clone()),
+            _ => Err(Error::Attribute(format!(
+                "Attribute {} is not a tensor",
+                key
+            ))),
+        }
+    }
+
     /// Encode a symbolic dimension as an immediate value.
     ///
     /// For dimensions that remain symbolic after resolution, this encodes them
@@ -653,11 +668,7 @@ mod tests {
             "folded".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2, 3]),
-            TensorValue::new(
-                TensorData::F32(vec![1.0; 6]),
-                vec![2, 3],
-                DataType::F32,
-            ),
+            TensorValue::new(TensorData::F32(vec![1.0; 6]), vec![2, 3], DataType::F32),
         );
         let edge_id = graph.add_edge(edge);
 
@@ -716,11 +727,7 @@ mod tests {
             "a".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorValue::new(
-                TensorData::F32(vec![1.0, 2.0]),
-                vec![2],
-                DataType::F32,
-            ),
+            TensorValue::new(TensorData::F32(vec![1.0, 2.0]), vec![2], DataType::F32),
         );
         let edge_a_id = graph.add_edge(edge_a);
 
@@ -728,11 +735,7 @@ mod tests {
             "b".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorValue::new(
-                TensorData::F32(vec![3.0, 4.0]),
-                vec![2],
-                DataType::F32,
-            ),
+            TensorValue::new(TensorData::F32(vec![3.0, 4.0]), vec![2], DataType::F32),
         );
         let edge_b_id = graph.add_edge(edge_b);
 

@@ -99,7 +99,9 @@ impl Operator for ConstantOfShapeOp {
         // Get the fill value from the 'value' attribute (default: 0.0)
         // Note: In ONNX, this is a tensor attribute with raw bytes
         // For simplicity, we parse common cases
-        let fill_value = ctx.attr_f32("value").unwrap_or(0.0);
+        let fill_value = ctx
+            .attr_tensor("value")
+            .unwrap_or(0.0f32.to_le_bytes().to_vec());
 
         // Load shader source
         let shader_source = include_str!("../../shaders/indexing/constantofshape.wgsl");
@@ -113,7 +115,9 @@ impl Operator for ConstantOfShapeOp {
         // Prepare immediates (output_size, fill_value)
         let mut immediates = Vec::new();
         immediates.extend_from_slice(&(output_size as u32).to_le_bytes());
-        immediates.extend_from_slice(&fill_value.to_le_bytes());
+        // TODO: We are assuming the fill_value is a f32 here. We should check the data
+        // type and use a shader def to set the correct data type in the shader.
+        immediates.extend_from_slice(&fill_value);
 
         // Calculate workgroup dispatch
         let workgroups_x = output_size.div_ceil(256);
