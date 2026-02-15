@@ -9,7 +9,7 @@ use crate::{Error, Result};
 use onyxia_onnx::AttributeValue;
 use petgraph::graph::NodeIndex;
 use petgraph::stable_graph::StableGraph;
-use petgraph::visit::Topo;
+use petgraph::visit::{EdgeRef, Topo};
 
 use std::collections::HashMap;
 
@@ -249,10 +249,10 @@ impl IrGraph {
 
             // Remove from consumer lookup
             for input in inputs {
-                if let IrInput::Tensor(tensor_id) = input {
-                    if let Some(consumers) = self.tensor_consumers.get_mut(&tensor_id) {
-                        consumers.retain(|&consumer_id| consumer_id != id);
-                    }
+                if let IrInput::Tensor(tensor_id) = input
+                    && let Some(consumers) = self.tensor_consumers.get_mut(&tensor_id)
+                {
+                    consumers.retain(|&consumer_id| consumer_id != id);
                 }
             }
         }
@@ -325,6 +325,161 @@ impl IrGraph {
     /// Get the number of tensors in the graph.
     pub fn tensor_count(&self) -> usize {
         self.tensors.len()
+    }
+
+    /// Replace an operator node with a constant value node.
+    ///
+    /// This is used during constant folding when an operator's output can be
+    /// computed at compile time. The operator node is replaced with a Value node,
+    /// and all consumers that referenced the operator's output tensor are updated
+    /// to reference the value node directly.
+    ///
+    /// # Arguments
+    /// * `node_id` - The operator node to replace
+    /// * `output_index` - Which output of the operator to replace (usually 0)
+    /// * `value` - The constant value
+    ///
+    /// # Returns
+    /// The new value node's ID (same as the old node_id due to StableGraph)
+    ///
+    /// # Errors
+    /// Returns error if:
+    /// - Node is not an Operator
+    /// - Output index out of bounds
+    /// - Graph structure is inconsistent
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use onyxia_core::{IrGraph, IrNode, TensorDef, TensorValue, TensorData, DataType, TensorShape, TensorKind};
+    /// // During constant folding, if we can evaluate "Add" at compile time:
+    /// let mut graph = IrGraph::new();
+    /// let input = graph.add_tensor(TensorDef::new(
+    ///     "input".to_string(),
+    ///     DataType::F32,
+    ///     TensorShape::Static(vec![2]),
+    ///     TensorKind::Input,
+    /// ));
+    /// let output = graph.add_tensor(TensorDef::new(
+    ///     "output".to_string(),
+    ///     DataType::F32,
+    ///     TensorShape::Static(vec![2]),
+    ///     TensorKind::Intermediate,
+    /// ));
+    /// let mut node = IrNode::new_operator("Add".to_string());
+    /// node.add_tensor_input(input).unwrap();
+    /// node.add_output(output).unwrap();
+    /// let add_node_id = graph.add_node(node);
+    ///
+    /// let result = TensorValue::new(
+    ///     TensorData::F32(vec![3.0, 4.0]),
+    ///     vec![2],
+    ///     DataType::F32,
+    /// );
+    /// let value_node_id = graph.replace_single_output_with_value(add_node_id, result).unwrap();
+    ///
+    /// // Consumers now reference the value node:
+    /// // OLD: consumer.inputs = [IrInput::Tensor(add_output_tensor_id)]
+    /// // NEW: consumer.inputs = [IrInput::ValueNode(value_node_id)]
+    /// ```
+    pub fn replace_with_value(
+        &mut self,
+        node_id: IrNodeId,
+        output_index: usize,
+        value: TensorValue,
+    ) -> Result<IrNodeId> {
+        // Get the old operator node
+        let old_node = self.node(node_id)?.clone();
+        let (_op_type, _, inputs, outputs) = old_node
+            .as_operator()
+            .ok_or_else(|| Error::InvalidGraph("Can only replace Operator nodes".to_string()))?;
+
+        // Validate output index
+        if output_index >= outputs.len() {
+            return Err(Error::InvalidGraph(format!(
+                "Output index {} out of bounds for node with {} outputs",
+                output_index,
+                outputs.len()
+            )));
+        }
+
+        let replaced_tensor_id = outputs[output_index];
+
+        // Find all consumers of this output tensor
+        let consumers = self.tensor_consumers(replaced_tensor_id);
+
+        // Update each consumer to reference the value node instead of the tensor
+        for consumer_id in consumers {
+            let consumer = self.node_mut(consumer_id)?;
+
+            if let IrNode::Operator { inputs, .. } = consumer {
+                for input in inputs.iter_mut() {
+                    if let IrInput::Tensor(tensor_id) = input
+                        && *tensor_id == replaced_tensor_id
+                    {
+                        *input = IrInput::ValueNode(node_id);
+                    }
+                }
+            }
+        }
+
+        // Remove the old node's producer/consumer registrations
+        for &output_id in outputs {
+            self.tensor_producer.remove(&output_id);
+        }
+
+        for &input in inputs {
+            if let IrInput::Tensor(tensor_id) = input
+                && let Some(consumers) = self.tensor_consumers.get_mut(&tensor_id)
+            {
+                consumers.retain(|&id| id != node_id);
+            }
+        }
+
+        // Remove old edges (operator's inputs → operator)
+        let old_edges: Vec<_> = self
+            .graph
+            .edges_directed(node_id, petgraph::Direction::Incoming)
+            .map(|e| e.id())
+            .collect();
+
+        for edge_id in old_edges {
+            self.graph.remove_edge(edge_id);
+        }
+
+        // Create new Value node with the same node_id
+        let value_node = IrNode::Value {
+            value,
+            node_index: node_id,
+        };
+
+        // Replace in graph (StableGraph preserves node_id)
+        *self.graph.node_weight_mut(node_id).ok_or_else(|| {
+            Error::InvalidGraph("Node disappeared during replacement".to_string())
+        })? = value_node;
+
+        Ok(node_id)
+    }
+
+    /// Replace an operator node with a value node when it has a single output.
+    ///
+    /// Convenience wrapper around `replace_with_value()` for the common case
+    /// of single-output operators.
+    pub fn replace_single_output_with_value(
+        &mut self,
+        node_id: IrNodeId,
+        value: TensorValue,
+    ) -> Result<IrNodeId> {
+        self.replace_with_value(node_id, 0, value)
+    }
+
+    /// Check if an operator node is fully constant-folded.
+    ///
+    /// Returns true if the node is a Value node (already folded).
+    /// This is used during planning to skip nodes that don't need GPU execution.
+    pub fn is_fully_folded(&self, node_id: IrNodeId) -> Result<bool> {
+        let node = self.node(node_id)?;
+        Ok(node.is_value())
     }
 }
 
@@ -776,5 +931,84 @@ mod tests {
         // Original node IDs should still be valid
         assert!(graph.node(id_a).is_ok());
         assert!(graph.node(id_c).is_ok());
+    }
+
+    #[test]
+    fn test_replace_with_value() {
+        use crate::types::TensorData;
+
+        let mut graph = IrGraph::new();
+
+        // Create input tensor
+        let input = TensorDef {
+            name: "input".to_string(),
+            dtype: DataType::F32,
+            shape: TensorShape::Static(vec![2, 3]),
+            kind: TensorKind::Input,
+            value: None,
+            initializer: None,
+        };
+        let input_id = graph.add_tensor(input);
+
+        // Create output tensor
+        let output = TensorDef {
+            name: "output".to_string(),
+            dtype: DataType::F32,
+            shape: TensorShape::Static(vec![2, 3]),
+            kind: TensorKind::Intermediate,
+            value: None,
+            initializer: None,
+        };
+        let output_id = graph.add_tensor(output);
+
+        // Create operator node
+        let mut node = IrNode::new_operator("Relu".to_string());
+        node.add_tensor_input(input_id).unwrap();
+        node.add_output(output_id).unwrap();
+        let node_id = graph.add_node(node);
+
+        // Create consumer node
+        let mut consumer = IrNode::new_operator("Add".to_string());
+        consumer.add_tensor_input(output_id).unwrap();
+        let consumer_id = graph.add_node(consumer);
+
+        // Replace with value
+        let value = TensorValue::new(
+            TensorData::F32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+            vec![2, 3],
+            DataType::F32,
+        );
+
+        graph
+            .replace_single_output_with_value(node_id, value)
+            .unwrap();
+
+        // Verify node is now a Value node
+        assert!(graph.node(node_id).unwrap().is_value());
+
+        // Verify consumer now references value node
+        let consumer_node = graph.node(consumer_id).unwrap();
+        match consumer_node.inputs().get(0).unwrap() {
+            IrInput::ValueNode(id) => assert_eq!(*id, node_id),
+            _ => panic!("Expected ValueNode input"),
+        }
+    }
+
+    #[test]
+    fn test_is_fully_folded() {
+        use crate::types::TensorData;
+
+        let mut graph = IrGraph::new();
+
+        // Create regular operator node
+        let op_node = IrNode::new_operator("Add".to_string());
+        let op_id = graph.add_node(op_node);
+        assert!(!graph.is_fully_folded(op_id).unwrap());
+
+        // Create value node
+        let value = TensorValue::new(TensorData::F32(vec![1.0, 2.0]), vec![2], DataType::F32);
+        let value_node = IrNode::new_value(value);
+        let value_id = graph.add_node(value_node);
+        assert!(graph.is_fully_folded(value_id).unwrap());
     }
 }

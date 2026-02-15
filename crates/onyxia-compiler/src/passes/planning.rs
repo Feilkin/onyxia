@@ -35,23 +35,6 @@ impl PlanningPass {
         self.compiled_model.take()
     }
 
-    /// Check if a node was fully constant-folded.
-    fn is_fully_folded(&self, node: &IrNode, graph: &IrGraph) -> Result<bool> {
-        // Skip Value nodes (they don't need planning)
-        if node.is_value() {
-            return Ok(true);
-        }
-
-        // A node is fully folded if ALL its outputs have values
-        for &output_id in node.outputs() {
-            let tensor = graph.tensor(output_id)?;
-            if !tensor.has_value() {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
     /// Plan a single node.
     fn plan_node(
         &self,
@@ -140,7 +123,7 @@ impl Pass for PlanningPass {
             let node = graph.node(node_id)?.clone();
 
             // Skip fully folded nodes
-            if self.is_fully_folded(&node, graph)? {
+            if graph.is_fully_folded(node_id)? {
                 continue;
             }
 
@@ -317,39 +300,31 @@ mod tests {
     fn test_is_fully_folded() {
         let mut graph = IrGraph::new();
 
-        // Node with one folded output
-        let mut folded = TensorDef::new(
-            "folded".to_string(),
-            DataType::F32,
-            TensorShape::Static(vec![2]),
-            TensorKind::Intermediate,
-        );
-        folded.value = Some(TensorValue::new(
-            onyxia_core::TensorData::F32(vec![1.0, 2.0]),
-            vec![2],
-            onyxia_core::DataType::F32,
-        ));
-        let folded_id = graph.add_tensor(folded);
-
-        // Node with one unfolded output
-        let unfolded = TensorDef::new(
+        // Regular operator node (not folded)
+        let unfolded_output = TensorDef::new(
             "unfolded".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
             TensorKind::Intermediate,
         );
-        let unfolded_id = graph.add_tensor(unfolded);
+        let unfolded_id = graph.add_tensor(unfolded_output);
 
-        // Node with all outputs folded
-        let mut node_folded = IrNode::new("Folded".to_string());
-        node_folded.add_output(folded_id);
+        let mut node_unfolded = IrNode::new_operator("Add".to_string());
+        node_unfolded.add_output(unfolded_id).unwrap();
+        let unfolded_node_id = graph.add_node(node_unfolded);
 
-        // Node with unfolded outputs
-        let mut node_unfolded = IrNode::new("Unfolded".to_string());
-        node_unfolded.add_output(unfolded_id);
+        // Value node (fully folded)
+        let value = TensorValue::new(
+            onyxia_core::TensorData::F32(vec![1.0, 2.0]),
+            vec![2],
+            onyxia_core::DataType::F32,
+        );
+        let node_folded = IrNode::new_value(value);
+        let folded_node_id = graph.add_node(node_folded);
 
-        let pass = PlanningPass::new();
-        assert!(pass.is_fully_folded(&node_folded, &graph).unwrap());
-        assert!(!pass.is_fully_folded(&node_unfolded, &graph).unwrap());
+        // Test that Value nodes are fully folded
+        assert!(graph.is_fully_folded(folded_node_id).unwrap());
+        // Test that Operator nodes are not fully folded
+        assert!(!graph.is_fully_folded(unfolded_node_id).unwrap());
     }
 }
