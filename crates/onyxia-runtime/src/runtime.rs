@@ -20,7 +20,7 @@ use std::sync::Arc;
 /// }
 /// ```
 pub struct Runtime {
-    instance: wgpu::Instance,
+    _instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     adapter_info: wgpu::AdapterInfo,
 }
@@ -60,7 +60,7 @@ impl Runtime {
         let adapter_info = adapter.get_info();
 
         Ok(Self {
-            instance,
+            _instance: instance,
             adapter,
             adapter_info,
         })

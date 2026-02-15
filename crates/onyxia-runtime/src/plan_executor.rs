@@ -6,7 +6,7 @@
 use crate::error::{Result, RuntimeError};
 use crate::tensor::Tensor;
 use onyxia_core::{BindingDesc, BufferRef, CompiledModel, CompiledShader, PlannedOp, Step};
-use onyxia_onnx::{TensorId, TensorShape};
+use onyxia_onnx::TensorId;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -476,7 +476,7 @@ impl PlanExecutor {
         use onyxia_core::symbolic_expr::evaluate_expr;
 
         // Track if any shader-def dimensions changed (not yet implemented)
-        let mut needs_recompilation = false;
+        let needs_recompilation = false;
 
         // Process all symbolic bindings
         for binding in &self.plan.symbolic_bindings {
