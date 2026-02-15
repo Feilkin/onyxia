@@ -515,21 +515,22 @@ impl PlanExecutor {
                     immediates,
                     ..
                 } = step
-                    && *shader_index == binding.shader_index {
-                        // Ensure immediates buffer exists and is large enough
-                        let immediates_buf = immediates.get_or_insert_with(Vec::new);
+                    && *shader_index == binding.shader_index
+                {
+                    // Ensure immediates buffer exists and is large enough
+                    let immediates_buf = immediates.get_or_insert_with(Vec::new);
 
-                        // Ensure buffer is large enough
-                        let required_size = binding.immediate_offset + 4; // u32 = 4 bytes
-                        if immediates_buf.len() < required_size {
-                            immediates_buf.resize(required_size, 0);
-                        }
-
-                        // Patch the value at the recorded offset
-                        let bytes = (new_value as u32).to_le_bytes();
-                        immediates_buf[binding.immediate_offset..binding.immediate_offset + 4]
-                            .copy_from_slice(&bytes);
+                    // Ensure buffer is large enough
+                    let required_size = binding.immediate_offset + 4; // u32 = 4 bytes
+                    if immediates_buf.len() < required_size {
+                        immediates_buf.resize(required_size, 0);
                     }
+
+                    // Patch the value at the recorded offset
+                    let bytes = (new_value as u32).to_le_bytes();
+                    immediates_buf[binding.immediate_offset..binding.immediate_offset + 4]
+                        .copy_from_slice(&bytes);
+                }
             }
         }
 
@@ -594,9 +595,7 @@ impl PlanExecutor {
 
             // Extract shape
             let shape: Vec<usize> = match &info.shape {
-                onyxia_core::TensorShape::Static(dims) => {
-                    dims.iter().map(|&d| d).collect()
-                }
+                onyxia_core::TensorShape::Static(dims) => dims.iter().map(|&d| d).collect(),
                 _ => {
                     return Err(RuntimeError::TensorError(
                         "Output tensor has non-static shape".to_string(),

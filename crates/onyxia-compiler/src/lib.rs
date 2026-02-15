@@ -369,7 +369,7 @@ mod tests {
         let output_id = graph.add_tensor(output);
 
         let mut node = IrNode::new("Mock".to_string());
-        node.add_input(input_id);
+        node.add_tensor_input(input_id);
         node.add_output(output_id);
         graph.add_node(node);
 

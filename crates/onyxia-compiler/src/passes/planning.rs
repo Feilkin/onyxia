@@ -245,7 +245,7 @@ mod tests {
 
         // Add node (should be skipped since output is folded)
         let mut node = IrNode::new("Mock".to_string());
-        node.add_input(const_id);
+        node.add_tensor_input(const_id);
         node.add_output(output_id);
         graph.add_node(node);
 
@@ -288,7 +288,7 @@ mod tests {
 
         // Add node
         let mut node = IrNode::new("Mock".to_string());
-        node.add_input(input_id);
+        node.add_tensor_input(input_id);
         node.add_output(output_id);
         graph.add_node(node);
 

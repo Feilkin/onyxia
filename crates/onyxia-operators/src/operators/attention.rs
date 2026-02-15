@@ -253,11 +253,7 @@ impl Operator for GroupQueryAttentionOp {
                     read_only: false,
                 },
             ],
-            workgroups: [
-                (update_key_elements as u32).div_ceil(workgroup_size),
-                1,
-                1,
-            ],
+            workgroups: [(update_key_elements as u32).div_ceil(workgroup_size), 1, 1],
             immediates: Some(update_key_immediates),
         };
 
@@ -338,11 +334,7 @@ impl Operator for GroupQueryAttentionOp {
                     read_only: false,
                 },
             ],
-            workgroups: [
-                (scores_elements as u32).div_ceil(workgroup_size),
-                1,
-                1,
-            ],
+            workgroups: [(scores_elements as u32).div_ceil(workgroup_size), 1, 1],
             immediates: Some(scores_immediates),
         };
 
@@ -368,11 +360,7 @@ impl Operator for GroupQueryAttentionOp {
                 buffer: scores_buffer,
                 read_only: false,
             }],
-            workgroups: [
-                (softmax_rows as u32).div_ceil(workgroup_size),
-                1,
-                1,
-            ],
+            workgroups: [(softmax_rows as u32).div_ceil(workgroup_size), 1, 1],
             immediates: Some(softmax_immediates),
         };
 
@@ -408,11 +396,7 @@ impl Operator for GroupQueryAttentionOp {
                     read_only: false,
                 },
             ],
-            workgroups: [
-                (output_elements as u32).div_ceil(workgroup_size),
-                1,
-                1,
-            ],
+            workgroups: [(output_elements as u32).div_ceil(workgroup_size), 1, 1],
             immediates: Some(output_immediates),
         };
 

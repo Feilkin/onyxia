@@ -146,17 +146,13 @@ impl<'a> PlanContext<'a> {
     /// Get TensorInfo for the nth input tensor.
     pub fn input_info(&self, n: usize) -> Result<&TensorInfo> {
         let id = self.input_ids[n];
-        self.graph
-            .tensor(id)
-            .map_err(CodegenError::OnnxError)
+        self.graph.tensor(id).map_err(CodegenError::OnnxError)
     }
 
     /// Get TensorInfo for the nth output tensor.
     pub fn output_info(&self, n: usize) -> Result<&TensorInfo> {
         let id = self.output_ids[n];
-        self.graph
-            .tensor(id)
-            .map_err(CodegenError::OnnxError)
+        self.graph.tensor(id).map_err(CodegenError::OnnxError)
     }
 
     /// Get static dimensions from a tensor shape.

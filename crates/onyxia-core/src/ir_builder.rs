@@ -75,7 +75,7 @@ impl IrGraph {
                     ))
                 })?;
 
-                ir_node.add_input(*tensor_id);
+                ir_node.add_tensor_input(*tensor_id);
             }
 
             // Convert output tensor names to IDs

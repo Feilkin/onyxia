@@ -164,7 +164,7 @@ mod tests {
 
         // Add node
         let mut node = IrNode::new("MockAdd".to_string());
-        node.add_input(input_id);
+        node.add_tensor_input(input_id);
         node.add_output(output_id);
         graph.add_node(node);
 
@@ -201,7 +201,7 @@ mod tests {
         ));
 
         let mut node = IrNode::new("UnknownOp".to_string());
-        node.add_input(input_id);
+        node.add_tensor_input(input_id);
         node.add_output(output_id);
         graph.add_node(node);
 
@@ -241,13 +241,13 @@ mod tests {
 
         // Node 1: input -> intermediate
         let mut node1 = IrNode::new("MockAdd".to_string());
-        node1.add_input(input_id);
+        node1.add_tensor_input(input_id);
         node1.add_output(intermediate_id);
         graph.add_node(node1);
 
         // Node 2: intermediate -> output
         let mut node2 = IrNode::new("MockAdd".to_string());
-        node2.add_input(intermediate_id);
+        node2.add_tensor_input(intermediate_id);
         node2.add_output(output_id);
         graph.add_node(node2);
 

@@ -36,22 +36,33 @@ impl<'a> InferenceCtx<'a> {
     /// Returns an error if the input index is out of bounds or the input
     /// tensor is absent (ONNX optional input not provided).
     pub fn input_shape(&self, index: usize) -> Result<&TensorShape> {
-        let tensor_id = self
+        let input = self
             .node
             .inputs
             .get(index)
             .ok_or_else(|| Error::ShapeInference(format!("Input {} not found", index)))?;
 
-        let tensor = self.graph.tensor(*tensor_id)?;
+        match input {
+            crate::ir::IrInput::Tensor(tensor_id) => {
+                let tensor = self.graph.tensor(*tensor_id)?;
 
-        if tensor.shape.is_absent() {
-            return Err(Error::ShapeInference(format!(
-                "Input {} is absent (optional input not provided)",
-                index
-            )));
+                if tensor.shape.is_absent() {
+                    return Err(Error::ShapeInference(format!(
+                        "Input {} is absent (optional input not provided)",
+                        index
+                    )));
+                }
+
+                Ok(&tensor.shape)
+            }
+            crate::ir::IrInput::ValueNode(_node_id) => {
+                // Value nodes not yet created (Task 032)
+                // Return error for now — this branch won't be hit until Task 032
+                Err(Error::ShapeInference(
+                    "ValueNode inputs not yet supported (Task 032)".to_string(),
+                ))
+            }
         }
-
-        Ok(&tensor.shape)
     }
 
     /// Get static dimensions from an input tensor.
@@ -69,21 +80,39 @@ impl<'a> InferenceCtx<'a> {
     /// Returns `None` if the input has not been constant-folded, or if the
     /// input index is out of bounds.
     pub fn input_value(&self, index: usize) -> Option<&TensorValue> {
-        let tensor_id = self.node.inputs.get(index)?;
-        let tensor = self.graph.tensor(*tensor_id).ok()?;
-        tensor.value.as_ref()
+        let input = self.node.inputs.get(index)?;
+        match input {
+            crate::ir::IrInput::Tensor(tensor_id) => {
+                let tensor = self.graph.tensor(*tensor_id).ok()?;
+                tensor.value.as_ref()
+            }
+            crate::ir::IrInput::ValueNode(_node_id) => {
+                // Value nodes not yet supported (Task 032)
+                None
+            }
+        }
     }
 
     /// Get the data type of an input tensor.
     pub fn input_dtype(&self, index: usize) -> Result<crate::types::DataType> {
-        let tensor_id = self
+        let input = self
             .node
             .inputs
             .get(index)
             .ok_or_else(|| Error::ShapeInference(format!("Input {} not found", index)))?;
 
-        let tensor = self.graph.tensor(*tensor_id)?;
-        Ok(tensor.dtype)
+        match input {
+            crate::ir::IrInput::Tensor(tensor_id) => {
+                let tensor = self.graph.tensor(*tensor_id)?;
+                Ok(tensor.dtype)
+            }
+            crate::ir::IrInput::ValueNode(_node_id) => {
+                // Value nodes not yet supported (Task 032)
+                Err(Error::ShapeInference(
+                    "ValueNode inputs not yet supported (Task 032)".to_string(),
+                ))
+            }
+        }
     }
 
     /// Get the number of inputs.
@@ -334,13 +363,21 @@ pub struct PlanCtx<'a> {
 impl<'a> PlanCtx<'a> {
     /// Get the buffer reference for an input tensor.
     pub fn input(&self, index: usize) -> Result<BufferRef> {
-        let tensor_id = self
+        let input = self
             .node
             .inputs
             .get(index)
             .ok_or_else(|| Error::Planning(format!("Input {} not found", index)))?;
 
-        Ok(BufferRef::Tensor(*tensor_id))
+        match input {
+            crate::ir::IrInput::Tensor(tensor_id) => Ok(BufferRef::Tensor(*tensor_id)),
+            crate::ir::IrInput::ValueNode(_node_id) => {
+                // Value nodes not yet supported (Task 032)
+                Err(Error::Planning(
+                    "ValueNode inputs not yet supported (Task 032)".to_string(),
+                ))
+            }
+        }
     }
 
     /// Get the buffer reference for an output tensor.
@@ -356,13 +393,21 @@ impl<'a> PlanCtx<'a> {
 
     /// Get the tensor metadata for an input.
     pub fn input_tensor(&self, index: usize) -> Result<&TensorDef> {
-        let tensor_id = self
+        let input = self
             .node
             .inputs
             .get(index)
             .ok_or_else(|| Error::Planning(format!("Input {} not found", index)))?;
 
-        self.graph.tensor(*tensor_id)
+        match input {
+            crate::ir::IrInput::Tensor(tensor_id) => self.graph.tensor(*tensor_id),
+            crate::ir::IrInput::ValueNode(_node_id) => {
+                // Value nodes not yet supported (Task 032)
+                Err(Error::Planning(
+                    "ValueNode inputs not yet supported (Task 032)".to_string(),
+                ))
+            }
+        }
     }
 
     /// Get the tensor metadata for an output.
@@ -604,9 +649,17 @@ impl<'a> PlanCtx<'a> {
     ///
     /// Returns `None` if the input doesn't exist or isn't a constant.
     pub fn input_value(&self, index: usize) -> Option<&TensorValue> {
-        let tensor_id = self.node.inputs.get(index)?;
-        let tensor = self.graph.tensor(*tensor_id).ok()?;
-        tensor.value.as_ref()
+        let input = self.node.inputs.get(index)?;
+        match input {
+            crate::ir::IrInput::Tensor(tensor_id) => {
+                let tensor = self.graph.tensor(*tensor_id).ok()?;
+                tensor.value.as_ref()
+            }
+            crate::ir::IrInput::ValueNode(_node_id) => {
+                // Value nodes not yet supported (Task 032)
+                None
+            }
+        }
     }
 }
 
@@ -628,7 +681,7 @@ mod tests {
         ));
 
         let mut node = IrNode::new("Relu".to_string());
-        node.add_input(input_id);
+        node.add_tensor_input(input_id);
 
         let ctx = InferenceCtx::new(&node, &graph);
 
@@ -648,7 +701,7 @@ mod tests {
         ));
 
         let mut node = IrNode::new("Test".to_string());
-        node.add_input(input_id);
+        node.add_tensor_input(input_id);
 
         let ctx = InferenceCtx::new(&node, &graph);
 
@@ -706,8 +759,8 @@ mod tests {
         });
 
         let mut node = IrNode::new("Add".to_string());
-        node.add_input(input_a);
-        node.add_input(input_b);
+        node.add_tensor_input(input_a);
+        node.add_tensor_input(input_b);
 
         let ctx = FoldCtx::new(&node, &graph);
 

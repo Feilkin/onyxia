@@ -259,8 +259,8 @@ mod tests {
 
         // Add node
         let mut node = IrNode::new("MockAdd".to_string());
-        node.add_input(a_id);
-        node.add_input(b_id);
+        node.add_tensor_input(a_id);
+        node.add_tensor_input(b_id);
         node.add_output(output_id);
         graph.add_node(node);
 
@@ -307,8 +307,8 @@ mod tests {
         ));
 
         let mut node = IrNode::new("MockAdd".to_string());
-        node.add_input(a_id);
-        node.add_input(b_id);
+        node.add_tensor_input(a_id);
+        node.add_tensor_input(b_id);
         node.add_output(output_id);
         graph.add_node(node);
 

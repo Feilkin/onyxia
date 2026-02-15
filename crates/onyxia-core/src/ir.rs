@@ -36,6 +36,45 @@ impl IrTensorId {
     }
 }
 
+/// Input to an IR node — either a tensor ID or a reference to a Value node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IrInput {
+    /// Reference to a tensor in the tensor side-table.
+    Tensor(IrTensorId),
+
+    /// Reference to a Value node in the graph.
+    /// (Not yet used — will be populated in Task 032 during constant folding)
+    ValueNode(IrNodeId),
+}
+
+impl IrInput {
+    /// Create a tensor input.
+    pub fn tensor(id: IrTensorId) -> Self {
+        Self::Tensor(id)
+    }
+
+    /// Create a value node input.
+    pub fn value_node(id: IrNodeId) -> Self {
+        Self::ValueNode(id)
+    }
+
+    /// Get the tensor ID if this is a Tensor input.
+    pub fn as_tensor(&self) -> Option<IrTensorId> {
+        match self {
+            IrInput::Tensor(id) => Some(*id),
+            IrInput::ValueNode(_) => None,
+        }
+    }
+
+    /// Get the node ID if this is a ValueNode input.
+    pub fn as_value_node(&self) -> Option<IrNodeId> {
+        match self {
+            IrInput::Tensor(_) => None,
+            IrInput::ValueNode(id) => Some(*id),
+        }
+    }
+}
+
 /// Intermediate representation graph.
 ///
 /// Uses `petgraph::StableGraph` to ensure node indices remain valid after node
@@ -95,7 +134,7 @@ impl IrGraph {
     }
 
     /// Get the inputs of a node.
-    pub fn node_inputs(&self, id: IrNodeId) -> Result<&[IrTensorId]> {
+    pub fn node_inputs(&self, id: IrNodeId) -> Result<&[IrInput]> {
         Ok(&self.node(id)?.inputs)
     }
 
@@ -166,17 +205,32 @@ impl IrGraph {
             self.tensor_producer.insert(output_id, node_id);
         }
 
-        for &input_id in &node.inputs {
-            self.tensor_consumers
-                .entry(input_id)
-                .or_default()
-                .push(node_id);
+        for input in &node.inputs {
+            match input {
+                IrInput::Tensor(tensor_id) => {
+                    self.tensor_consumers
+                        .entry(*tensor_id)
+                        .or_default()
+                        .push(node_id);
+                }
+                IrInput::ValueNode(_value_node_id) => {
+                    // Value nodes don't have consumer tracking yet (Task 032)
+                }
+            }
         }
 
         // Add graph edges (for topological sort)
-        for &input_id in &node.inputs {
-            if let Some(producer_id) = self.tensor_producer(input_id) {
-                self.graph.add_edge(producer_id, node_id, ());
+        for input in &node.inputs {
+            match input {
+                IrInput::Tensor(tensor_id) => {
+                    if let Some(producer_id) = self.tensor_producer(*tensor_id) {
+                        self.graph.add_edge(producer_id, node_id, ());
+                    }
+                }
+                IrInput::ValueNode(value_node_id) => {
+                    // Add graph edge directly to value node
+                    self.graph.add_edge(*value_node_id, node_id, ());
+                }
             }
         }
 
@@ -201,9 +255,16 @@ impl IrGraph {
         }
 
         // Remove from consumer lookup
-        for input_id in inputs {
-            if let Some(consumers) = self.tensor_consumers.get_mut(&input_id) {
-                consumers.retain(|&consumer_id| consumer_id != id);
+        for input in inputs {
+            match input {
+                IrInput::Tensor(tensor_id) => {
+                    if let Some(consumers) = self.tensor_consumers.get_mut(&tensor_id) {
+                        consumers.retain(|&consumer_id| consumer_id != id);
+                    }
+                }
+                IrInput::ValueNode(_value_node_id) => {
+                    // Value nodes don't have consumer tracking yet (Task 032)
+                }
             }
         }
 
@@ -282,8 +343,8 @@ pub struct IrNode {
     /// Operator attributes (e.g., axis, epsilon, transpose flags).
     pub attributes: HashMap<String, AttributeValue>,
 
-    /// Input tensor IDs.
-    pub inputs: Vec<IrTensorId>,
+    /// Input references (either tensor IDs or value node IDs).
+    pub inputs: Vec<IrInput>,
 
     /// Output tensor IDs.
     pub outputs: Vec<IrTensorId>,
@@ -305,8 +366,13 @@ impl IrNode {
     }
 
     /// Add an input tensor to this node.
-    pub fn add_input(&mut self, tensor_id: IrTensorId) {
-        self.inputs.push(tensor_id);
+    pub fn add_input(&mut self, input: IrInput) {
+        self.inputs.push(input);
+    }
+
+    /// Add a tensor input to this node (convenience method).
+    pub fn add_tensor_input(&mut self, tensor_id: IrTensorId) {
+        self.inputs.push(IrInput::Tensor(tensor_id));
     }
 
     /// Add an output tensor to this node.
@@ -421,7 +487,7 @@ mod tests {
 
         // Add node
         let mut node = IrNode::new("Relu".to_string());
-        node.add_input(input_id);
+        node.add_tensor_input(input_id);
         node.add_output(output_id);
 
         let node_id = graph.add_node(node);
@@ -452,7 +518,7 @@ mod tests {
 
         // Add node
         let mut node = IrNode::new("Add".to_string());
-        node.add_input(input_id);
+        node.add_tensor_input(input_id);
         node.add_output(output_id);
         let node_id = graph.add_node(node);
 
@@ -495,17 +561,17 @@ mod tests {
         ));
 
         let mut node_a = IrNode::new("A".to_string());
-        node_a.add_input(t0);
+        node_a.add_tensor_input(t0);
         node_a.add_output(t1);
         let id_a = graph.add_node(node_a);
 
         let mut node_b = IrNode::new("B".to_string());
-        node_b.add_input(t1);
+        node_b.add_tensor_input(t1);
         node_b.add_output(t2);
         let id_b = graph.add_node(node_b);
 
         let mut node_c = IrNode::new("C".to_string());
-        node_c.add_input(t2);
+        node_c.add_tensor_input(t2);
         node_c.add_output(t3);
         let id_c = graph.add_node(node_c);
 
@@ -538,17 +604,17 @@ mod tests {
         ));
 
         let mut node_a = IrNode::new("A".to_string());
-        node_a.add_input(t0);
+        node_a.add_tensor_input(t0);
         node_a.add_output(t1);
         let id_a = graph.add_node(node_a);
 
         let mut node_b = IrNode::new("B".to_string());
-        node_b.add_input(t1);
+        node_b.add_tensor_input(t1);
         node_b.add_output(t2);
         let _id_b = graph.add_node(node_b);
 
         let mut node_c = IrNode::new("C".to_string());
-        node_c.inputs = vec![t2];
+        node_c.inputs = vec![IrInput::Tensor(t2)];
         let id_c = graph.add_node(node_c);
 
         // Remove middle node

@@ -252,9 +252,7 @@ fn generate_filtered_dot(
             continue;
         }
 
-        let node_id = node
-            .name
-            .replace(['/', '.', '[', ']'], "_");
+        let node_id = node.name.replace(['/', '.', '[', ']'], "_");
         dot.push_str(&format!(
             "  {} [label=\"{}\\n({})\"];\n",
             node_id,
@@ -275,8 +273,7 @@ fn generate_filtered_dot(
 
     // Add tensor nodes (inputs/outputs/intermediates)
     for tensor_name in &used_tensors {
-        let tensor_id = tensor_name
-            .replace(['/', '.', '[', ']'], "_");
+        let tensor_id = tensor_name.replace(['/', '.', '[', ']'], "_");
 
         // Determine tensor style
         let (shape, color) = if let Some(&tid) = graph.tensors.get(*tensor_name) {
@@ -320,19 +317,15 @@ fn generate_filtered_dot(
             continue;
         }
 
-        let node_id = node
-            .name
-            .replace(['/', '.', '[', ']'], "_");
+        let node_id = node.name.replace(['/', '.', '[', ']'], "_");
 
         for inp in &node.inputs {
-            let inp_id = inp
-                .replace(['/', '.', '[', ']'], "_");
+            let inp_id = inp.replace(['/', '.', '[', ']'], "_");
             dot.push_str(&format!("  {} -> {};\n", inp_id, node_id));
         }
 
         for out in &node.outputs {
-            let out_id = out
-                .replace(['/', '.', '[', ']'], "_");
+            let out_id = out.replace(['/', '.', '[', ']'], "_");
             dot.push_str(&format!("  {} -> {};\n", node_id, out_id));
         }
     }
