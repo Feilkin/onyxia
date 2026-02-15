@@ -39,7 +39,7 @@ impl SymbolicResolutionPass {
     /// Resolve a tensor shape.
     fn resolve_shape(&self, shape: &TensorShape) -> TensorShape {
         match shape {
-            TensorShape::Static(_) | TensorShape::Absent => shape.clone(),
+            TensorShape::Static(_) | TensorShape::Absent | TensorShape::Unknown => shape.clone(),
             TensorShape::Symbolic(dims) => {
                 let resolved_dims: Vec<_> = dims.iter().map(|d| self.resolve_dim(d)).collect();
 

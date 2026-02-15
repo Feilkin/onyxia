@@ -121,6 +121,11 @@ impl IrGraph {
 
     // ── Edge (tensor) access ──
 
+    /// Get the number of edges in the graph.
+    pub fn edge_count(&self) -> usize {
+        self.edges.len()
+    }
+
     /// Get an immutable reference to an edge.
     pub fn edge(&self, id: IrEdgeId) -> Result<&IrEdge> {
         self.edges

@@ -278,7 +278,9 @@ impl PlanExecutor {
                     let element_size = info.dtype.size();
                     (element_count * element_size) as u64
                 }
-                onyxia_core::TensorShape::Symbolic(_) | onyxia_core::TensorShape::Absent => {
+                onyxia_core::TensorShape::Symbolic(_)
+                | onyxia_core::TensorShape::Absent
+                | onyxia_core::TensorShape::Unknown => {
                     return Err(RuntimeError::TensorError(format!(
                         "Tensor '{}' has non-static shape in execution plan. \
                          All shapes should be resolved at plan time.",

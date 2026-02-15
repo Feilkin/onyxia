@@ -74,6 +74,11 @@ pub fn infer_elementwise_broadcast(ctx: &InferenceCtx) -> Result<Vec<TensorShape
                     "Symbolic shapes should be resolved before shape inference".to_string(),
                 ));
             }
+            TensorShape::Unknown => {
+                return Err(Error::ShapeInference(
+                    "Unknown shapes should be resolved before shape inference".to_string(),
+                ));
+            }
             TensorShape::Absent => continue, // Skip absent (optional) inputs
         }
     }

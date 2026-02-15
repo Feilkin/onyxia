@@ -39,8 +39,8 @@ impl IrGraph {
             })?;
 
             // Convert ONNX shape to core TensorShape
-            // This will error if the shape is Unknown, forcing explicit handling
-            let shape = TensorShape::from_onnx(&onnx_tensor.shape)?;
+            // Unknown shapes are preserved and will be resolved by shape inference pass
+            let shape = TensorShape::from_onnx(&onnx_tensor.shape);
 
             let mut tensor_def = TensorDef::new(
                 onnx_tensor.name.clone(),
@@ -275,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn test_from_onnx_unknown_shape_error() {
+    fn test_from_onnx_unknown_shape_preserved() {
         let mut onnx_graph = Graph::new();
 
         // Add a tensor with Unknown shape
@@ -289,9 +289,16 @@ mod tests {
 
         onnx_graph.add_tensor(unknown_tensor);
 
-        // Should return an error because Unknown shapes are not allowed
+        // Should succeed - Unknown shapes are allowed and will be resolved by shape inference
         let result = IrGraph::from_onnx(&onnx_graph);
-        assert!(result.is_err());
+        assert!(result.is_ok());
+        
+        let ir_graph = result.unwrap();
+        let tensor_id = ir_graph.tensor_by_name("unknown").unwrap();
+        let tensor = ir_graph.tensor(tensor_id).unwrap();
+        
+        // Shape should be Unknown
+        assert!(tensor.shape.is_unknown());
     }
 
     #[test]

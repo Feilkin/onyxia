@@ -6,11 +6,11 @@ use crate::{Error, Result};
 // Re-export types from onyxia-onnx
 pub use onyxia_onnx::DataType;
 
-/// Tensor shape with support for static, symbolic, and absent shapes.
+/// Tensor shape with support for static, symbolic, absent, and unknown shapes.
 ///
-/// Unlike the ONNX `TensorShape`, this version removes the `Unknown` variant
-/// to force operators to return errors when shapes cannot be determined,
-/// rather than silently propagating unknown shapes that crash later.
+/// Unknown shapes represent tensors whose shapes have not yet been inferred.
+/// These are allowed to exist during graph construction, but must be resolved
+/// by the shape inference pass before planning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TensorShape {
     /// All dimensions are known at compile time.
@@ -21,6 +21,9 @@ pub enum TensorShape {
 
     /// Optional input that is absent (ONNX empty string).
     Absent,
+
+    /// Shape has not yet been inferred (must be resolved before planning).
+    Unknown,
 }
 
 impl TensorShape {
@@ -32,6 +35,11 @@ impl TensorShape {
     /// Check if the shape is absent.
     pub fn is_absent(&self) -> bool {
         matches!(self, TensorShape::Absent)
+    }
+
+    /// Check if the shape is unknown (not yet inferred).
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, TensorShape::Unknown)
     }
 
     /// Get static dimensions if available.
@@ -47,16 +55,17 @@ impl TensorShape {
         match self {
             TensorShape::Static(dims) => Some(dims.len()),
             TensorShape::Symbolic(dims) => Some(dims.len()),
-            TensorShape::Absent => None,
+            TensorShape::Absent | TensorShape::Unknown => None,
         }
     }
 
     /// Convert from ONNX TensorShape to core TensorShape.
     ///
-    /// Maps ONNX `Unknown` to an error instead of silently propagating it.
-    pub fn from_onnx(onnx_shape: &onyxia_onnx::TensorShape) -> Result<Self> {
+    /// Maps all ONNX shape variants to their core equivalents, including Unknown.
+    /// Unknown shapes must be resolved by the shape inference pass before planning.
+    pub fn from_onnx(onnx_shape: &onyxia_onnx::TensorShape) -> Self {
         match onnx_shape {
-            onyxia_onnx::TensorShape::Static(dims) => Ok(TensorShape::Static(dims.clone())),
+            onyxia_onnx::TensorShape::Static(dims) => TensorShape::Static(dims.clone()),
             onyxia_onnx::TensorShape::Dynamic(dims) => {
                 let symbolic_dims = dims
                     .iter()
@@ -74,12 +83,10 @@ impl TensorShape {
                         }
                     })
                     .collect();
-                Ok(TensorShape::Symbolic(symbolic_dims))
+                TensorShape::Symbolic(symbolic_dims)
             }
-            onyxia_onnx::TensorShape::Absent => Ok(TensorShape::Absent),
-            onyxia_onnx::TensorShape::Unknown => {
-                Err(Error::ShapeInference("Shape is unknown".to_string()))
-            }
+            onyxia_onnx::TensorShape::Absent => TensorShape::Absent,
+            onyxia_onnx::TensorShape::Unknown => TensorShape::Unknown,
         }
     }
 }
@@ -489,5 +496,10 @@ mod tests {
         assert!(!absent_shape.is_static());
         assert!(absent_shape.is_absent());
         assert_eq!(absent_shape.ndim(), None);
+
+        let unknown_shape = TensorShape::Unknown;
+        assert!(!unknown_shape.is_static());
+        assert!(unknown_shape.is_unknown());
+        assert_eq!(unknown_shape.ndim(), None);
     }
 }

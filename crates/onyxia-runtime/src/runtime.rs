@@ -79,7 +79,9 @@ impl Runtime {
                     let element_size = tensor_info.dtype.size();
                     (element_count * element_size) as u64
                 }
-                onyxia_core::TensorShape::Symbolic(_) | onyxia_core::TensorShape::Absent => {
+                onyxia_core::TensorShape::Symbolic(_)
+                | onyxia_core::TensorShape::Absent
+                | onyxia_core::TensorShape::Unknown => {
                     return Err(RuntimeError::TensorError(format!(
                         "Tensor '{}' in compiled model has non-static shape. \
                          All shapes should be resolved at plan time.",

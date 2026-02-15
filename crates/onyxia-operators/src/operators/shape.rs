@@ -39,6 +39,11 @@ impl Operator for ReshapeOp {
                     "Reshape data input is absent".to_string(),
                 ));
             }
+            TensorShape::Unknown => {
+                return Err(onyxia_core::Error::ShapeInference(
+                    "Reshape data input has unknown shape".to_string(),
+                ));
+            }
         };
 
         // Get the target shape from the second input value
@@ -179,6 +184,11 @@ impl Operator for UnsqueezeOp {
                     "Unsqueeze data input is absent".to_string(),
                 ));
             }
+            TensorShape::Unknown => {
+                return Err(onyxia_core::Error::ShapeInference(
+                    "Unsqueeze data input has unknown shape".to_string(),
+                ));
+            }
         };
 
         // Get axes - try attribute first (opset < 13), then second input (opset >= 13)
@@ -288,7 +298,7 @@ impl Operator for TransposeOp {
 
         let input_dims = match ctx.input_shape(0)? {
             TensorShape::Static(dims) => dims,
-            TensorShape::Symbolic(_) | TensorShape::Absent => {
+            TensorShape::Symbolic(_) | TensorShape::Absent | TensorShape::Unknown => {
                 return Err(onyxia_core::Error::ShapeInference(
                     "Transpose requires static input shape".to_string(),
                 ));

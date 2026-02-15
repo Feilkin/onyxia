@@ -39,6 +39,11 @@ impl Operator for MatMulF32Op {
                     "MatMul input A is absent".to_string(),
                 ));
             }
+            TensorShape::Unknown => {
+                return Err(onyxia_core::Error::ShapeInference(
+                    "MatMul input A has unknown shape".to_string(),
+                ));
+            }
         };
 
         let b_dims = match ctx.input_shape(1)? {
@@ -51,6 +56,11 @@ impl Operator for MatMulF32Op {
             TensorShape::Absent => {
                 return Err(onyxia_core::Error::ShapeInference(
                     "MatMul input B is absent".to_string(),
+                ));
+            }
+            TensorShape::Unknown => {
+                return Err(onyxia_core::Error::ShapeInference(
+                    "MatMul input B has unknown shape".to_string(),
                 ));
             }
         };

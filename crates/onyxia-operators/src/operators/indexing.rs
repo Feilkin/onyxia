@@ -45,6 +45,11 @@ impl Operator for GatherOp {
                     "Gather data input is absent".to_string(),
                 ));
             }
+            TensorShape::Unknown => {
+                return Err(onyxia_core::Error::ShapeInference(
+                    "Gather data input has unknown shape".to_string(),
+                ));
+            }
         };
 
         let indices_shape = match ctx.input_shape(1)? {
@@ -57,6 +62,11 @@ impl Operator for GatherOp {
             TensorShape::Absent => {
                 return Err(onyxia_core::Error::ShapeInference(
                     "Gather indices input is absent".to_string(),
+                ));
+            }
+            TensorShape::Unknown => {
+                return Err(onyxia_core::Error::ShapeInference(
+                    "Gather indices input has unknown shape".to_string(),
                 ));
             }
         };

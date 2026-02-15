@@ -74,6 +74,33 @@ impl ShapeInferencePass {
 
         Ok(changed)
     }
+
+    /// Verify that no Unknown shapes remain after inference.
+    ///
+    /// This catches cases where the shape inference pass failed to resolve
+    /// all shapes, which would cause errors later in planning.
+    fn verify_no_unknown_shapes(&self, graph: &IrGraph) -> Result<()> {
+        let mut unknown_shapes = Vec::new();
+
+        // Check all edges (tensors) in the graph
+        for i in 0..graph.edge_count() {
+            let tensor_id = onyxia_core::IrEdgeId::new(i);
+            let tensor = graph.tensor(tensor_id)?;
+            if tensor.shape.is_unknown() {
+                unknown_shapes.push(tensor.name.clone());
+            }
+        }
+
+        if !unknown_shapes.is_empty() {
+            return Err(Error::ShapeInference(format!(
+                "Shape inference failed to resolve {} tensor shape(s): {}",
+                unknown_shapes.len(),
+                unknown_shapes.join(", ")
+            )));
+        }
+
+        Ok(())
+    }
 }
 
 impl Pass for ShapeInferencePass {
@@ -97,6 +124,9 @@ impl Pass for ShapeInferencePass {
             let node_changed = self.infer_node(&node, graph, registry)?;
             changed = changed || node_changed;
         }
+
+        // After inference, verify no Unknown shapes remain
+        self.verify_no_unknown_shapes(graph)?;
 
         Ok(changed)
     }
