@@ -97,6 +97,14 @@ impl Operator for BinaryElementwiseOp {
     }
 
     fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {
+        let num_inputs = ctx.input_count();
+
+        // Handle variadic inputs for operators that support them (Max, Add, Mul)
+        if num_inputs > 2 && (self.name == "Max" || self.name == "Add" || self.name == "Mul") {
+            return self.plan_variadic(ctx);
+        }
+
+        // Standard binary operation
         // Get output tensor and shape
         let output_tensor = ctx.output_tensor(0)?;
         let output_shape = ctx.static_dims(&output_tensor.shape)?;
@@ -148,5 +156,102 @@ impl Operator for BinaryElementwiseOp {
             workgroups: [num_workgroups, 1, 1],
             immediates: Some(immediates_data),
         }])
+    }
+}
+
+impl BinaryElementwiseOp {
+    /// Plan execution for variadic inputs (more than 2 inputs).
+    ///
+    /// Chains multiple binary operations: op(op(a, b), c) for 3 inputs, etc.
+    /// Uses scratch buffers for intermediate results.
+    fn plan_variadic(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {
+        let num_inputs = ctx.input_count();
+        let mut steps = Vec::new();
+
+        // Get output shape and dtype (save them to avoid borrow issues later)
+        let output_shape = {
+            let output_tensor = ctx.output_tensor(0)?;
+            ctx.static_dims(&output_tensor.shape)?.to_vec()
+        };
+        let num_elements: usize = output_shape.iter().product();
+        let element_size = {
+            let output_tensor = ctx.output_tensor(0)?;
+            output_tensor.dtype.size()
+        };
+        let buffer_size = (num_elements * element_size) as u64;
+
+        // Configure workgroup size
+        let workgroup_size: u32 = 256;
+        let num_workgroups = (num_elements as u32).div_ceil(workgroup_size);
+
+        // Prepare shader definitions
+        let mut shader_defs = HashMap::new();
+        shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());
+
+        // Compile shader
+        let shader_index = ctx.compile_shader(self.name, self.shader_source, &shader_defs)?;
+
+        // Process inputs pairwise: first op(input[0], input[1]), then chain the rest
+        for i in 0..(num_inputs - 1) {
+            let input_a = if i == 0 {
+                ctx.input(0)?
+            } else {
+                // Use the scratch buffer from the previous iteration
+                onyxia_core::BufferRef::Scratch(i - 1)
+            };
+
+            let input_b = ctx.input(i + 1)?;
+
+            let output = if i == num_inputs - 2 {
+                // Last iteration: write to the actual output
+                ctx.output(0)?
+            } else {
+                // Intermediate iteration: write to a scratch buffer
+                ctx.alloc_scratch(buffer_size, format!("{}_temp_{}", self.name, i))
+            };
+
+            // Get input shapes for immediate data
+            let a_size: u32 = if i == 0 {
+                let input_a_tensor = ctx.input_tensor(0)?;
+                let input_a_shape = ctx.static_dims(&input_a_tensor.shape)?;
+                input_a_shape.iter().product::<usize>() as u32
+            } else {
+                // For intermediate results, use the output shape
+                num_elements as u32
+            };
+
+            let input_b_tensor = ctx.input_tensor(i + 1)?;
+            let input_b_shape = ctx.static_dims(&input_b_tensor.shape)?;
+            let b_size: u32 = input_b_shape.iter().product::<usize>() as u32;
+
+            // Encode immediate data
+            let mut immediates_data = Vec::new();
+            immediates_data.extend_from_slice(&(num_elements as u32).to_le_bytes());
+            immediates_data.extend_from_slice(&a_size.to_le_bytes());
+            immediates_data.extend_from_slice(&b_size.to_le_bytes());
+
+            // Create dispatch step
+            steps.push(Step::Dispatch {
+                shader_index,
+                bindings: vec![
+                    BindingDesc {
+                        buffer: input_a,
+                        read_only: true,
+                    },
+                    BindingDesc {
+                        buffer: input_b,
+                        read_only: true,
+                    },
+                    BindingDesc {
+                        buffer: output,
+                        read_only: false,
+                    },
+                ],
+                workgroups: [num_workgroups, 1, 1],
+                immediates: Some(immediates_data),
+            });
+        }
+
+        Ok(steps)
     }
 }
