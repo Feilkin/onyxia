@@ -75,7 +75,7 @@ impl IrGraph {
                     ))
                 })?;
 
-                ir_node.add_tensor_input(*tensor_id);
+                ir_node.add_tensor_input(*tensor_id)?;
             }
 
             // Convert output tensor names to IDs
@@ -91,11 +91,13 @@ impl IrGraph {
                     ))
                 })?;
 
-                ir_node.add_output(*tensor_id);
+                ir_node.add_output(*tensor_id)?;
             }
 
             // Copy attributes
-            ir_node.attributes = onnx_node.attributes.clone();
+            for (key, value) in onnx_node.attributes.clone() {
+                ir_node.set_attribute(key, value)?;
+            }
 
             // Add node to graph (this also updates producer/consumer tables)
             ir_graph.add_node(ir_node);
@@ -180,9 +182,9 @@ mod tests {
         let nodes: Vec<_> = ir_graph.nodes().collect();
         assert_eq!(nodes.len(), 1);
         let (node_id, node) = nodes[0];
-        assert_eq!(node.op_type, "Relu");
-        assert_eq!(node.inputs.len(), 1);
-        assert_eq!(node.outputs.len(), 1);
+        assert_eq!(node.op_type(), Some("Relu"));
+        assert_eq!(node.inputs().len(), 1);
+        assert_eq!(node.outputs().len(), 1);
 
         // Check producer/consumer relationships
         let output_id = ir_graph.outputs[0];
@@ -244,8 +246,8 @@ mod tests {
         // First node should be Add, second should be Mul
         let node_a = ir_graph.node(topo_order[0]).unwrap();
         let node_b = ir_graph.node(topo_order[1]).unwrap();
-        assert_eq!(node_a.op_type, "Add");
-        assert_eq!(node_b.op_type, "Mul");
+        assert_eq!(node_a.op_type(), Some("Add"));
+        assert_eq!(node_b.op_type(), Some("Mul"));
     }
 
     #[test]

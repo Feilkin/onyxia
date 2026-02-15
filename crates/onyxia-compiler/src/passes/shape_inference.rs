@@ -29,9 +29,15 @@ impl ShapeInferencePass {
         graph: &mut IrGraph,
         registry: &OperatorRegistry,
     ) -> Result<bool> {
+        // Skip Value nodes (they don't need shape inference)
+        let op_type = match node.op_type() {
+            Some(op_type) => op_type,
+            None => return Ok(false),
+        };
+
         // Look up operator
-        let operator = registry.get(&node.op_type).ok_or_else(|| {
-            Error::ShapeInference(format!("No operator registered for type: {}", node.op_type))
+        let operator = registry.get(op_type).ok_or_else(|| {
+            Error::ShapeInference(format!("No operator registered for type: {}", op_type))
         })?;
 
         // Build inference context
@@ -41,24 +47,26 @@ impl ShapeInferencePass {
         let output_shapes = operator.infer_output_shapes(&ctx).map_err(|e| {
             Error::ShapeInference(format!(
                 "Failed to infer shapes for node '{}' (op_type: {}): {}",
-                node.op_type, node.op_type, e
+                op_type, op_type, e
             ))
         })?;
 
+        let outputs = node.outputs();
+
         // Validate output count
-        if output_shapes.len() != node.outputs.len() {
+        if output_shapes.len() != outputs.len() {
             return Err(Error::ShapeInference(format!(
                 "Operator {} returned {} output shapes but node has {} outputs",
-                node.op_type,
+                op_type,
                 output_shapes.len(),
-                node.outputs.len()
+                outputs.len()
             )));
         }
 
         // Update output tensor shapes
         let mut changed = false;
         for (i, new_shape) in output_shapes.into_iter().enumerate() {
-            let tensor_id = node.outputs[i];
+            let tensor_id = outputs[i];
             let tensor = graph.tensor(tensor_id)?;
             let old_shape = tensor.shape.clone();
 
@@ -92,7 +100,7 @@ impl Pass for ShapeInferencePass {
 
             // Skip nodes that are fully folded (all outputs have constant values)
             // Their shapes are already determined by the folded values
-            let all_outputs_folded = node.outputs.iter().all(|&tensor_id| {
+            let all_outputs_folded = node.outputs().iter().all(|&tensor_id| {
                 graph
                     .tensor(tensor_id)
                     .map(|t| t.has_value())

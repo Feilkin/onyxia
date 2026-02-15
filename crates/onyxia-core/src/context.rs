@@ -38,7 +38,7 @@ impl<'a> InferenceCtx<'a> {
     pub fn input_shape(&self, index: usize) -> Result<&TensorShape> {
         let input = self
             .node
-            .inputs
+            .inputs()
             .get(index)
             .ok_or_else(|| Error::ShapeInference(format!("Input {} not found", index)))?;
 
@@ -80,7 +80,7 @@ impl<'a> InferenceCtx<'a> {
     /// Returns `None` if the input has not been constant-folded, or if the
     /// input index is out of bounds.
     pub fn input_value(&self, index: usize) -> Option<&TensorValue> {
-        let input = self.node.inputs.get(index)?;
+        let input = self.node.inputs().get(index)?;
         match input {
             crate::ir::IrInput::Tensor(tensor_id) => {
                 let tensor = self.graph.tensor(*tensor_id).ok()?;
@@ -97,7 +97,7 @@ impl<'a> InferenceCtx<'a> {
     pub fn input_dtype(&self, index: usize) -> Result<crate::types::DataType> {
         let input = self
             .node
-            .inputs
+            .inputs()
             .get(index)
             .ok_or_else(|| Error::ShapeInference(format!("Input {} not found", index)))?;
 
@@ -117,12 +117,12 @@ impl<'a> InferenceCtx<'a> {
 
     /// Get the number of inputs.
     pub fn input_count(&self) -> usize {
-        self.node.inputs.len()
+        self.node.inputs().len()
     }
 
     /// Get the number of outputs.
     pub fn output_count(&self) -> usize {
-        self.node.outputs.len()
+        self.node.outputs().len()
     }
 
     // --- Attribute accessors ---
@@ -131,8 +131,7 @@ impl<'a> InferenceCtx<'a> {
     pub fn attr_i64(&self, key: &str) -> Result<i64> {
         let attr = self
             .node
-            .attributes
-            .get(key)
+            .get_attribute(key)
             .ok_or_else(|| Error::Attribute(format!("Missing attribute: {}", key)))?;
 
         match attr {
@@ -145,8 +144,7 @@ impl<'a> InferenceCtx<'a> {
     pub fn attr_f32(&self, key: &str) -> Result<f32> {
         let attr = self
             .node
-            .attributes
-            .get(key)
+            .get_attribute(key)
             .ok_or_else(|| Error::Attribute(format!("Missing attribute: {}", key)))?;
 
         match attr {
@@ -159,8 +157,7 @@ impl<'a> InferenceCtx<'a> {
     pub fn attr_string(&self, key: &str) -> Result<&str> {
         let attr = self
             .node
-            .attributes
-            .get(key)
+            .get_attribute(key)
             .ok_or_else(|| Error::Attribute(format!("Missing attribute: {}", key)))?;
 
         match attr {
@@ -176,8 +173,7 @@ impl<'a> InferenceCtx<'a> {
     pub fn attr_ints(&self, key: &str) -> Result<&[i64]> {
         let attr = self
             .node
-            .attributes
-            .get(key)
+            .get_attribute(key)
             .ok_or_else(|| Error::Attribute(format!("Missing attribute: {}", key)))?;
 
         match attr {
@@ -193,8 +189,7 @@ impl<'a> InferenceCtx<'a> {
     pub fn attr_floats(&self, key: &str) -> Result<&[f32]> {
         let attr = self
             .node
-            .attributes
-            .get(key)
+            .get_attribute(key)
             .ok_or_else(|| Error::Attribute(format!("Missing attribute: {}", key)))?;
 
         match attr {
@@ -218,7 +213,7 @@ impl<'a> InferenceCtx<'a> {
 
     /// Check if an attribute exists.
     pub fn has_attr(&self, key: &str) -> bool {
-        self.node.attributes.contains_key(key)
+        self.node.get_attribute(key).is_some()
     }
 }
 
@@ -365,7 +360,7 @@ impl<'a> PlanCtx<'a> {
     pub fn input(&self, index: usize) -> Result<BufferRef> {
         let input = self
             .node
-            .inputs
+            .inputs()
             .get(index)
             .ok_or_else(|| Error::Planning(format!("Input {} not found", index)))?;
 
@@ -384,7 +379,7 @@ impl<'a> PlanCtx<'a> {
     pub fn output(&self, index: usize) -> Result<BufferRef> {
         let tensor_id = self
             .node
-            .outputs
+            .outputs()
             .get(index)
             .ok_or_else(|| Error::Planning(format!("Output {} not found", index)))?;
 
@@ -395,7 +390,7 @@ impl<'a> PlanCtx<'a> {
     pub fn input_tensor(&self, index: usize) -> Result<&TensorDef> {
         let input = self
             .node
-            .inputs
+            .inputs()
             .get(index)
             .ok_or_else(|| Error::Planning(format!("Input {} not found", index)))?;
 
@@ -414,7 +409,7 @@ impl<'a> PlanCtx<'a> {
     pub fn output_tensor(&self, index: usize) -> Result<&TensorDef> {
         let tensor_id = self
             .node
-            .outputs
+            .outputs()
             .get(index)
             .ok_or_else(|| Error::Planning(format!("Output {} not found", index)))?;
 
@@ -544,8 +539,7 @@ impl<'a> PlanCtx<'a> {
     pub fn attr_string(&self, key: &str) -> Result<String> {
         let attr = self
             .node
-            .attributes
-            .get(key)
+            .get_attribute(key)
             .ok_or_else(|| Error::Attribute(format!("Missing attribute: {}", key)))?;
 
         match attr {
@@ -561,8 +555,7 @@ impl<'a> PlanCtx<'a> {
     pub fn attr_ints(&self, key: &str) -> Result<Vec<i64>> {
         let attr = self
             .node
-            .attributes
-            .get(key)
+            .get_attribute(key)
             .ok_or_else(|| Error::Attribute(format!("Missing attribute: {}", key)))?;
 
         match attr {
@@ -642,14 +635,14 @@ impl<'a> PlanCtx<'a> {
 
     /// Get the number of inputs to this node.
     pub fn input_count(&self) -> usize {
-        self.node.inputs.len()
+        self.node.inputs().len()
     }
 
     /// Get the constant value of an input tensor, if available.
     ///
     /// Returns `None` if the input doesn't exist or isn't a constant.
     pub fn input_value(&self, index: usize) -> Option<&TensorValue> {
-        let input = self.node.inputs.get(index)?;
+        let input = self.node.inputs().get(index)?;
         match input {
             crate::ir::IrInput::Tensor(tensor_id) => {
                 let tensor = self.graph.tensor(*tensor_id).ok()?;

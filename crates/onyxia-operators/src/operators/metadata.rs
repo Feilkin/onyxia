@@ -29,7 +29,7 @@ impl Operator for ConstantOp {
         }
 
         // Get the output tensor ID from the node
-        let output_tensor_id = ctx.node.outputs[0];
+        let output_tensor_id = ctx.node.outputs()[0];
         let output_tensor = ctx.graph.tensor(output_tensor_id)?;
         Ok(vec![output_tensor.shape.clone()])
     }

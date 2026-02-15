@@ -65,9 +65,15 @@ impl ConstantFoldingPass {
         graph: &mut IrGraph,
         registry: &OperatorRegistry,
     ) -> Result<bool> {
+        // Skip Value nodes (they're already folded)
+        let op_type = match node.op_type() {
+            Some(op_type) => op_type,
+            None => return Ok(false),
+        };
+
         // Look up operator
-        let operator = registry.get(&node.op_type).ok_or_else(|| {
-            Error::ConstantFolding(format!("No operator registered for type: {}", node.op_type))
+        let operator = registry.get(op_type).ok_or_else(|| {
+            Error::ConstantFolding(format!("No operator registered for type: {}", op_type))
         })?;
 
         // Build fold context
@@ -77,7 +83,7 @@ impl ConstantFoldingPass {
         let folded_outputs = operator.try_fold(&ctx).map_err(|e| {
             Error::ConstantFolding(format!(
                 "Failed to fold node '{}' (op_type: {}): {}",
-                node.op_type, node.op_type, e
+                op_type, op_type, e
             ))
         })?;
 
@@ -86,13 +92,15 @@ impl ConstantFoldingPass {
             return Ok(false);
         }
 
+        let outputs = node.outputs();
+
         // Validate output count
-        if folded_outputs.len() != node.outputs.len() {
+        if folded_outputs.len() != outputs.len() {
             return Err(Error::ConstantFolding(format!(
                 "Operator {} returned {} folded outputs but node has {} outputs",
-                node.op_type,
+                op_type,
                 folded_outputs.len(),
-                node.outputs.len()
+                outputs.len()
             )));
         }
 
@@ -100,7 +108,7 @@ impl ConstantFoldingPass {
         let mut changed = false;
         for (i, folded_value) in folded_outputs.into_iter().enumerate() {
             if let Some(value) = folded_value {
-                let tensor_id = node.outputs[i];
+                let tensor_id = outputs[i];
                 graph.tensor_mut(tensor_id)?.value = Some(value);
                 changed = true;
             }

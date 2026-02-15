@@ -37,8 +37,13 @@ impl PlanningPass {
 
     /// Check if a node was fully constant-folded.
     fn is_fully_folded(&self, node: &IrNode, graph: &IrGraph) -> Result<bool> {
+        // Skip Value nodes (they don't need planning)
+        if node.is_value() {
+            return Ok(true);
+        }
+
         // A node is fully folded if ALL its outputs have values
-        for &output_id in &node.outputs {
+        for &output_id in node.outputs() {
             let tensor = graph.tensor(output_id)?;
             if !tensor.has_value() {
                 return Ok(false);
@@ -58,9 +63,13 @@ impl PlanningPass {
         dynamic_dimensions: &HashMap<String, usize>,
         symbolic_bindings: &mut Vec<onyxia_core::SymbolicBinding>,
     ) -> Result<PlannedOp> {
+        let op_type = node
+            .op_type()
+            .ok_or_else(|| Error::Planning("Cannot plan Value node".to_string()))?;
+
         // Look up operator
-        let operator = registry.get(&node.op_type).ok_or_else(|| {
-            Error::Planning(format!("No operator registered for type: {}", node.op_type))
+        let operator = registry.get(op_type).ok_or_else(|| {
+            Error::Planning(format!("No operator registered for type: {}", op_type))
         })?;
 
         // Build plan context
@@ -79,13 +88,13 @@ impl PlanningPass {
         let steps = operator.plan(&mut ctx).map_err(|e| {
             Error::Planning(format!(
                 "Failed to plan node '{}' (op_type: {}): {}",
-                node.op_type, node.op_type, e
+                op_type, op_type, e
             ))
         })?;
 
         // Build PlannedOp
         Ok(PlannedOp {
-            name: node.op_type.clone(),
+            name: op_type.to_string(),
             steps,
             scratch_buffers,
         })

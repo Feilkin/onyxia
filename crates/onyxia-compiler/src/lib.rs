@@ -194,7 +194,7 @@ impl CompilerPipeline {
             let node = graph.node(node_id)?.clone();
 
             // Skip fully folded nodes (all outputs have values)
-            let all_outputs_folded = node.outputs.iter().all(|&tensor_id| {
+            let all_outputs_folded = node.outputs().iter().all(|&tensor_id| {
                 graph
                     .tensor(tensor_id)
                     .map(|t| t.has_value())
@@ -205,11 +205,16 @@ impl CompilerPipeline {
                 continue;
             }
 
+            let op_type = match node.op_type() {
+                Some(op_type) => op_type,
+                None => continue, // Skip Value nodes
+            };
+
             // Look up operator
-            let operator = registry.get(&node.op_type).ok_or_else(|| {
+            let operator = registry.get(op_type).ok_or_else(|| {
                 onyxia_core::Error::Planning(format!(
                     "No operator registered for type: {}",
-                    node.op_type
+                    op_type
                 ))
             })?;
 
@@ -229,13 +234,13 @@ impl CompilerPipeline {
             let steps = operator.plan(&mut ctx).map_err(|e| {
                 onyxia_core::Error::Planning(format!(
                     "Failed to plan node '{}' (op_type: {}): {}",
-                    node.op_type, node.op_type, e
+                    op_type, op_type, e
                 ))
             })?;
 
             // Build PlannedOp
             operations.push(onyxia_core::PlannedOp {
-                name: node.op_type.clone(),
+                name: op_type.to_string(),
                 steps,
                 scratch_buffers,
             });
