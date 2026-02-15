@@ -16,3 +16,5 @@ thiserror = "2.0.18"
 wgpu = { version = "28", features = ["naga-ir"] }
 
 [dev-dependencies]
+onyxia-compiler.workspace = true
+onyxia-operators.workspace = true
