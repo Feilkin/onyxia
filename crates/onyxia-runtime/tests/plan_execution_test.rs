@@ -14,8 +14,9 @@
 //! - reduction_ops_test.rs: ReduceSum
 //! - cast_ops_test.rs: Cast
 
-use onyxia_compiler::CompilerPipeline;
-use onyxia_onnx::{DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
+use onyxia_compiler::compile;
+use onyxia_core::{DataType, TensorMetadata, TensorShape};
+use onyxia_onnx::{Graph, Node, TensorInfo, TensorKind, TensorShape as OnnxTensorShape};
 use onyxia_operators::core_operator_registry;
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
@@ -37,6 +38,7 @@ async fn test_empty_plan() {
         tensors: TensorRegistry::new(),
         inputs: Vec::new(),
         outputs: Vec::new(),
+        symbolic_bindings: Vec::new(),
         metadata: ModelMetadata {
             name: "test_empty".to_string(),
             model_version: 1,
@@ -69,35 +71,35 @@ async fn test_multiple_operations() {
     graph.add_tensor(TensorInfo {
         name: "a".to_string(),
         dtype: DataType::F32,
-        shape: TensorShape::Static(vec![4]),
+        shape: OnnxTensorShape::Static(vec![4]),
         kind: TensorKind::Input,
         initializer: None,
     });
     graph.add_tensor(TensorInfo {
         name: "b".to_string(),
         dtype: DataType::F32,
-        shape: TensorShape::Static(vec![4]),
+        shape: OnnxTensorShape::Static(vec![4]),
         kind: TensorKind::Input,
         initializer: None,
     });
     graph.add_tensor(TensorInfo {
         name: "c".to_string(),
         dtype: DataType::F32,
-        shape: TensorShape::Static(vec![4]),
+        shape: OnnxTensorShape::Static(vec![4]),
         kind: TensorKind::Input,
         initializer: None,
     });
     graph.add_tensor(TensorInfo {
         name: "temp".to_string(),
         dtype: DataType::F32,
-        shape: TensorShape::Static(vec![4]),
+        shape: OnnxTensorShape::Static(vec![4]),
         kind: TensorKind::Intermediate,
         initializer: None,
     });
     graph.add_tensor(TensorInfo {
         name: "d".to_string(),
         dtype: DataType::F32,
-        shape: TensorShape::Static(vec![4]),
+        shape: OnnxTensorShape::Static(vec![4]),
         kind: TensorKind::Output,
         initializer: None,
     });
@@ -128,8 +130,7 @@ async fn test_multiple_operations() {
 
     // Compile and execute
     let registry = core_operator_registry();
-    let plan = CompilerPipeline::new(HashMap::new())
-        .compile(&graph, &registry)
+    let plan = compile(&graph, &registry, &HashMap::new())
         .expect("Compilation should succeed");
 
     assert_eq!(plan.operations.len(), 2, "Should have 2 operations");
@@ -169,20 +170,18 @@ async fn test_initializer_upload() {
     let mut tensors = TensorRegistry::new();
 
     // Add a tensor with known initializer data: [1.0, 2.0, 3.0, 4.0]
-    let initializer_data: Vec<u8> = vec![
+    let _initializer_data: Vec<u8> = vec![
         0, 0, 128, 63, // 1.0f32 in little-endian
         0, 0, 0, 64, // 2.0f32
         0, 0, 64, 64, // 3.0f32
         0, 0, 128, 64, // 4.0f32
     ];
 
-    tensors.add(TensorInfo {
-        name: "weights".to_string(),
-        dtype: DataType::F32,
-        shape: TensorShape::Static(vec![4]),
-        kind: TensorKind::Weight,
-        initializer: Some(initializer_data.clone()),
-    });
+    tensors.add(TensorMetadata::new(
+        "weights".to_string(),
+        DataType::F32,
+        TensorShape::Static(vec![4]),
+    ));
 
     // Create empty plan (no operations, just the initializer tensor)
     let plan = CompiledModel {
@@ -191,11 +190,12 @@ async fn test_initializer_upload() {
         tensors,
         inputs: Vec::new(),
         outputs: Vec::new(),
+        symbolic_bindings: Vec::new(),
         metadata: ModelMetadata {
             name: "test_initializer".to_string(),
             model_version: 1,
             ir_version: 9,
-            producer: "onyxia_test".to_string(),
+            producer_name: "onyxia_test".to_string(),
         },
     };
 
@@ -228,7 +228,7 @@ async fn test_add_with_bias_e2e() {
     graph.add_tensor(TensorInfo {
         name: "input".to_string(),
         dtype: DataType::F32,
-        shape: TensorShape::Static(vec![4]),
+        shape: OnnxTensorShape::Static(vec![4]),
         kind: TensorKind::Input,
         initializer: None,
     });
@@ -244,7 +244,7 @@ async fn test_add_with_bias_e2e() {
     graph.add_tensor(TensorInfo {
         name: "bias".to_string(),
         dtype: DataType::F32,
-        shape: TensorShape::Static(vec![4]),
+        shape: OnnxTensorShape::Static(vec![4]),
         kind: TensorKind::Weight,
         initializer: Some(bias_data),
     });
@@ -253,7 +253,7 @@ async fn test_add_with_bias_e2e() {
     graph.add_tensor(TensorInfo {
         name: "output".to_string(),
         dtype: DataType::F32,
-        shape: TensorShape::Static(vec![4]),
+        shape: OnnxTensorShape::Static(vec![4]),
         kind: TensorKind::Output,
         initializer: None,
     });
@@ -277,8 +277,7 @@ async fn test_add_with_bias_e2e() {
 
     // Compile and execute
     let registry = core_operator_registry();
-    let plan = CompilerPipeline::new(HashMap::new())
-        .compile(&graph, &registry)
+    let plan = compile(&graph, &registry, &HashMap::new())
         .expect("Compilation should succeed");
 
     assert_eq!(plan.operations.len(), 1, "Should have 1 operation");

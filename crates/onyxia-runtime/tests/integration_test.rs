@@ -1,6 +1,6 @@
 //! Integration tests for runtime execution.
 
-use onyxia_compiler::CompilerPipeline;
+use onyxia_compiler::compile;
 use onyxia_onnx::{load_model, parser::parse_model};
 use onyxia_operators::core_operator_registry;
 use onyxia_runtime::Runtime;
