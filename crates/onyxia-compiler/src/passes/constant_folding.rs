@@ -46,10 +46,7 @@ impl ConstantFoldingPass {
 
         // Call operator's constant folding
         let folded_outputs = operator.try_fold(&ctx).map_err(|e| {
-            Error::ConstantFolding(format!(
-                "Failed to fold node (op_type: {}): {}",
-                op_type, e
-            ))
+            Error::ConstantFolding(format!("Failed to fold node (op_type: {}): {}", op_type, e))
         })?;
 
         // If operator returned no folded values, skip
@@ -114,9 +111,7 @@ impl Default for ConstantFoldingPass {
 mod tests {
     use super::*;
     use onyxia_core::ir::IrEdge;
-    use onyxia_core::{
-        DataType, IrGraph, IrNode, Operator, TensorKind, TensorShape, TensorValue,
-    };
+    use onyxia_core::{DataType, IrGraph, IrNode, Operator, TensorKind, TensorShape, TensorValue};
 
     // Mock operator that folds addition
     struct MockAddOperator;
@@ -126,10 +121,7 @@ mod tests {
             "MockAdd"
         }
 
-        fn infer_output_shapes(
-            &self,
-            ctx: &onyxia_core::InferenceCtx,
-        ) -> Result<Vec<TensorShape>> {
+        fn infer_output_shapes(&self, ctx: &onyxia_core::InferenceCtx) -> Result<Vec<TensorShape>> {
             Ok(vec![ctx.input_shape(0)?.clone()])
         }
 

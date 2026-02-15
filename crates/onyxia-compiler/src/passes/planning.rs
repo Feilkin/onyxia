@@ -66,10 +66,7 @@ impl PlanningPass {
 
         // Call operator's planning
         let steps = operator.plan(&mut ctx).map_err(|e| {
-            Error::Planning(format!(
-                "Failed to plan node (op_type: {}): {}",
-                op_type, e
-            ))
+            Error::Planning(format!("Failed to plan node (op_type: {}): {}", op_type, e))
         })?;
 
         // Build PlannedOp
@@ -167,8 +164,7 @@ mod tests {
     use super::*;
     use onyxia_core::ir::IrEdge;
     use onyxia_core::{
-        BufferRef, DataType, IrGraph, IrNode, Operator, Step, TensorKind, TensorShape,
-        TensorValue,
+        BufferRef, DataType, IrGraph, IrNode, Operator, Step, TensorKind, TensorShape, TensorValue,
     };
 
     // Mock operator that emits a dummy step
@@ -179,10 +175,7 @@ mod tests {
             "Mock"
         }
 
-        fn infer_output_shapes(
-            &self,
-            ctx: &onyxia_core::InferenceCtx,
-        ) -> Result<Vec<TensorShape>> {
+        fn infer_output_shapes(&self, ctx: &onyxia_core::InferenceCtx) -> Result<Vec<TensorShape>> {
             Ok(vec![ctx.input_shape(0)?.clone()])
         }
 

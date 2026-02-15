@@ -157,10 +157,7 @@ impl IrGraph {
 
     /// Get the nodes that consume an edge.
     pub fn tensor_consumers(&self, id: IrEdgeId) -> Vec<IrNodeId> {
-        self.edge_consumers
-            .get(&id)
-            .cloned()
-            .unwrap_or_default()
+        self.edge_consumers.get(&id).cloned().unwrap_or_default()
     }
 
     // ── Graph mutation ──
@@ -257,11 +254,7 @@ impl IrGraph {
     /// Removes the operator node from the graph and stores the constant
     /// value on the output edge. Consumers keep referencing the same
     /// `IrEdgeId`; they see the constant via `edge.constant_value`.
-    pub fn fold_node_to_constant(
-        &mut self,
-        node_id: IrNodeId,
-        value: TensorValue,
-    ) -> Result<()> {
+    pub fn fold_node_to_constant(&mut self, node_id: IrNodeId, value: TensorValue) -> Result<()> {
         let node = self.node(node_id)?.clone();
 
         if node.outputs.len() != 1 {
