@@ -42,7 +42,10 @@ pub mod symbolic_expr;
 
 pub use error::{CodegenError, Result};
 pub use operator::{Operator, OperatorRegistry, PlanContext};
-pub use passes::{ConstantFoldingPass, PlanningPass, ShapeInferencePass, SymbolicResolutionPass};
+pub use passes::{
+    ConstantFoldingPass, InitializeConstantsPass, PlanningPass, ShapeInferencePass,
+    SymbolicResolutionPass,
+};
 pub use plan::{
     BindingDesc, BufferRef, CompiledShader, ExecutionPlan, ModelMetadata, PlannedOp,
     ScratchBufferDesc, ShaderIndex, Step, TensorRegistry,
@@ -72,6 +75,7 @@ impl CompilerPipeline {
     ///
     /// The built-in passes are:
     /// - `SymbolicResolutionPass` (Resolution stage)
+    /// - `InitializeConstantsPass` (Resolution stage)
     /// - `ShapeInferencePass` (Inference stage)
     /// - `ConstantFoldingPass` (Folding stage)
     /// - `PlanningPass` (Planning stage)
@@ -86,6 +90,7 @@ impl CompilerPipeline {
 
         // Register built-in passes
         pipeline.add_pass(SymbolicResolutionPass::new(dynamic_dimensions));
+        pipeline.add_pass(InitializeConstantsPass::new());
         pipeline.add_pass(ShapeInferencePass::new());
         pipeline.add_pass(ConstantFoldingPass::new());
         pipeline.add_pass(PlanningPass::new());
@@ -372,8 +377,8 @@ mod tests {
         let dynamic_dimensions = HashMap::new();
         let pipeline = CompilerPipeline::new(dynamic_dimensions);
 
-        // Verify passes were registered
-        assert_eq!(pipeline.passes.len(), 4); // 4 built-in passes
+        // Verify passes were registered (5 built-in passes now: SymbolicResolution, InitializeConstants, ShapeInference, ConstantFolding, Planning)
+        assert_eq!(pipeline.passes.len(), 5);
     }
 
     #[test]
@@ -408,8 +413,8 @@ mod tests {
         // Add custom pass
         pipeline.add_pass(NoOpPass);
 
-        // Should now have 5 passes (4 built-in + 1 custom)
-        assert_eq!(pipeline.passes.len(), 5);
+        // Should now have 6 passes (5 built-in + 1 custom)
+        assert_eq!(pipeline.passes.len(), 6);
     }
 
     #[test]
