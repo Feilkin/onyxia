@@ -1,8 +1,10 @@
 //! Shape manipulation operators.
 
 use onyxia_core::{
-    DataType, FoldCtx, InferenceCtx, Operator, PlanCtx, Result, Step, TensorShape, TensorValue,
+    BindingDesc, DataType, FoldCtx, InferenceCtx, Operator, PlanCtx, Result, Step, TensorShape,
+    TensorValue,
 };
+use std::collections::HashMap;
 
 /// Reshape operator - changes tensor shape without copying data.
 ///
@@ -602,11 +604,99 @@ impl Operator for ConcatOp {
         Ok(vec![Some(result)])
     }
 
-    fn plan(&self, _ctx: &mut PlanCtx) -> Result<Vec<Step>> {
-        // TODO: Implement Concat GPU planning (needs shader and immediates encoding)
-        Err(onyxia_core::Error::Planning(
-            "Concat GPU planning not yet implemented".to_string(),
-        ))
+    fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {
+        // Concat requires special handling: one dispatch per input tensor
+        let axis: i64 = ctx.attr_i64("axis")?;
+        let input_count = ctx.input_count();
+
+        if input_count == 0 {
+            return Err(onyxia_core::Error::Planning(
+                "Concat requires at least one input".to_string(),
+            ));
+        }
+
+        // Get output shape to determine dimensions
+        let output_tensor = ctx.output_tensor(0)?;
+        let output_shape = ctx.static_dims(&output_tensor.shape)?;
+        let rank = output_shape.len();
+
+        // Normalize axis
+        let normalized_axis = if axis < 0 {
+            (rank as i64 + axis) as usize
+        } else {
+            axis as usize
+        };
+
+        if normalized_axis >= rank {
+            return Err(onyxia_core::Error::Planning(format!(
+                "Concat axis {} out of range for rank {}",
+                axis, rank
+            )));
+        }
+
+        // Calculate outer_size (product of dimensions before axis)
+        let outer_size: usize = output_shape[..normalized_axis].iter().product();
+        let outer_size = if outer_size == 0 { 1 } else { outer_size };
+
+        // Calculate inner_size (product of dimensions after axis)
+        let inner_size: usize = output_shape[normalized_axis + 1..].iter().product();
+        let inner_size = if inner_size == 0 { 1 } else { inner_size };
+
+        let output_axis_size = output_shape[normalized_axis];
+
+        let workgroup_size: u32 = 256;
+
+        let mut shader_defs = HashMap::new();
+        shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());
+
+        let shader_index = ctx.compile_shader(
+            "concat",
+            include_str!("../../shaders/indexing/concat.wgsl"),
+            &shader_defs,
+        )?;
+
+        // Create one dispatch step per input tensor
+        let mut steps = Vec::new();
+        let mut output_axis_offset: usize = 0;
+
+        for input_idx in 0..input_count {
+            let input_tensor = ctx.input_tensor(input_idx)?;
+            let input_shape = ctx.static_dims(&input_tensor.shape)?;
+            let input_axis_size = input_shape[normalized_axis];
+
+            // Calculate number of elements in this input
+            let input_size = outer_size * input_axis_size * inner_size;
+            let num_workgroups = (input_size as u32 + workgroup_size - 1) / workgroup_size;
+
+            // Encode immediate constants for this input
+            let mut immediates_data = Vec::new();
+            immediates_data.extend_from_slice(&(outer_size as u32).to_le_bytes());
+            immediates_data.extend_from_slice(&(inner_size as u32).to_le_bytes());
+            immediates_data.extend_from_slice(&(input_axis_size as u32).to_le_bytes());
+            immediates_data.extend_from_slice(&(output_axis_size as u32).to_le_bytes());
+            immediates_data.extend_from_slice(&(output_axis_offset as u32).to_le_bytes());
+
+            steps.push(Step::Dispatch {
+                shader_index,
+                bindings: vec![
+                    BindingDesc {
+                        buffer: ctx.input(input_idx)?,
+                        read_only: true,
+                    },
+                    BindingDesc {
+                        buffer: ctx.output(0)?,
+                        read_only: false,
+                    },
+                ],
+                workgroups: [num_workgroups, 1, 1],
+                immediates: Some(immediates_data),
+            });
+
+            // Advance offset for next input
+            output_axis_offset += input_axis_size;
+        }
+
+        Ok(steps)
     }
 }
 
@@ -682,10 +772,118 @@ impl Operator for ExpandOp {
         Ok(vec![TensorShape::Static(output_dims)])
     }
 
-    fn plan(&self, _ctx: &mut PlanCtx) -> Result<Vec<Step>> {
-        // TODO: Implement Expand GPU planning
-        Err(onyxia_core::Error::Planning(
-            "Expand GPU planning not yet implemented".to_string(),
-        ))
+    fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {
+        // Expand broadcasts input to target shape
+        let input_tensor = ctx.input_tensor(0)?;
+        let input_shape = ctx.static_dims(&input_tensor.shape)?;
+
+        let output_tensor = ctx.output_tensor(0)?;
+        let output_shape = ctx.static_dims(&output_tensor.shape)?;
+
+        let input_rank = input_shape.len();
+        let output_rank = output_shape.len();
+
+        if output_rank < input_rank {
+            return Err(onyxia_core::Error::Planning(format!(
+                "Expand: output rank {} < input rank {}",
+                output_rank, input_rank
+            )));
+        }
+
+        // Calculate strides (row-major)
+        let mut input_strides = vec![1usize; input_rank];
+        let mut output_strides = vec![1usize; output_rank];
+
+        for i in (0..input_rank.saturating_sub(1)).rev() {
+            input_strides[i] = input_strides[i + 1] * input_shape[i + 1];
+        }
+
+        for i in (0..output_rank.saturating_sub(1)).rev() {
+            output_strides[i] = output_strides[i + 1] * output_shape[i + 1];
+        }
+
+        // Align input shape and strides to output rank (prepend 1s and 1-strides)
+        let offset = output_rank - input_rank;
+        let mut aligned_input_shape = vec![1usize; output_rank];
+        let mut aligned_input_strides = vec![0usize; output_rank];
+
+        for i in 0..input_rank {
+            aligned_input_shape[offset + i] = input_shape[i];
+            aligned_input_strides[offset + i] = input_strides[i];
+        }
+
+        let output_size: usize = output_shape.iter().product();
+        let workgroup_size: u32 = 256;
+        let num_workgroups = (output_size as u32 + workgroup_size - 1) / workgroup_size;
+
+        let mut shader_defs = HashMap::new();
+        shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());
+
+        let shader_index = ctx.compile_shader(
+            "expand",
+            include_str!("../../shaders/indexing/expand.wgsl"),
+            &shader_defs,
+        )?;
+
+        // Encode immediate constants
+        let mut immediates_data = Vec::new();
+        immediates_data.extend_from_slice(&(output_rank as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&(output_size as u32).to_le_bytes());
+
+        // Input strides (padded to 6 dimensions)
+        for i in 0..6 {
+            let stride = if i < output_rank {
+                aligned_input_strides[i] as u32
+            } else {
+                0u32
+            };
+            immediates_data.extend_from_slice(&stride.to_le_bytes());
+        }
+
+        // Output strides (padded to 6 dimensions)
+        for i in 0..6 {
+            let stride = if i < output_rank {
+                output_strides[i] as u32
+            } else {
+                0u32
+            };
+            immediates_data.extend_from_slice(&stride.to_le_bytes());
+        }
+
+        // Input shape (padded to 6 dimensions)
+        for i in 0..6 {
+            let dim = if i < output_rank {
+                aligned_input_shape[i] as u32
+            } else {
+                1u32
+            };
+            immediates_data.extend_from_slice(&dim.to_le_bytes());
+        }
+
+        // Output shape (padded to 6 dimensions)
+        for i in 0..6 {
+            let dim = if i < output_rank {
+                output_shape[i] as u32
+            } else {
+                1u32
+            };
+            immediates_data.extend_from_slice(&dim.to_le_bytes());
+        }
+
+        Ok(vec![Step::Dispatch {
+            shader_index,
+            bindings: vec![
+                BindingDesc {
+                    buffer: ctx.input(0)?,
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.output(0)?,
+                    read_only: false,
+                },
+            ],
+            workgroups: [num_workgroups, 1, 1],
+            immediates: Some(immediates_data),
+        }])
     }
 }

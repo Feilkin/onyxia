@@ -230,32 +230,329 @@ impl Operator for SliceOp {
             TensorShape::Static(dims) => dims,
             _ => {
                 return Err(onyxia_core::Error::ShapeInference(
-                    "Non-static shape".to_string(),
+                    "Slice requires static input shape".to_string(),
                 ));
             }
         };
 
-        let Some(_starts_val) = ctx.input_value(1) else {
+        let Some(starts_val) = ctx.input_value(1) else {
             return Err(onyxia_core::Error::ShapeInference(
                 "Slice starts must be constant".to_string(),
             ));
         };
-        let Some(_ends_val) = ctx.input_value(2) else {
+        let Some(ends_val) = ctx.input_value(2) else {
             return Err(onyxia_core::Error::ShapeInference(
                 "Slice ends must be constant".to_string(),
             ));
         };
 
-        // TODO: Implement full Slice shape inference logic
-        // For now, return Unknown to avoid blocking compilation
-        Ok(vec![TensorShape::Static(data_shape.to_vec())])
+        // Parse starts and ends as i64 arrays
+        let starts = match starts_val {
+            TensorValue::I64(v) => v,
+            TensorValue::I32(v) => &v.iter().map(|&x| x as i64).collect::<Vec<_>>(),
+            _ => {
+                return Err(onyxia_core::Error::ShapeInference(
+                    "Slice starts must be integer type".to_string(),
+                ));
+            }
+        };
+
+        let ends = match ends_val {
+            TensorValue::I64(v) => v,
+            TensorValue::I32(v) => &v.iter().map(|&x| x as i64).collect::<Vec<_>>(),
+            _ => {
+                return Err(onyxia_core::Error::ShapeInference(
+                    "Slice ends must be integer type".to_string(),
+                ));
+            }
+        };
+
+        // Get optional axes and steps inputs
+        let axes: Vec<usize> = if ctx.input_count() > 3 {
+            if let Some(axes_val) = ctx.input_value(3) {
+                match axes_val {
+                    TensorValue::I64(v) => v
+                        .iter()
+                        .map(|&a| {
+                            if a < 0 {
+                                (data_shape.len() as i64 + a) as usize
+                            } else {
+                                a as usize
+                            }
+                        })
+                        .collect(),
+                    TensorValue::I32(v) => v
+                        .iter()
+                        .map(|&a| {
+                            if a < 0 {
+                                (data_shape.len() as i64 + a as i64) as usize
+                            } else {
+                                a as usize
+                            }
+                        })
+                        .collect(),
+                    _ => {
+                        return Err(onyxia_core::Error::ShapeInference(
+                            "Slice axes must be integer type".to_string(),
+                        ));
+                    }
+                }
+            } else {
+                (0..starts.len()).collect()
+            }
+        } else {
+            (0..starts.len()).collect()
+        };
+
+        let steps: Vec<i64> = if ctx.input_count() > 4 {
+            if let Some(steps_val) = ctx.input_value(4) {
+                match steps_val {
+                    TensorValue::I64(v) => v.clone(),
+                    TensorValue::I32(v) => v.iter().map(|&x| x as i64).collect(),
+                    _ => {
+                        return Err(onyxia_core::Error::ShapeInference(
+                            "Slice steps must be integer type".to_string(),
+                        ));
+                    }
+                }
+            } else {
+                vec![1; starts.len()]
+            }
+        } else {
+            vec![1; starts.len()]
+        };
+
+        // Compute output shape
+        let mut output_shape = data_shape.to_vec();
+
+        for (i, &axis) in axes.iter().enumerate() {
+            if axis >= data_shape.len() {
+                return Err(onyxia_core::Error::ShapeInference(format!(
+                    "Slice axis {} out of range for rank {}",
+                    axis,
+                    data_shape.len()
+                )));
+            }
+
+            let dim = data_shape[axis] as i64;
+            let mut start = starts[i];
+            let mut end = ends[i];
+            let step = steps[i];
+
+            if step == 0 {
+                return Err(onyxia_core::Error::ShapeInference(
+                    "Slice step cannot be 0".to_string(),
+                ));
+            }
+
+            // Normalize negative indices
+            if start < 0 {
+                start += dim;
+            }
+            if end < 0 {
+                end += dim;
+            }
+
+            // Clamp to valid range
+            start = start.max(0).min(dim);
+            end = end.max(0).min(dim);
+
+            // Compute output dimension
+            let output_dim = if step > 0 {
+                if end > start {
+                    ((end - start + step - 1) / step) as usize
+                } else {
+                    0
+                }
+            } else {
+                if start > end {
+                    ((start - end - step - 1) / (-step)) as usize
+                } else {
+                    0
+                }
+            };
+
+            output_shape[axis] = output_dim;
+        }
+
+        Ok(vec![TensorShape::Static(output_shape)])
     }
 
-    fn plan(&self, _ctx: &mut PlanCtx) -> Result<Vec<Step>> {
-        // TODO: Implement Slice GPU planning
-        Err(onyxia_core::Error::Planning(
-            "Slice GPU planning not yet implemented".to_string(),
-        ))
+    fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {
+        let input_tensor = ctx.input_tensor(0)?;
+        let input_shape = ctx.static_dims(&input_tensor.shape)?;
+        let rank = input_shape.len();
+
+        let output_tensor = ctx.output_tensor(0)?;
+        let output_shape = ctx.static_dims(&output_tensor.shape)?;
+
+        // Parse starts, ends, axes, steps from input values
+        let starts_val = ctx
+            .input_value(1)
+            .ok_or_else(|| onyxia_core::Error::Planning("Slice starts not constant".into()))?;
+        let ends_val = ctx
+            .input_value(2)
+            .ok_or_else(|| onyxia_core::Error::Planning("Slice ends not constant".into()))?;
+
+        let starts: Vec<i64> = match starts_val {
+            TensorValue::I64(v) => v.clone(),
+            TensorValue::I32(v) => v.iter().map(|&x| x as i64).collect(),
+            _ => return Err(onyxia_core::Error::Planning("Invalid starts type".into())),
+        };
+
+        let ends: Vec<i64> = match ends_val {
+            TensorValue::I64(v) => v.clone(),
+            TensorValue::I32(v) => v.iter().map(|&x| x as i64).collect(),
+            _ => return Err(onyxia_core::Error::Planning("Invalid ends type".into())),
+        };
+
+        let axes: Vec<usize> = if ctx.input_count() > 3 {
+            if let Some(axes_val) = ctx.input_value(3) {
+                match axes_val {
+                    TensorValue::I64(v) => v
+                        .iter()
+                        .map(|&a| {
+                            if a < 0 {
+                                (rank as i64 + a) as usize
+                            } else {
+                                a as usize
+                            }
+                        })
+                        .collect(),
+                    TensorValue::I32(v) => v
+                        .iter()
+                        .map(|&a| {
+                            if a < 0 {
+                                (rank as i64 + a as i64) as usize
+                            } else {
+                                a as usize
+                            }
+                        })
+                        .collect(),
+                    _ => return Err(onyxia_core::Error::Planning("Invalid axes type".into())),
+                }
+            } else {
+                (0..starts.len()).collect()
+            }
+        } else {
+            (0..starts.len()).collect()
+        };
+
+        let steps: Vec<i64> = if ctx.input_count() > 4 {
+            if let Some(steps_val) = ctx.input_value(4) {
+                match steps_val {
+                    TensorValue::I64(v) => v.clone(),
+                    TensorValue::I32(v) => v.iter().map(|&x| x as i64).collect(),
+                    _ => return Err(onyxia_core::Error::Planning("Invalid steps type".into())),
+                }
+            } else {
+                vec![1; starts.len()]
+            }
+        } else {
+            vec![1; starts.len()]
+        };
+
+        // Build full starts/steps arrays for all dimensions
+        let mut full_starts = vec![0i32; rank];
+        let mut full_steps = vec![1i32; rank];
+
+        for (i, &axis) in axes.iter().enumerate() {
+            let dim = input_shape[axis] as i64;
+            let mut start = starts[i];
+            let mut end = ends[i];
+            let step = steps[i];
+
+            // Normalize negative indices
+            if start < 0 {
+                start += dim;
+            }
+            if end < 0 {
+                end += dim;
+            }
+
+            // Clamp to valid range
+            start = start.max(0).min(dim);
+
+            full_starts[axis] = start as i32;
+            full_steps[axis] = step as i32;
+        }
+
+        // Calculate strides
+        let mut input_strides = vec![1usize; rank];
+        let mut output_strides = vec![1usize; rank];
+
+        for i in (0..rank.saturating_sub(1)).rev() {
+            input_strides[i] = input_strides[i + 1] * input_shape[i + 1];
+            output_strides[i] = output_strides[i + 1] * output_shape[i + 1];
+        }
+
+        let output_size: usize = output_shape.iter().product();
+        let workgroup_size: u32 = 256;
+        let num_workgroups = (output_size as u32 + workgroup_size - 1) / workgroup_size;
+
+        let mut shader_defs = HashMap::new();
+        shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());
+
+        let shader_index = ctx.compile_shader(
+            "slice",
+            include_str!("../../shaders/indexing/slice.wgsl"),
+            &shader_defs,
+        )?;
+
+        // Encode immediate constants
+        let mut immediates_data = Vec::new();
+        immediates_data.extend_from_slice(&(rank as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&(output_size as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&0u32.to_le_bytes()); // _padding[0]
+        immediates_data.extend_from_slice(&0u32.to_le_bytes()); // _padding[1]
+
+        // Input strides (up to 7 dimensions)
+        for i in 0..7 {
+            let stride = if i < rank {
+                input_strides[i] as u32
+            } else {
+                0u32
+            };
+            immediates_data.extend_from_slice(&stride.to_le_bytes());
+        }
+
+        // Output strides (up to 7 dimensions)
+        for i in 0..7 {
+            let stride = if i < rank {
+                output_strides[i] as u32
+            } else {
+                0u32
+            };
+            immediates_data.extend_from_slice(&stride.to_le_bytes());
+        }
+
+        // Starts (up to 7 dimensions)
+        for i in 0..7 {
+            let start = if i < rank { full_starts[i] } else { 0i32 };
+            immediates_data.extend_from_slice(&start.to_le_bytes());
+        }
+
+        // Steps (up to 7 dimensions)
+        for i in 0..7 {
+            let step = if i < rank { full_steps[i] } else { 1i32 };
+            immediates_data.extend_from_slice(&step.to_le_bytes());
+        }
+
+        Ok(vec![Step::Dispatch {
+            shader_index,
+            bindings: vec![
+                BindingDesc {
+                    buffer: ctx.input(0)?,
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.output(0)?,
+                    read_only: false,
+                },
+            ],
+            workgroups: [num_workgroups, 1, 1],
+            immediates: Some(immediates_data),
+        }])
     }
 }
 
@@ -278,11 +575,154 @@ impl Operator for ScatterNDOp {
         Ok(vec![ctx.input_shape(0)?.clone()])
     }
 
-    fn plan(&self, _ctx: &mut PlanCtx) -> Result<Vec<Step>> {
-        // TODO: Implement ScatterND GPU planning
-        Err(onyxia_core::Error::Planning(
-            "ScatterND GPU planning not yet implemented".to_string(),
-        ))
+    fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {
+        // ScatterND: scatter updates into data tensor at specified indices
+        // Two-pass approach:
+        //   1. Copy data to output
+        //   2. Scatter updates at indices
+
+        let data_tensor = ctx.input_tensor(0)?;
+        let data_shape = ctx.static_dims(&data_tensor.shape)?;
+        let data_size: usize = data_shape.iter().product();
+
+        let indices_tensor = ctx.input_tensor(1)?;
+        let indices_shape = ctx.static_dims(&indices_tensor.shape)?;
+
+        let updates_tensor = ctx.input_tensor(2)?;
+        let updates_shape = ctx.static_dims(&updates_tensor.shape)?;
+
+        if indices_shape.is_empty() {
+            return Err(onyxia_core::Error::Planning(
+                "ScatterND indices cannot be scalar".to_string(),
+            ));
+        }
+
+        let indices_last_dim = indices_shape[indices_shape.len() - 1];
+
+        if indices_last_dim > data_shape.len() {
+            return Err(onyxia_core::Error::Planning(format!(
+                "ScatterND indices last dimension {} exceeds data rank {}",
+                indices_last_dim,
+                data_shape.len()
+            )));
+        }
+
+        let num_updates: usize = updates_shape.iter().product();
+
+        // Calculate output strides for index computation
+        let mut output_strides = vec![1usize; data_shape.len()];
+        for i in (0..data_shape.len().saturating_sub(1)).rev() {
+            output_strides[i] = output_strides[i + 1] * data_shape[i + 1];
+        }
+
+        // Get reduction mode attribute (default: none/replace)
+        let reduction_str = ctx.attr_string("reduction").unwrap_or_else(|_| "none".to_string());
+        let reduction: u32 = match reduction_str.as_str() {
+            "none" => 0,
+            "add" => 1,
+            "mul" => 2,
+            "max" => 3,
+            "min" => 4,
+            _ => {
+                return Err(onyxia_core::Error::Planning(format!(
+                    "ScatterND unknown reduction mode: {}",
+                    reduction_str
+                )));
+            }
+        };
+
+        let workgroup_size: u32 = 256;
+
+        let mut shader_defs = HashMap::new();
+        shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());
+
+        let shader_index = ctx.compile_shader(
+            "scatternd",
+            include_str!("../../shaders/indexing/scatternd.wgsl"),
+            &shader_defs,
+        )?;
+
+        // Step 1: Copy data to output (indices_last_dim = 0 signals copy mode)
+        let copy_workgroups = (data_size as u32 + workgroup_size - 1) / workgroup_size;
+
+        let mut copy_immediates = Vec::new();
+        copy_immediates.extend_from_slice(&(data_size as u32).to_le_bytes());
+        copy_immediates.extend_from_slice(&0u32.to_le_bytes()); // indices_last_dim = 0 => copy mode
+        copy_immediates.extend_from_slice(&0u32.to_le_bytes()); // reduction (unused in copy)
+        copy_immediates.extend_from_slice(&0u32.to_le_bytes()); // pad0
+        // output_strides (unused in copy mode, but must be present)
+        for _ in 0..8 {
+            copy_immediates.extend_from_slice(&0u32.to_le_bytes());
+        }
+
+        let copy_step = Step::Dispatch {
+            shader_index,
+            bindings: vec![
+                BindingDesc {
+                    buffer: ctx.input(0)?, // data
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.input(1)?, // indices (unused in copy)
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.input(2)?, // updates (unused in copy)
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.output(0)?, // output
+                    read_only: false,
+                },
+            ],
+            workgroups: [copy_workgroups, 1, 1],
+            immediates: Some(copy_immediates),
+        };
+
+        // Step 2: Scatter updates (indices_last_dim != 0 signals scatter mode)
+        let scatter_workgroups = (num_updates as u32 + workgroup_size - 1) / workgroup_size;
+
+        let mut scatter_immediates = Vec::new();
+        scatter_immediates.extend_from_slice(&(num_updates as u32).to_le_bytes());
+        scatter_immediates.extend_from_slice(&(indices_last_dim as u32).to_le_bytes());
+        scatter_immediates.extend_from_slice(&reduction.to_le_bytes());
+        scatter_immediates.extend_from_slice(&0u32.to_le_bytes()); // pad0
+
+        // Encode output strides (up to 8 dimensions)
+        for i in 0..8 {
+            let stride = if i < output_strides.len() {
+                output_strides[i] as u32
+            } else {
+                0u32
+            };
+            scatter_immediates.extend_from_slice(&stride.to_le_bytes());
+        }
+
+        let scatter_step = Step::Dispatch {
+            shader_index,
+            bindings: vec![
+                BindingDesc {
+                    buffer: ctx.input(0)?, // data (unused in scatter)
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.input(1)?, // indices
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.input(2)?, // updates
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.output(0)?, // output
+                    read_only: false,
+                },
+            ],
+            workgroups: [scatter_workgroups, 1, 1],
+            immediates: Some(scatter_immediates),
+        };
+
+        Ok(vec![copy_step, scatter_step])
     }
 }
 
@@ -404,11 +844,79 @@ impl Operator for RangeOp {
         Ok(vec![Some(result)])
     }
 
-    fn plan(&self, _ctx: &mut PlanCtx) -> Result<Vec<Step>> {
-        // TODO: Implement Range GPU planning
-        Err(onyxia_core::Error::Planning(
-            "Range GPU planning not yet implemented".to_string(),
-        ))
+    fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {
+        // Range should be folded away in most cases, but if we need GPU execution:
+
+        // Get output shape and size
+        let output_tensor = ctx.output_tensor(0)?;
+        let output_shape = ctx.static_dims(&output_tensor.shape)?;
+
+        if output_shape.len() != 1 {
+            return Err(onyxia_core::Error::Planning(format!(
+                "Range output must be 1D, got {:?}",
+                output_shape
+            )));
+        }
+
+        let size = output_shape[0];
+
+        // Try to get constant start, limit, delta values
+        // If they're not constant at plan time, we have a problem since the shader
+        // needs them as immediates
+        let start_val = ctx
+            .input_value(0)
+            .ok_or_else(|| onyxia_core::Error::Planning("Range start not constant".into()))?;
+        let _limit_val = ctx
+            .input_value(1)
+            .ok_or_else(|| onyxia_core::Error::Planning("Range limit not constant".into()))?;
+        let delta_val = ctx
+            .input_value(2)
+            .ok_or_else(|| onyxia_core::Error::Planning("Range delta not constant".into()))?;
+
+        // Extract scalar values (currently only supporting F32)
+        let (start, delta) = match (start_val, delta_val) {
+            (TensorValue::F32(s), TensorValue::F32(d)) if s.len() == 1 && d.len() == 1 => {
+                (s[0], d[0])
+            }
+            (TensorValue::I64(s), TensorValue::I64(d)) if s.len() == 1 && d.len() == 1 => {
+                // Convert I64 to F32 for the shader
+                (s[0] as f32, d[0] as f32)
+            }
+            _ => {
+                return Err(onyxia_core::Error::Planning(
+                    "Range only supports F32 and I64 scalar inputs".to_string(),
+                ));
+            }
+        };
+
+        let workgroup_size: u32 = 256;
+        let num_workgroups = (size as u32 + workgroup_size - 1) / workgroup_size;
+
+        let mut shader_defs = HashMap::new();
+        shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());
+
+        let shader_index = ctx.compile_shader(
+            "range",
+            include_str!("../../shaders/indexing/range.wgsl"),
+            &shader_defs,
+        )?;
+
+        // Encode immediate constants
+        let mut immediates_data = Vec::new();
+        immediates_data.extend_from_slice(&start.to_le_bytes());
+        immediates_data.extend_from_slice(&delta.to_le_bytes());
+        immediates_data.extend_from_slice(&(size as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&0u32.to_le_bytes()); // _pad
+
+        Ok(vec![Step::Dispatch {
+            shader_index,
+            bindings: vec![BindingDesc {
+                buffer: ctx.output(0)?,
+                read_only: false,
+            }],
+            workgroups: [num_workgroups, 1, 1],
+            immediates: Some(immediates_data),
+        }])
     }
 }
 
@@ -495,10 +1003,92 @@ impl Operator for TriluOp {
         }
     }
 
-    fn plan(&self, _ctx: &mut PlanCtx) -> Result<Vec<Step>> {
-        // TODO: Implement Trilu GPU planning
-        Err(onyxia_core::Error::Planning(
-            "Trilu GPU planning not yet implemented".to_string(),
-        ))
+    fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {
+        let input_tensor = ctx.input_tensor(0)?;
+        let input_shape = ctx.static_dims(&input_tensor.shape)?;
+        let rank = input_shape.len();
+
+        if rank < 2 {
+            return Err(onyxia_core::Error::Planning(format!(
+                "Trilu requires input with rank >= 2, got rank {}",
+                rank
+            )));
+        }
+
+        let m = input_shape[rank - 2];
+        let n = input_shape[rank - 1];
+        let total_size: usize = input_shape.iter().product();
+
+        // Get attributes
+        let upper: i64 = ctx.attr_i64("upper").unwrap_or(1);
+
+        // Get k from second input (if provided) or default to 0
+        let k: i32 = if ctx.input_count() > 1 {
+            if let Some(k_val) = ctx.input_value(1) {
+                match k_val {
+                    TensorValue::I64(v) => {
+                        if v.len() != 1 {
+                            return Err(onyxia_core::Error::Planning(
+                                "Trilu k must be scalar".to_string(),
+                            ));
+                        }
+                        v[0] as i32
+                    }
+                    TensorValue::I32(v) => {
+                        if v.len() != 1 {
+                            return Err(onyxia_core::Error::Planning(
+                                "Trilu k must be scalar".to_string(),
+                            ));
+                        }
+                        v[0]
+                    }
+                    _ => {
+                        return Err(onyxia_core::Error::Planning(
+                            "Trilu k must be integer type".to_string(),
+                        ));
+                    }
+                }
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        let workgroup_size: u32 = 256;
+        let num_workgroups = (total_size as u32 + workgroup_size - 1) / workgroup_size;
+
+        let mut shader_defs = HashMap::new();
+        shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());
+
+        let shader_index = ctx.compile_shader(
+            "trilu",
+            include_str!("../../shaders/indexing/trilu.wgsl"),
+            &shader_defs,
+        )?;
+
+        // Encode immediate constants
+        let mut immediates_data = Vec::new();
+        immediates_data.extend_from_slice(&(total_size as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&(m as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&(n as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&k.to_le_bytes());
+        immediates_data.extend_from_slice(&(upper as u32).to_le_bytes());
+
+        Ok(vec![Step::Dispatch {
+            shader_index,
+            bindings: vec![
+                BindingDesc {
+                    buffer: ctx.input(0)?,
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.output(0)?,
+                    read_only: false,
+                },
+            ],
+            workgroups: [num_workgroups, 1, 1],
+            immediates: Some(immediates_data),
+        }])
     }
 }

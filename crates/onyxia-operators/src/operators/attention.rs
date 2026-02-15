@@ -23,11 +23,96 @@ impl Operator for RotaryEmbeddingOp {
         Ok(vec![ctx.input_shape(0)?.clone()])
     }
 
-    fn plan(&self, _ctx: &mut PlanCtx) -> Result<Vec<Step>> {
-        // TODO: Implement RotaryEmbedding GPU planning
-        Err(onyxia_core::Error::Planning(
-            "RotaryEmbedding GPU planning not yet implemented".to_string(),
-        ))
+    fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {
+        // RotaryEmbedding inputs:
+        // 0: input tensor [batch, seq_len, num_heads, head_dim]
+        // 1: position_ids [batch, seq_len] (I64)
+        // 2: cos_cache [max_seq_len, head_dim/2] (F32)
+        // 3: sin_cache [max_seq_len, head_dim/2] (F32)
+
+        if ctx.input_count() < 4 {
+            return Err(onyxia_core::Error::Planning(format!(
+                "RotaryEmbedding requires 4 inputs, got {}",
+                ctx.input_count()
+            )));
+        }
+
+        // Get input shape: [batch, seq_len, num_heads, head_dim]
+        let input_tensor = ctx.input_tensor(0)?;
+        let input_shape = ctx.static_dims(&input_tensor.shape)?;
+
+        if input_shape.len() != 4 {
+            return Err(onyxia_core::Error::Planning(format!(
+                "RotaryEmbedding expects input shape [batch, seq, heads, head_dim], got {:?}",
+                input_shape
+            )));
+        }
+
+        let batch_size = input_shape[0];
+        let seq_len = input_shape[1];
+        let num_heads = input_shape[2];
+        let head_dim = input_shape[3];
+
+        if head_dim % 2 != 0 {
+            return Err(onyxia_core::Error::Planning(format!(
+                "RotaryEmbedding requires even head dimension, got {}",
+                head_dim
+            )));
+        }
+
+        // Read interleaved attribute (default 0 for split-half)
+        let interleaved: u32 = ctx.attr_i64("interleaved").unwrap_or(0) as u32;
+
+        // Calculate total number of pairs to rotate
+        let total_pairs = batch_size * seq_len * num_heads * (head_dim / 2);
+
+        let workgroup_size: u32 = 256;
+        let num_workgroups = (total_pairs as u32 + workgroup_size - 1) / workgroup_size;
+
+        let mut shader_defs = HashMap::new();
+        shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());
+
+        let shader_index = ctx.compile_shader(
+            "rotary_embedding",
+            include_str!("../../shaders/attention/rotary_embedding.wgsl"),
+            &shader_defs,
+        )?;
+
+        // Encode immediate constants
+        let mut immediates_data = Vec::new();
+        immediates_data.extend_from_slice(&(batch_size as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&(seq_len as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&(num_heads as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&(head_dim as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&interleaved.to_le_bytes());
+
+        Ok(vec![Step::Dispatch {
+            shader_index,
+            bindings: vec![
+                BindingDesc {
+                    buffer: ctx.input(0)?, // input
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.input(1)?, // position_ids (I64)
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.input(2)?, // cos_cache
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.input(3)?, // sin_cache
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.output(0)?, // output
+                    read_only: false,
+                },
+            ],
+            workgroups: [num_workgroups, 1, 1],
+            immediates: Some(immediates_data),
+        }])
     }
 }
 

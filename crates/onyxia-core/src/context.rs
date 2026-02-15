@@ -572,6 +572,20 @@ impl<'a> PlanCtx<'a> {
             }),
         }
     }
+
+    /// Get the number of inputs to this node.
+    pub fn input_count(&self) -> usize {
+        self.node.inputs.len()
+    }
+
+    /// Get the constant value of an input tensor, if available.
+    ///
+    /// Returns `None` if the input doesn't exist or isn't a constant.
+    pub fn input_value(&self, index: usize) -> Option<&TensorValue> {
+        let tensor_id = self.node.inputs.get(index)?;
+        let tensor = self.graph.tensor(*tensor_id).ok()?;
+        tensor.value.as_ref()
+    }
 }
 
 #[cfg(test)]

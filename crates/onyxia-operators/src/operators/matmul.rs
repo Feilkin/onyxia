@@ -203,10 +203,124 @@ impl Operator for MatMulNBitsOp {
         Ok(vec![TensorShape::Static(output_dims)])
     }
 
-    fn plan(&self, _ctx: &mut PlanCtx) -> Result<Vec<Step>> {
-        // TODO: Implement MatMulNBits GPU planning
-        Err(onyxia_core::Error::Planning(
-            "MatMulNBits GPU planning not yet implemented".to_string(),
-        ))
+    fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {
+        // MatMulNBits: Quantized matrix multiplication (typically 4-bit weights)
+        // A: [M, K] — activations (f32)
+        // B: [N, n_blocks_per_col, blob_size] — weights (u8, packed)
+        // scales: [N, n_blocks_per_col] — dequantization scales (f32)
+        // zero_points: [N, n_blocks_per_col_padded] — optional (u8, packed)
+        // Output: [M, N] — f32
+
+        let a_tensor = ctx.input_tensor(0)?;
+        let a_shape = ctx.static_dims(&a_tensor.shape)?;
+
+        if a_shape.len() < 2 {
+            return Err(onyxia_core::Error::Planning(format!(
+                "MatMulNBits requires at least 2D A tensor, got: {:?}",
+                a_shape
+            )));
+        }
+
+        let m = a_shape[a_shape.len() - 2];
+        let k = a_shape[a_shape.len() - 1];
+
+        // Get attributes
+        let n = ctx.attr_i64("N")? as usize;
+        let bits: i64 = ctx.attr_i64("bits").unwrap_or(4);
+        let block_size: i64 = ctx.attr_i64("block_size").unwrap_or(32);
+
+        if bits != 4 {
+            return Err(onyxia_core::Error::Planning(format!(
+                "MatMulNBits only supports 4-bit quantization, got {}",
+                bits
+            )));
+        }
+
+        // Calculate number of blocks per column
+        let k_rounded = ((k as i64 + block_size - 1) / block_size) * block_size;
+        let n_blocks_per_col = (k_rounded / block_size) as usize;
+
+        // Check if zero_points input is provided (input 3)
+        let has_zero_points = ctx.input_count() > 3;
+
+        // Workgroup configuration
+        let workgroup_x: u32 = 16;
+        let workgroup_y: u32 = 16;
+
+        let workgroups_x = (n as u32 + workgroup_x - 1) / workgroup_x;
+        let workgroups_y = (m as u32 + workgroup_y - 1) / workgroup_y;
+
+        let mut shader_defs = HashMap::new();
+        shader_defs.insert("WORKGROUP_X".to_string(), workgroup_x.to_string());
+        shader_defs.insert("WORKGROUP_Y".to_string(), workgroup_y.to_string());
+        if has_zero_points {
+            shader_defs.insert("HAS_ZERO_POINTS".to_string(), "1".to_string());
+        }
+
+        let shader_index = ctx.compile_shader(
+            "matmul_q4",
+            include_str!("../../shaders/matmul/matmul_q4.wgsl"),
+            &shader_defs,
+        )?;
+
+        // Encode immediate constants
+        let mut immediates_data = Vec::new();
+        immediates_data.extend_from_slice(&(m as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&(n as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&(k as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&(block_size as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&(n_blocks_per_col as u32).to_le_bytes());
+
+        // Build bindings based on whether zero_points are present
+        let bindings = if has_zero_points {
+            vec![
+                BindingDesc {
+                    buffer: ctx.input(0)?, // matrix_a
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.input(1)?, // packed_weights
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.input(2)?, // scales
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.input(3)?, // zero_points
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.output(0)?, // matrix_c
+                    read_only: false,
+                },
+            ]
+        } else {
+            vec![
+                BindingDesc {
+                    buffer: ctx.input(0)?, // matrix_a
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.input(1)?, // packed_weights
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.input(2)?, // scales
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.output(0)?, // matrix_c
+                    read_only: false,
+                },
+            ]
+        };
+
+        Ok(vec![Step::Dispatch {
+            shader_index,
+            bindings,
+            workgroups: [workgroups_x, workgroups_y, 1],
+            immediates: Some(immediates_data),
+        }])
     }
 }
