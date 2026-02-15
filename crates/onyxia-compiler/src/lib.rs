@@ -41,7 +41,7 @@ pub mod scheduler;
 pub mod symbolic_expr;
 
 pub use error::{CodegenError, Result};
-pub use passes::{ConstantFoldingPass, PlanningPass, ShapeInferencePass, SymbolicResolutionPass};
+pub use passes::{ConstantFoldingPass, InitializeConstantsPass, PlanningPass, ShapeInferencePass, SymbolicResolutionPass};
 
 // Re-export commonly used types from onyxia-core
 pub use onyxia_core::{CompiledModel, IrGraph, Pass, Stage};
@@ -76,9 +76,6 @@ impl CompilerPipeline {
     /// - `ShapeInferencePass` (Inference stage)
     /// - `PlanningPass` (Planning stage)
     ///
-    /// The Optimization stage is empty by default. Custom passes can be added
-    /// via `add_pass()`.
-    ///
     /// Note: Constant folding runs before shape inference so that fully-folded
     /// nodes don't need shape inference at all.
     pub fn new(dynamic_dimensions: HashMap<String, usize>) -> Self {
@@ -89,6 +86,7 @@ impl CompilerPipeline {
 
         // Register built-in passes
         pipeline.add_pass(SymbolicResolutionPass::new(dynamic_dimensions));
+        pipeline.add_pass(InitializeConstantsPass::new());
         pipeline.add_pass(ConstantFoldingPass::new());
         pipeline.add_pass(ShapeInferencePass::new());
         pipeline.add_pass(PlanningPass::new());
@@ -363,8 +361,8 @@ mod tests {
         let dynamic_dimensions = HashMap::new();
         let pipeline = CompilerPipeline::new(dynamic_dimensions);
 
-        // Verify passes were registered (4 built-in passes now: SymbolicResolution, ConstantFolding, ShapeInference, Planning)
-        assert_eq!(pipeline.passes.len(), 4);
+        // Verify passes were registered (5 built-in passes now: SymbolicResolution, InitializeConstants, ConstantFolding, ShapeInference, Planning)
+        assert_eq!(pipeline.passes.len(), 5);
     }
 
     #[test]
@@ -399,8 +397,8 @@ mod tests {
         // Add custom pass
         pipeline.add_pass(NoOpPass);
 
-        // Should now have 5 passes (4 built-in + 1 custom)
-        assert_eq!(pipeline.passes.len(), 5);
+        // Should now have 6 passes (5 built-in + 1 custom)
+        assert_eq!(pipeline.passes.len(), 6);
     }
 
     #[test]
