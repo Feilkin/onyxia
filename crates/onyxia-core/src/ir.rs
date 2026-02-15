@@ -8,7 +8,7 @@
 //! producing operator is removed from the graph. Downstream consumers
 //! see the constant directly on the edge.
 
-use crate::types::{DataType, TensorKind, TensorShape, TensorValue};
+use crate::types::{DataType, TensorShape, TensorValue};
 use crate::{Error, Result};
 use onyxia_onnx::AttributeValue;
 use petgraph::graph::NodeIndex;
@@ -267,7 +267,7 @@ impl IrGraph {
         let output_edge_id = node.outputs[0];
 
         // Store the constant value on the output edge
-        self.edge_mut(output_edge_id)?.constant_value = Some(value);
+        self.edge_mut(output_edge_id)?.data = EdgeData::Constant(value);
 
         // Remove the node (cleans up producer/consumer tables + petgraph)
         self.remove_node(node_id)
@@ -422,13 +422,39 @@ impl IrNode {
     }
 }
 
+// ──────────────────────────────── EdgeData ───────────────────────────────
+
+/// What compile-time data an edge carries.
+///
+/// Encodes the three mutually exclusive states an edge can be in:
+/// - **Runtime**: no compile-time data — value arrives at runtime (graph input
+///   or operator output).
+/// - **Initializer**: raw weight bytes from the ONNX model file, parsed
+///   on-demand during constant folding.
+/// - **Constant**: fully evaluated compile-time value (from folding or a
+///   parsed initializer).
+#[derive(Debug, Clone)]
+pub enum EdgeData {
+    /// No compile-time data; value arrives at runtime.
+    Runtime,
+
+    /// Raw weight bytes from the ONNX model file, parsed on demand.
+    Initializer(Vec<u8>),
+
+    /// Fully evaluated compile-time constant.
+    Constant(TensorValue),
+}
+
 // ──────────────────────────────── IrEdge ─────────────────────────────────
 
 /// An edge (tensor value flow) in the IR graph.
 ///
-/// Edges carry metadata about the tensor that flows along them. During constant
-/// folding, the `constant_value` field is populated and the producing operator
-/// is removed.
+/// Edges carry metadata about the tensor that flows along them:
+/// - `name` / `dtype` / `shape` describe the tensor.
+/// - `data` describes what compile-time data (if any) the edge holds.
+///
+/// During constant folding, `data` transitions from `Initializer` or
+/// `Runtime` to `Constant`, and the producing operator is removed.
 #[derive(Debug, Clone)]
 pub struct IrEdge {
     /// Tensor name (must be unique within the graph).
@@ -440,41 +466,78 @@ pub struct IrEdge {
     /// Shape (static, symbolic, or absent).
     pub shape: TensorShape,
 
-    /// Tensor kind (input, output, intermediate, or constant).
-    pub kind: TensorKind,
-
-    /// Initializer data for constants (raw bytes from ONNX).
-    /// Parsed on-demand during constant folding.
-    pub initializer: Option<Vec<u8>>,
-
-    /// Constant value set during constant folding.
-    pub constant_value: Option<TensorValue>,
+    /// Compile-time data carried by this edge.
+    pub data: EdgeData,
 }
 
 /// Backward-compatibility alias.
 pub type TensorDef = IrEdge;
 
 impl IrEdge {
-    /// Create a new edge definition.
-    pub fn new(name: String, dtype: DataType, shape: TensorShape, kind: TensorKind) -> Self {
+    /// Create a new runtime edge (no compile-time data).
+    pub fn new(name: String, dtype: DataType, shape: TensorShape) -> Self {
         Self {
             name,
             dtype,
             shape,
-            kind,
-            initializer: None,
-            constant_value: None,
+            data: EdgeData::Runtime,
+        }
+    }
+
+    /// Create a new edge with initializer data (weight).
+    pub fn with_initializer(
+        name: String,
+        dtype: DataType,
+        shape: TensorShape,
+        initializer: Vec<u8>,
+    ) -> Self {
+        Self {
+            name,
+            dtype,
+            shape,
+            data: EdgeData::Initializer(initializer),
+        }
+    }
+
+    /// Create a new edge with a known constant value.
+    pub fn with_constant(
+        name: String,
+        dtype: DataType,
+        shape: TensorShape,
+        value: TensorValue,
+    ) -> Self {
+        Self {
+            name,
+            dtype,
+            shape,
+            data: EdgeData::Constant(value),
         }
     }
 
     /// Check if this edge has initializer data.
     pub fn has_initializer(&self) -> bool {
-        self.initializer.is_some()
+        matches!(self.data, EdgeData::Initializer(_))
     }
 
     /// Check if this edge holds a constant value.
     pub fn is_constant(&self) -> bool {
-        self.constant_value.is_some()
+        matches!(self.data, EdgeData::Constant(_))
+    }
+
+    /// Get the initializer bytes, if this edge is an initializer.
+    pub fn initializer(&self) -> Option<&[u8]> {
+        match &self.data {
+            EdgeData::Initializer(bytes) => Some(bytes),
+            _ => None,
+        }
+    }
+
+    /// Get the constant value, if this edge holds one.
+    pub fn constant_value(&self) -> Option<&TensorValue> {
+        match &self.data {
+            EdgeData::Constant(value) => Some(value),
+            _ => None,
+        }
     }
 }
 
@@ -496,7 +559,6 @@ mod tests {
             "x".to_string(),
             DataType::F32,
             TensorShape::Static(vec![1, 2, 3]),
-            TensorKind::Input,
         );
         let edge_id = graph.add_edge(edge);
 
@@ -513,13 +575,11 @@ mod tests {
             "input".to_string(),
             DataType::F32,
             TensorShape::Static(vec![1, 2]),
-            TensorKind::Input,
         );
         let output = IrEdge::new(
             "output".to_string(),
             DataType::F32,
             TensorShape::Static(vec![1, 2]),
-            TensorKind::Intermediate,
         );
 
         let input_id = graph.add_edge(input);
@@ -544,13 +604,11 @@ mod tests {
             "input".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2, 2]),
-            TensorKind::Input,
         ));
         let output_id = graph.add_edge(IrEdge::new(
             "output".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2, 2]),
-            TensorKind::Intermediate,
         ));
 
         let mut node = IrNode::new("Add".to_string());
@@ -573,25 +631,21 @@ mod tests {
             "t0".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Input,
         ));
         let t1 = graph.add_edge(IrEdge::new(
             "t1".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Intermediate,
         ));
         let t2 = graph.add_edge(IrEdge::new(
             "t2".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Intermediate,
         ));
         let t3 = graph.add_edge(IrEdge::new(
             "t3".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Output,
         ));
 
         let mut node_a = IrNode::new("A".to_string());
@@ -621,19 +675,16 @@ mod tests {
             "t0".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Input,
         ));
         let t1 = graph.add_edge(IrEdge::new(
             "t1".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Intermediate,
         ));
         let t2 = graph.add_edge(IrEdge::new(
             "t2".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Intermediate,
         ));
 
         let mut node_a = IrNode::new("A".to_string());
@@ -668,13 +719,11 @@ mod tests {
             "input".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2, 3]),
-            TensorKind::Input,
         ));
         let output_id = graph.add_edge(IrEdge::new(
             "output".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2, 3]),
-            TensorKind::Intermediate,
         ));
 
         let mut node = IrNode::new("Relu".to_string());
@@ -703,10 +752,7 @@ mod tests {
         // Output edge should have the constant value
         let output_edge = graph.edge(output_id).unwrap();
         assert!(output_edge.is_constant());
-        assert_eq!(
-            output_edge.constant_value.as_ref().unwrap().shape,
-            vec![2, 3]
-        );
+        assert_eq!(output_edge.constant_value().unwrap().shape, vec![2, 3]);
 
         // Consumer still references the edge (unchanged)
         let consumer_node = graph.node(consumer_id).unwrap();

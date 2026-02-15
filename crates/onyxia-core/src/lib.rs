@@ -19,7 +19,7 @@ pub mod types;
 
 // Re-export commonly used types
 pub use context::{FoldCtx, InferenceCtx, PlanCtx};
-pub use ir::{IrEdge, IrEdgeId, IrGraph, IrNode, IrNodeId, IrTensorId, TensorDef};
+pub use ir::{EdgeData, IrEdge, IrEdgeId, IrGraph, IrNode, IrNodeId, IrTensorId, TensorDef};
 pub use operator::Operator;
 pub use pass::{Pass, Stage};
 pub use plan::{
@@ -28,7 +28,7 @@ pub use plan::{
 };
 pub use registry::OperatorRegistry;
 pub use symbolic_expr::{BinOpKind, SymbolicExpr};
-pub use types::{DataType, SymbolicDim, TensorData, TensorKind, TensorShape, TensorValue};
+pub use types::{DataType, SymbolicDim, TensorData, TensorShape, TensorValue};
 
 /// Result type using the crate's error type.
 pub type Result<T> = std::result::Result<T, Error>;

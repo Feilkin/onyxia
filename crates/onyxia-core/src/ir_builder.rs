@@ -1,6 +1,7 @@
 //! Build IR graphs from ONNX graphs.
 
 use crate::ir::{IrGraph, IrNode, IrTensorId, TensorDef};
+use crate::ir::EdgeData;
 use crate::types::TensorShape;
 use crate::{Error, Result};
 use onyxia_onnx::Graph;
@@ -45,12 +46,11 @@ impl IrGraph {
                 onnx_tensor.name.clone(),
                 onnx_tensor.dtype,
                 shape,
-                onnx_tensor.kind,
             );
 
-            // Copy initializer data if present
+            // Translate ONNX initializer data → EdgeData::Initializer
             if let Some(ref initializer_data) = onnx_tensor.initializer {
-                tensor_def.initializer = Some(initializer_data.clone());
+                tensor_def.data = EdgeData::Initializer(initializer_data.clone());
             }
 
             let tensor_id = ir_graph.add_tensor(tensor_def);
@@ -271,7 +271,7 @@ mod tests {
         let constant_tensor = ir_graph.tensor(constant_id).unwrap();
 
         assert!(constant_tensor.has_initializer());
-        assert_eq!(constant_tensor.initializer.as_ref().unwrap().len(), 8);
+        assert_eq!(constant_tensor.initializer().unwrap().len(), 8);
     }
 
     #[test]

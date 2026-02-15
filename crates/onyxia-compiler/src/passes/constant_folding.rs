@@ -111,7 +111,7 @@ impl Default for ConstantFoldingPass {
 mod tests {
     use super::*;
     use onyxia_core::ir::IrEdge;
-    use onyxia_core::{DataType, IrGraph, IrNode, Operator, TensorKind, TensorShape, TensorValue};
+    use onyxia_core::{DataType, EdgeData, IrGraph, IrNode, Operator, TensorShape, TensorValue};
 
     // Mock operator that folds addition
     struct MockAddOperator;
@@ -158,13 +158,12 @@ mod tests {
         let mut graph = IrGraph::new();
 
         // Create a constant tensor with initializer
-        let mut edge = IrEdge::new(
+        let edge = IrEdge::with_initializer(
             "const".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Weight,
+            vec![0, 0, 128, 63, 0, 0, 0, 64],
         );
-        edge.initializer = Some(vec![0, 0, 128, 63, 0, 0, 0, 64]);
         let edge_id = graph.add_edge(edge);
 
         let registry = OperatorRegistry::new();
@@ -182,30 +181,28 @@ mod tests {
         let mut graph = IrGraph::new();
 
         // Create two constant input edges (with constant_value set)
-        let mut edge_a = IrEdge::new(
+        let edge_a = IrEdge::with_constant(
             "a".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Intermediate,
+            TensorValue::new(
+                onyxia_core::TensorData::F32(vec![1.0, 2.0]),
+                vec![2],
+                DataType::F32,
+            ),
         );
-        edge_a.constant_value = Some(TensorValue::new(
-            onyxia_core::TensorData::F32(vec![1.0, 2.0]),
-            vec![2],
-            DataType::F32,
-        ));
         let edge_a_id = graph.add_edge(edge_a);
 
-        let mut edge_b = IrEdge::new(
+        let edge_b = IrEdge::with_constant(
             "b".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Intermediate,
+            TensorValue::new(
+                onyxia_core::TensorData::F32(vec![3.0, 4.0]),
+                vec![2],
+                DataType::F32,
+            ),
         );
-        edge_b.constant_value = Some(TensorValue::new(
-            onyxia_core::TensorData::F32(vec![3.0, 4.0]),
-            vec![2],
-            DataType::F32,
-        ));
         let edge_b_id = graph.add_edge(edge_b);
 
         // Create output edge
@@ -213,7 +210,6 @@ mod tests {
             "output".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Intermediate,
         );
         let output_id = graph.add_edge(output_edge);
 
@@ -240,7 +236,7 @@ mod tests {
         // Output edge should have the constant value
         let output_edge = graph.edge(output_id).unwrap();
         assert!(output_edge.is_constant());
-        let value = output_edge.constant_value.as_ref().unwrap();
+        let value = output_edge.constant_value().unwrap();
         assert_eq!(value.as_f32(), Some(&[4.0, 6.0][..]));
     }
 
@@ -253,19 +249,16 @@ mod tests {
             "a".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Input,
         ));
         let b_id = graph.add_edge(IrEdge::new(
             "b".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Input,
         ));
         let output_id = graph.add_edge(IrEdge::new(
             "output".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Intermediate,
         ));
 
         let mut node = IrNode::new("MockAdd".to_string());

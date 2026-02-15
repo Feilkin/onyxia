@@ -297,7 +297,7 @@ pub fn compile(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use onyxia_core::{DataType, IrGraph, IrNode, Operator, TensorDef, TensorKind, TensorShape};
+    use onyxia_core::{DataType, IrGraph, IrNode, Operator, TensorDef, TensorShape};
 
     // Mock operator for testing
     struct MockOperator;
@@ -334,7 +334,6 @@ mod tests {
             "input".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2, 3]),
-            TensorKind::Input,
         );
         let input_id = graph.add_tensor(input);
 
@@ -342,7 +341,6 @@ mod tests {
             "output".to_string(),
             DataType::F32,
             TensorShape::Static(vec![]),
-            TensorKind::Intermediate,
         );
         let output_id = graph.add_tensor(output);
 

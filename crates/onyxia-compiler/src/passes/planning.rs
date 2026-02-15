@@ -164,7 +164,7 @@ mod tests {
     use super::*;
     use onyxia_core::ir::IrEdge;
     use onyxia_core::{
-        BufferRef, DataType, IrGraph, IrNode, Operator, Step, TensorKind, TensorShape, TensorValue,
+        BufferRef, DataType, IrGraph, IrNode, Operator, Step, TensorShape, TensorValue,
     };
 
     // Mock operator that emits a dummy step
@@ -192,17 +192,16 @@ mod tests {
         let mut graph = IrGraph::new();
 
         // Create a constant input edge (folded — has constant_value)
-        let mut const_edge = IrEdge::new(
+        let const_edge = IrEdge::with_constant(
             "const_input".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Intermediate,
+            TensorValue::new(
+                onyxia_core::TensorData::F32(vec![1.0, 2.0]),
+                vec![2],
+                DataType::F32,
+            ),
         );
-        const_edge.constant_value = Some(TensorValue::new(
-            onyxia_core::TensorData::F32(vec![1.0, 2.0]),
-            vec![2],
-            DataType::F32,
-        ));
         let const_edge_id = graph.add_edge(const_edge);
 
         // Create output edge
@@ -210,7 +209,6 @@ mod tests {
             "output".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Intermediate,
         );
         let output_id = graph.add_edge(output_edge);
 
@@ -238,14 +236,12 @@ mod tests {
             "input".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Input,
         ));
 
         let output_id = graph.add_edge(IrEdge::new(
             "output".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Intermediate,
         ));
 
         graph.inputs.push(input_id);
@@ -274,19 +270,16 @@ mod tests {
             "input".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Input,
         ));
         let mid_id = graph.add_edge(IrEdge::new(
             "mid".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Intermediate,
         ));
         let output_id = graph.add_edge(IrEdge::new(
             "output".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Intermediate,
         ));
 
         // Add two nodes in a chain

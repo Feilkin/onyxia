@@ -111,7 +111,7 @@ impl Default for ShapeInferencePass {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use onyxia_core::{DataType, IrGraph, IrNode, Operator, TensorDef, TensorKind, TensorShape};
+    use onyxia_core::{DataType, IrGraph, IrNode, Operator, TensorDef, TensorShape};
 
     // Mock operator that adds dimensions
     struct MockAddOperator;
@@ -140,7 +140,6 @@ mod tests {
             "input".to_string(),
             DataType::F32,
             TensorShape::Static(vec![1, 2, 3]),
-            TensorKind::Input,
         );
         let input_id = graph.add_tensor(input);
 
@@ -149,7 +148,6 @@ mod tests {
             "output".to_string(),
             DataType::F32,
             TensorShape::Static(vec![]), // Empty shape to be inferred
-            TensorKind::Intermediate,
         );
         let output_id = graph.add_tensor(output);
 
@@ -182,13 +180,11 @@ mod tests {
             "input".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Input,
         ));
         let output_id = graph.add_tensor(TensorDef::new(
             "output".to_string(),
             DataType::F32,
             TensorShape::Static(vec![]),
-            TensorKind::Intermediate,
         ));
 
         let mut node = IrNode::new("UnknownOp".to_string());
@@ -213,21 +209,18 @@ mod tests {
             "input".to_string(),
             DataType::F32,
             TensorShape::Static(vec![4, 8]),
-            TensorKind::Input,
         ));
 
         let intermediate_id = graph.add_tensor(TensorDef::new(
             "intermediate".to_string(),
             DataType::F32,
             TensorShape::Static(vec![]),
-            TensorKind::Intermediate,
         ));
 
         let output_id = graph.add_tensor(TensorDef::new(
             "output".to_string(),
             DataType::F32,
             TensorShape::Static(vec![]),
-            TensorKind::Output,
         ));
 
         // Node 1: input -> intermediate

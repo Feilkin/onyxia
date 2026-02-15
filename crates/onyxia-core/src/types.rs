@@ -4,7 +4,7 @@ use crate::symbolic_expr::SymbolicExpr;
 use crate::{Error, Result};
 
 // Re-export types from onyxia-onnx
-pub use onyxia_onnx::{DataType, TensorKind};
+pub use onyxia_onnx::DataType;
 
 /// Tensor shape with support for static, symbolic, and absent shapes.
 ///

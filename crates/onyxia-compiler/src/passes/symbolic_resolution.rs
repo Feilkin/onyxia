@@ -94,7 +94,7 @@ impl Pass for SymbolicResolutionPass {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use onyxia_core::{DataType, IrGraph, SymbolicExpr, TensorDef, TensorKind};
+    use onyxia_core::{DataType, IrGraph, SymbolicExpr, TensorDef};
 
     #[test]
     fn test_resolve_static_dims() {
@@ -103,7 +103,6 @@ mod tests {
             "x".to_string(),
             DataType::F32,
             TensorShape::Static(vec![1, 2, 3]),
-            TensorKind::Input,
         );
         graph.add_tensor(tensor);
 
@@ -124,7 +123,6 @@ mod tests {
                 SymbolicDim::Expr(SymbolicExpr::Variable("batch".to_string())),
                 SymbolicDim::Fixed(128),
             ]),
-            TensorKind::Input,
         );
         let tensor_id = graph.add_tensor(tensor);
 
@@ -149,7 +147,6 @@ mod tests {
                 SymbolicDim::Expr(SymbolicExpr::Variable("batch".to_string())),
                 SymbolicDim::Expr(SymbolicExpr::Variable("seq".to_string())),
             ]),
-            TensorKind::Input,
         );
         let tensor_id = graph.add_tensor(tensor);
 
@@ -185,7 +182,6 @@ mod tests {
             "x".to_string(),
             DataType::F32,
             TensorShape::Symbolic(vec![SymbolicDim::Fixed(1), SymbolicDim::Expr(expr)]),
-            TensorKind::Input,
         );
         let tensor_id = graph.add_tensor(tensor);
 

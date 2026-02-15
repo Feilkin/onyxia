@@ -48,7 +48,7 @@ impl<'a> InferenceCtx<'a> {
         let edge = self.graph.edge(*edge_id)?;
 
         // If the edge has a constant value (from folding), use that shape
-        if let Some(ref value) = edge.constant_value {
+        if let Some(value) = edge.constant_value() {
             return Ok(TensorShape::Static(value.shape.clone()));
         }
 
@@ -80,7 +80,7 @@ impl<'a> InferenceCtx<'a> {
     pub fn input_value(&self, index: usize) -> Option<&TensorValue> {
         let edge_id = self.node.inputs().get(index)?;
         let edge = self.graph.edge(*edge_id).ok()?;
-        edge.constant_value.as_ref()
+        edge.constant_value()
     }
 
     /// Get the data type of an input tensor.
@@ -94,7 +94,7 @@ impl<'a> InferenceCtx<'a> {
         let edge = self.graph.edge(*edge_id)?;
 
         // Prefer constant value dtype if available
-        if let Some(ref value) = edge.constant_value {
+        if let Some(value) = edge.constant_value() {
             return Ok(value.dtype);
         }
 
@@ -223,8 +223,8 @@ impl<'a> FoldCtx<'a> {
     /// Get the constant value for an input, if available.
     ///
     /// Checks (in order):
-    /// 1. `edge.constant_value` (set by a prior folding pass)
-    /// 2. `edge.initializer` (raw ONNX bytes, parsed on-demand)
+    /// 1. `EdgeData::Constant` (set by a prior folding pass)
+    /// 2. `EdgeData::Initializer` (raw ONNX bytes, parsed on-demand)
     fn get_input_value(&self, index: usize) -> Result<Option<TensorValue>> {
         let edge_id = self
             .node
@@ -235,12 +235,12 @@ impl<'a> FoldCtx<'a> {
         let edge = self.graph.edge(*edge_id)?;
 
         // Already folded?
-        if let Some(ref value) = edge.constant_value {
+        if let Some(value) = edge.constant_value() {
             return Ok(Some(value.clone()));
         }
 
         // Has an initializer we can parse?
-        if let Some(ref initializer) = edge.initializer {
+        if let Some(initializer) = edge.initializer() {
             let shape = match &edge.shape {
                 TensorShape::Static(dims) => dims.clone(),
                 _ => return Ok(None), // Can't fold non-static shapes
@@ -615,15 +615,15 @@ impl<'a> PlanCtx<'a> {
     pub fn input_value(&self, index: usize) -> Option<&TensorValue> {
         let edge_id = self.node.inputs().get(index)?;
         let edge = self.graph.edge(*edge_id).ok()?;
-        edge.constant_value.as_ref()
+        edge.constant_value()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{IrEdge, IrGraph, IrNode};
-    use crate::types::{DataType, TensorData, TensorKind, TensorShape, TensorValue};
+    use crate::ir::{EdgeData, IrEdge, IrGraph, IrNode};
+    use crate::types::{DataType, TensorData, TensorShape, TensorValue};
 
     #[test]
     fn test_inference_ctx_input_shape() {
@@ -633,7 +633,6 @@ mod tests {
             "input".to_string(),
             DataType::F32,
             TensorShape::Static(vec![1, 2, 3]),
-            TensorKind::Input,
         ));
 
         let mut node = IrNode::new("Relu".to_string());
@@ -650,17 +649,16 @@ mod tests {
         let mut graph = IrGraph::new();
 
         // Create an edge with a constant value (as if folded)
-        let mut edge = IrEdge::new(
+        let edge = IrEdge::with_constant(
             "folded".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2, 3]),
-            TensorKind::Intermediate,
+            TensorValue::new(
+                TensorData::F32(vec![1.0; 6]),
+                vec![2, 3],
+                DataType::F32,
+            ),
         );
-        edge.constant_value = Some(TensorValue::new(
-            TensorData::F32(vec![1.0; 6]),
-            vec![2, 3],
-            DataType::F32,
-        ));
         let edge_id = graph.add_edge(edge);
 
         let mut node = IrNode::new("Consumer".to_string());
@@ -680,7 +678,6 @@ mod tests {
             "input".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2, 3]),
-            TensorKind::Input,
         ));
 
         let mut node = IrNode::new("Test".to_string());
@@ -715,30 +712,28 @@ mod tests {
         let mut graph = IrGraph::new();
 
         // Create edges with constant values (as if previously folded)
-        let mut edge_a = IrEdge::new(
+        let edge_a = IrEdge::with_constant(
             "a".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Intermediate,
+            TensorValue::new(
+                TensorData::F32(vec![1.0, 2.0]),
+                vec![2],
+                DataType::F32,
+            ),
         );
-        edge_a.constant_value = Some(TensorValue::new(
-            TensorData::F32(vec![1.0, 2.0]),
-            vec![2],
-            DataType::F32,
-        ));
         let edge_a_id = graph.add_edge(edge_a);
 
-        let mut edge_b = IrEdge::new(
+        let edge_b = IrEdge::with_constant(
             "b".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Intermediate,
+            TensorValue::new(
+                TensorData::F32(vec![3.0, 4.0]),
+                vec![2],
+                DataType::F32,
+            ),
         );
-        edge_b.constant_value = Some(TensorValue::new(
-            TensorData::F32(vec![3.0, 4.0]),
-            vec![2],
-            DataType::F32,
-        ));
         let edge_b_id = graph.add_edge(edge_b);
 
         let mut node = IrNode::new("Add".to_string());
@@ -759,13 +754,12 @@ mod tests {
         let mut graph = IrGraph::new();
 
         // Create an edge with an initializer (raw bytes for [1.0f32, 2.0f32])
-        let mut edge = IrEdge::new(
+        let edge = IrEdge::with_initializer(
             "weight".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
-            TensorKind::Weight,
+            vec![0, 0, 128, 63, 0, 0, 0, 64], // 1.0f32, 2.0f32
         );
-        edge.initializer = Some(vec![0, 0, 128, 63, 0, 0, 0, 64]); // 1.0f32, 2.0f32
         let edge_id = graph.add_edge(edge);
 
         let mut node = IrNode::new("Consumer".to_string());
@@ -784,7 +778,6 @@ mod tests {
             "input".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2, 3]),
-            TensorKind::Input,
         ));
 
         let mut node = IrNode::new("Relu".to_string());
