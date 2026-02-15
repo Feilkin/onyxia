@@ -1188,6 +1188,7 @@ dependencies = [
  "half",
  "naga",
  "naga_oil",
+ "onyxia-core",
  "onyxia-onnx",
  "petgraph",
  "thiserror",

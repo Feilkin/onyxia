@@ -201,6 +201,11 @@ impl TensorRegistry {
     pub fn get(&self, id: IrTensorId) -> Option<&TensorMetadata> {
         self.tensors.get(id.index())
     }
+
+    /// Get all tensor metadata.
+    pub fn all(&self) -> &[TensorMetadata] {
+        &self.tensors
+    }
 }
 
 /// Metadata for a single tensor.
