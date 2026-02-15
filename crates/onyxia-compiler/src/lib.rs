@@ -39,7 +39,6 @@ pub mod operator;
 pub mod passes;
 pub mod plan;
 pub mod scheduler;
-pub mod shape_inference;
 pub mod symbolic_expr;
 
 pub use error::{CodegenError, Result};
@@ -49,7 +48,6 @@ pub use plan::{
     BindingDesc, BufferRef, CompiledShader, ExecutionPlan, ModelMetadata, PlannedOp,
     ScratchBufferDesc, ShaderIndex, Step, TensorRegistry,
 };
-pub use shape_inference::{infer_shapes, resolve_dynamic_dimensions};
 
 // Re-export commonly used types from onyxia-core
 pub use onyxia_core::{CompiledModel, IrGraph, Pass, Stage};
