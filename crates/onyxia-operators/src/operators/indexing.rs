@@ -616,7 +616,9 @@ impl Operator for ScatterNDOp {
         }
 
         // Get reduction mode attribute (default: none/replace)
-        let reduction_str = ctx.attr_string("reduction").unwrap_or_else(|_| "none".to_string());
+        let reduction_str = ctx
+            .attr_string("reduction")
+            .unwrap_or_else(|_| "none".to_string());
         let reduction: u32 = match reduction_str.as_str() {
             "none" => 0,
             "add" => 1,
