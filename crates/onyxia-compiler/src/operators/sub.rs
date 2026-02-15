@@ -183,7 +183,8 @@ mod tests {
                 shader_index,
                 bindings,
                 workgroups,
-                ..            } => {
+                ..
+            } => {
                 // Verify shader was compiled
                 assert_eq!(*shader_index, 0);
 

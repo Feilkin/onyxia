@@ -208,7 +208,9 @@ mod tests {
             &mut shaders,
         );
 
-        let steps = SqrtOperator.plan(&mut ctx).expect("Planning should succeed");
+        let steps = SqrtOperator
+            .plan(&mut ctx)
+            .expect("Planning should succeed");
 
         // Verify we got exactly one dispatch step
         assert_eq!(steps.len(), 1);
@@ -292,7 +294,9 @@ mod tests {
             &mut shaders,
         );
 
-        let steps = SqrtOperator.plan(&mut ctx).expect("Planning should succeed");
+        let steps = SqrtOperator
+            .plan(&mut ctx)
+            .expect("Planning should succeed");
 
         match &steps[0] {
             Step::Dispatch { workgroups, .. } => {

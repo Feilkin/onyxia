@@ -1,7 +1,7 @@
 //! Test compilation of the Gemma 3 270m model.
 
-use onyxia_onnx::load_and_parse_model;
 use onyxia_compiler::{OperatorRegistry, compile};
+use onyxia_onnx::load_and_parse_model;
 use std::collections::HashMap;
 
 #[test]

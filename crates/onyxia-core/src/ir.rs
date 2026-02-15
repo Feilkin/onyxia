@@ -1,0 +1,561 @@
+//! Intermediate representation for the compiler graph.
+//!
+//! The IR is built from an ONNX graph and provides a mutable representation
+//! suitable for optimization passes and planning. Uses `petgraph::StableGraph`
+//! to ensure node/tensor indices remain valid after removals.
+
+use crate::types::{DataType, TensorKind, TensorShape, TensorValue};
+use crate::{Error, Result};
+use onyxia_onnx::AttributeValue;
+use petgraph::graph::NodeIndex;
+use petgraph::stable_graph::StableGraph;
+use petgraph::visit::Topo;
+
+use std::collections::HashMap;
+
+/// Type alias for IR node identifiers (backed by petgraph NodeIndex).
+pub type IrNodeId = NodeIndex;
+
+/// Unique identifier for a tensor in the IR graph.
+///
+/// This is an index into `IrGraph::tensors`. Unlike node IDs (which use petgraph's
+/// stable NodeIndex), tensor IDs are simple usize indices that remain valid across
+/// graph mutations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct IrTensorId(pub usize);
+
+impl IrTensorId {
+    /// Create a new tensor ID.
+    pub fn new(id: usize) -> Self {
+        Self(id)
+    }
+
+    /// Get the underlying index.
+    pub fn index(&self) -> usize {
+        self.0
+    }
+}
+
+/// Intermediate representation graph.
+///
+/// Uses `petgraph::StableGraph` to ensure node indices remain valid after node
+/// removal during optimization passes. Tensors are stored in a side-table rather
+/// than as graph edges to provide efficient random access and mutation.
+pub struct IrGraph {
+    /// The graph structure (nodes only, no edge data).
+    graph: StableGraph<IrNode, ()>,
+
+    /// Tensor metadata side-table.
+    tensors: Vec<TensorDef>,
+
+    /// Lookup table: tensor name → tensor ID.
+    tensor_by_name: HashMap<String, IrTensorId>,
+
+    /// Lookup table: tensor ID → producing node ID.
+    tensor_producer: HashMap<IrTensorId, IrNodeId>,
+
+    /// Lookup table: tensor ID → consuming node IDs.
+    tensor_consumers: HashMap<IrTensorId, Vec<IrNodeId>>,
+
+    /// Graph input tensor IDs.
+    pub inputs: Vec<IrTensorId>,
+
+    /// Graph output tensor IDs.
+    pub outputs: Vec<IrTensorId>,
+}
+
+impl IrGraph {
+    /// Create a new empty IR graph.
+    pub fn new() -> Self {
+        Self {
+            graph: StableGraph::new(),
+            tensors: Vec::new(),
+            tensor_by_name: HashMap::new(),
+            tensor_producer: HashMap::new(),
+            tensor_consumers: HashMap::new(),
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+        }
+    }
+
+    // --- Node access ---
+
+    /// Get an immutable reference to a node.
+    pub fn node(&self, id: IrNodeId) -> Result<&IrNode> {
+        self.graph
+            .node_weight(id)
+            .ok_or_else(|| Error::InvalidGraph(format!("Node {:?} not found", id)))
+    }
+
+    /// Get a mutable reference to a node.
+    pub fn node_mut(&mut self, id: IrNodeId) -> Result<&mut IrNode> {
+        self.graph
+            .node_weight_mut(id)
+            .ok_or_else(|| Error::InvalidGraph(format!("Node {:?} not found", id)))
+    }
+
+    /// Get the inputs of a node.
+    pub fn node_inputs(&self, id: IrNodeId) -> Result<&[IrTensorId]> {
+        Ok(&self.node(id)?.inputs)
+    }
+
+    /// Get the outputs of a node.
+    pub fn node_outputs(&self, id: IrNodeId) -> Result<&[IrTensorId]> {
+        Ok(&self.node(id)?.outputs)
+    }
+
+    /// Iterate over all nodes in the graph.
+    pub fn nodes(&self) -> impl Iterator<Item = (IrNodeId, &IrNode)> {
+        self.graph
+            .node_indices()
+            .filter_map(|id| self.graph.node_weight(id).map(|node| (id, node)))
+    }
+
+    // --- Tensor access ---
+
+    /// Get an immutable reference to a tensor.
+    pub fn tensor(&self, id: IrTensorId) -> Result<&TensorDef> {
+        self.tensors
+            .get(id.index())
+            .ok_or_else(|| Error::InvalidGraph(format!("Tensor {:?} not found", id)))
+    }
+
+    /// Get a mutable reference to a tensor.
+    pub fn tensor_mut(&mut self, id: IrTensorId) -> Result<&mut TensorDef> {
+        self.tensors
+            .get_mut(id.index())
+            .ok_or_else(|| Error::InvalidGraph(format!("Tensor {:?} not found", id)))
+    }
+
+    /// Look up a tensor by name.
+    pub fn tensor_by_name(&self, name: &str) -> Option<IrTensorId> {
+        self.tensor_by_name.get(name).copied()
+    }
+
+    /// Get the node that produces a tensor, if any.
+    pub fn tensor_producer(&self, tensor_id: IrTensorId) -> Option<IrNodeId> {
+        self.tensor_producer.get(&tensor_id).copied()
+    }
+
+    /// Get the nodes that consume a tensor.
+    pub fn tensor_consumers(&self, tensor_id: IrTensorId) -> Vec<IrNodeId> {
+        self.tensor_consumers
+            .get(&tensor_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    // --- Graph mutation ---
+
+    /// Add a new node to the graph and return its ID.
+    ///
+    /// This also updates the producer/consumer lookup tables.
+    pub fn add_node(&mut self, mut node: IrNode) -> IrNodeId {
+        let node_id = self.graph.add_node(IrNode {
+            op_type: String::new(),
+            attributes: HashMap::new(),
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            node_index: NodeIndex::default(),
+        });
+
+        node.node_index = node_id;
+
+        // Update producer/consumer lookup tables
+        for &output_id in &node.outputs {
+            self.tensor_producer.insert(output_id, node_id);
+        }
+
+        for &input_id in &node.inputs {
+            self.tensor_consumers
+                .entry(input_id)
+                .or_default()
+                .push(node_id);
+        }
+
+        // Add graph edges (for topological sort)
+        for &input_id in &node.inputs {
+            if let Some(producer_id) = self.tensor_producer(input_id) {
+                self.graph.add_edge(producer_id, node_id, ());
+            }
+        }
+
+        // Update the node in place
+        *self.graph.node_weight_mut(node_id).unwrap() = node;
+
+        node_id
+    }
+
+    /// Remove a node from the graph.
+    ///
+    /// This also removes the node from producer/consumer lookup tables. With
+    /// `StableGraph`, other node indices remain valid.
+    pub fn remove_node(&mut self, id: IrNodeId) -> Result<()> {
+        // Clone the inputs and outputs to avoid borrow checker issues
+        let inputs = self.node(id)?.inputs.clone();
+        let outputs = self.node(id)?.outputs.clone();
+
+        // Remove from producer lookup
+        for output_id in outputs {
+            self.tensor_producer.remove(&output_id);
+        }
+
+        // Remove from consumer lookup
+        for input_id in inputs {
+            if let Some(consumers) = self.tensor_consumers.get_mut(&input_id) {
+                consumers.retain(|&consumer_id| consumer_id != id);
+            }
+        }
+
+        // Remove node from graph
+        self.graph.remove_node(id);
+
+        Ok(())
+    }
+
+    /// Replace a node with a new operation and attributes.
+    ///
+    /// This is a convenience method for rewrite passes that preserves the node ID
+    /// and input/output tensors but changes the operation.
+    pub fn replace_node(
+        &mut self,
+        id: IrNodeId,
+        new_op_type: String,
+        new_attributes: HashMap<String, AttributeValue>,
+    ) -> Result<()> {
+        let node = self.node_mut(id)?;
+        node.op_type = new_op_type;
+        node.attributes = new_attributes;
+        Ok(())
+    }
+
+    /// Add a tensor to the graph and return its ID.
+    pub fn add_tensor(&mut self, tensor: TensorDef) -> IrTensorId {
+        let id = IrTensorId::new(self.tensors.len());
+        self.tensor_by_name.insert(tensor.name.clone(), id);
+        self.tensors.push(tensor);
+        id
+    }
+
+    // --- Graph queries ---
+
+    /// Get the topological order of nodes in the graph.
+    ///
+    /// Returns nodes in an order such that all inputs to a node are produced
+    /// before the node itself. This replaces the standalone `Scheduler`.
+    pub fn topological_order(&self) -> Vec<IrNodeId> {
+        let mut topo = Topo::new(&self.graph);
+        let mut order = Vec::new();
+
+        while let Some(node_id) = topo.next(&self.graph) {
+            if self.graph.node_weight(node_id).is_some() {
+                order.push(node_id);
+            }
+        }
+
+        order
+    }
+
+    /// Get the number of nodes in the graph.
+    pub fn node_count(&self) -> usize {
+        self.graph.node_count()
+    }
+
+    /// Get the number of tensors in the graph.
+    pub fn tensor_count(&self) -> usize {
+        self.tensors.len()
+    }
+}
+
+impl Default for IrGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A single operation node in the IR graph.
+#[derive(Debug, Clone)]
+pub struct IrNode {
+    /// ONNX operator type (e.g., "Add", "MatMul", "RmsNorm").
+    pub op_type: String,
+
+    /// Operator attributes (e.g., axis, epsilon, transpose flags).
+    pub attributes: HashMap<String, AttributeValue>,
+
+    /// Input tensor IDs.
+    pub inputs: Vec<IrTensorId>,
+
+    /// Output tensor IDs.
+    pub outputs: Vec<IrTensorId>,
+
+    /// The graph node index (for efficient graph traversal).
+    pub node_index: IrNodeId,
+}
+
+impl IrNode {
+    /// Create a new IR node.
+    pub fn new(op_type: String) -> Self {
+        Self {
+            op_type,
+            attributes: HashMap::new(),
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            node_index: NodeIndex::default(),
+        }
+    }
+
+    /// Add an input tensor to this node.
+    pub fn add_input(&mut self, tensor_id: IrTensorId) {
+        self.inputs.push(tensor_id);
+    }
+
+    /// Add an output tensor to this node.
+    pub fn add_output(&mut self, tensor_id: IrTensorId) {
+        self.outputs.push(tensor_id);
+    }
+
+    /// Set an attribute.
+    pub fn set_attribute(&mut self, key: String, value: AttributeValue) {
+        self.attributes.insert(key, value);
+    }
+
+    /// Get an attribute by name.
+    pub fn get_attribute(&self, key: &str) -> Option<&AttributeValue> {
+        self.attributes.get(key)
+    }
+}
+
+/// Tensor metadata in the IR graph.
+#[derive(Debug, Clone)]
+pub struct TensorDef {
+    /// Tensor name (must be unique within the graph).
+    pub name: String,
+
+    /// Data type.
+    pub dtype: DataType,
+
+    /// Shape (static, symbolic, or absent).
+    pub shape: TensorShape,
+
+    /// Tensor kind (input, output, intermediate, or constant).
+    pub kind: TensorKind,
+
+    /// Constant-folded value (populated during constant folding pass).
+    pub value: Option<TensorValue>,
+
+    /// Initializer data for constants (raw bytes).
+    pub initializer: Option<Vec<u8>>,
+}
+
+impl TensorDef {
+    /// Create a new tensor definition.
+    pub fn new(name: String, dtype: DataType, shape: TensorShape, kind: TensorKind) -> Self {
+        Self {
+            name,
+            dtype,
+            shape,
+            kind,
+            value: None,
+            initializer: None,
+        }
+    }
+
+    /// Check if this tensor has a constant value.
+    pub fn has_value(&self) -> bool {
+        self.value.is_some()
+    }
+
+    /// Check if this tensor has initializer data.
+    pub fn has_initializer(&self) -> bool {
+        self.initializer.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_empty_graph() {
+        let graph = IrGraph::new();
+        assert_eq!(graph.node_count(), 0);
+        assert_eq!(graph.tensor_count(), 0);
+    }
+
+    #[test]
+    fn test_add_tensor() {
+        let mut graph = IrGraph::new();
+        let tensor = TensorDef::new(
+            "x".to_string(),
+            DataType::F32,
+            TensorShape::Static(vec![1, 2, 3]),
+            TensorKind::Input,
+        );
+        let tensor_id = graph.add_tensor(tensor);
+
+        assert_eq!(graph.tensor_count(), 1);
+        assert_eq!(graph.tensor(tensor_id).unwrap().name, "x");
+        assert_eq!(graph.tensor_by_name("x"), Some(tensor_id));
+    }
+
+    #[test]
+    fn test_add_node() {
+        let mut graph = IrGraph::new();
+
+        // Add input and output tensors
+        let input = TensorDef::new(
+            "input".to_string(),
+            DataType::F32,
+            TensorShape::Static(vec![1, 2]),
+            TensorKind::Input,
+        );
+        let output = TensorDef::new(
+            "output".to_string(),
+            DataType::F32,
+            TensorShape::Static(vec![1, 2]),
+            TensorKind::Intermediate,
+        );
+
+        let input_id = graph.add_tensor(input);
+        let output_id = graph.add_tensor(output);
+
+        // Add node
+        let mut node = IrNode::new("Relu".to_string());
+        node.add_input(input_id);
+        node.add_output(output_id);
+
+        let node_id = graph.add_node(node);
+
+        assert_eq!(graph.node_count(), 1);
+        assert_eq!(graph.node(node_id).unwrap().op_type, "Relu");
+        assert_eq!(graph.tensor_producer(output_id), Some(node_id));
+        assert_eq!(graph.tensor_consumers(input_id), vec![node_id]);
+    }
+
+    #[test]
+    fn test_remove_node() {
+        let mut graph = IrGraph::new();
+
+        // Add tensors
+        let input_id = graph.add_tensor(TensorDef::new(
+            "input".to_string(),
+            DataType::F32,
+            TensorShape::Static(vec![2, 2]),
+            TensorKind::Input,
+        ));
+        let output_id = graph.add_tensor(TensorDef::new(
+            "output".to_string(),
+            DataType::F32,
+            TensorShape::Static(vec![2, 2]),
+            TensorKind::Intermediate,
+        ));
+
+        // Add node
+        let mut node = IrNode::new("Add".to_string());
+        node.add_input(input_id);
+        node.add_output(output_id);
+        let node_id = graph.add_node(node);
+
+        // Remove node
+        graph.remove_node(node_id).unwrap();
+
+        assert_eq!(graph.node_count(), 0);
+        assert_eq!(graph.tensor_producer(output_id), None);
+        assert_eq!(graph.tensor_consumers(input_id), Vec::<IrNodeId>::new());
+    }
+
+    #[test]
+    fn test_topological_order() {
+        let mut graph = IrGraph::new();
+
+        // Create a simple chain: A -> B -> C
+        let t0 = graph.add_tensor(TensorDef::new(
+            "t0".to_string(),
+            DataType::F32,
+            TensorShape::Static(vec![2]),
+            TensorKind::Input,
+        ));
+        let t1 = graph.add_tensor(TensorDef::new(
+            "t1".to_string(),
+            DataType::F32,
+            TensorShape::Static(vec![2]),
+            TensorKind::Intermediate,
+        ));
+        let t2 = graph.add_tensor(TensorDef::new(
+            "t2".to_string(),
+            DataType::F32,
+            TensorShape::Static(vec![2]),
+            TensorKind::Intermediate,
+        ));
+        let t3 = graph.add_tensor(TensorDef::new(
+            "t3".to_string(),
+            DataType::F32,
+            TensorShape::Static(vec![2]),
+            TensorKind::Output,
+        ));
+
+        let mut node_a = IrNode::new("A".to_string());
+        node_a.add_input(t0);
+        node_a.add_output(t1);
+        let id_a = graph.add_node(node_a);
+
+        let mut node_b = IrNode::new("B".to_string());
+        node_b.add_input(t1);
+        node_b.add_output(t2);
+        let id_b = graph.add_node(node_b);
+
+        let mut node_c = IrNode::new("C".to_string());
+        node_c.add_input(t2);
+        node_c.add_output(t3);
+        let id_c = graph.add_node(node_c);
+
+        let order = graph.topological_order();
+        assert_eq!(order, vec![id_a, id_b, id_c]);
+    }
+
+    #[test]
+    fn test_stable_graph_indices() {
+        let mut graph = IrGraph::new();
+
+        // Add three nodes
+        let t0 = graph.add_tensor(TensorDef::new(
+            "t0".to_string(),
+            DataType::F32,
+            TensorShape::Static(vec![2]),
+            TensorKind::Input,
+        ));
+        let t1 = graph.add_tensor(TensorDef::new(
+            "t1".to_string(),
+            DataType::F32,
+            TensorShape::Static(vec![2]),
+            TensorKind::Intermediate,
+        ));
+        let t2 = graph.add_tensor(TensorDef::new(
+            "t2".to_string(),
+            DataType::F32,
+            TensorShape::Static(vec![2]),
+            TensorKind::Intermediate,
+        ));
+
+        let mut node_a = IrNode::new("A".to_string());
+        node_a.add_input(t0);
+        node_a.add_output(t1);
+        let id_a = graph.add_node(node_a);
+
+        let mut node_b = IrNode::new("B".to_string());
+        node_b.add_input(t1);
+        node_b.add_output(t2);
+        let _id_b = graph.add_node(node_b);
+
+        let mut node_c = IrNode::new("C".to_string());
+        node_c.inputs = vec![t2];
+        let id_c = graph.add_node(node_c);
+
+        // Remove middle node
+        graph.remove_node(_id_b).unwrap();
+
+        // Original node IDs should still be valid
+        assert!(graph.node(id_a).is_ok());
+        assert!(graph.node(id_c).is_ok());
+    }
+}

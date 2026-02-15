@@ -217,7 +217,9 @@ mod tests {
             &mut shaders,
         );
 
-        let steps = WhereOperator.plan(&mut ctx).expect("Planning should succeed");
+        let steps = WhereOperator
+            .plan(&mut ctx)
+            .expect("Planning should succeed");
 
         // Verify we got exactly one dispatch step
         assert_eq!(steps.len(), 1);

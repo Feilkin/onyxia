@@ -14,8 +14,8 @@
 //! - reduction_ops_test.rs: ReduceSum
 //! - cast_ops_test.rs: Cast
 
-use onyxia_onnx::{DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
 use onyxia_compiler::{OperatorRegistry, compile};
+use onyxia_onnx::{DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 

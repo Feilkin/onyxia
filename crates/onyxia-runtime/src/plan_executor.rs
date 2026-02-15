@@ -5,8 +5,8 @@
 
 use crate::error::{Result, RuntimeError};
 use crate::tensor::Tensor;
-use onyxia_onnx::{TensorId, TensorShape};
 use onyxia_compiler::plan::{BindingDesc, BufferRef, ExecutionPlan, PlannedOp, Step};
+use onyxia_onnx::{TensorId, TensorShape};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -137,7 +137,7 @@ impl PlanExecutor {
                     |(_, expr)| matches!(expr, naga::Expression::GlobalVariable(h) if *h == handle),
                 );
 
-                if is_used || true {
+                if is_used {
                     // Determine read-only vs read-write from the storage access flags
                     let read_only = match var.space {
                         naga::AddressSpace::Storage { access } => {
@@ -800,9 +800,9 @@ impl PlanExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use onyxia_onnx::{DataType, TensorInfo, TensorKind};
     use onyxia_compiler::plan::ExecutionPlan;
     use onyxia_compiler::{ModelMetadata, TensorRegistry};
+    use onyxia_onnx::{DataType, TensorInfo, TensorKind};
 
     #[pollster::test]
     #[ignore] // Requires GPU

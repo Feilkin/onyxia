@@ -2,8 +2,8 @@
 //!
 //! Tests: ReduceSum, ReduceMean
 
-use onyxia_onnx::{AttributeValue, DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
 use onyxia_compiler::{OperatorRegistry, compile};
+use onyxia_onnx::{AttributeValue, DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 

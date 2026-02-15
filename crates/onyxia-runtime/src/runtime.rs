@@ -2,8 +2,8 @@
 
 use crate::error::{Result, RuntimeError};
 use crate::plan_executor::PlanExecutor;
-use onyxia_onnx::TensorShape;
 use onyxia_compiler::ExecutionPlan;
+use onyxia_onnx::TensorShape;
 use std::sync::Arc;
 
 /// Main entry point for GPU runtime.

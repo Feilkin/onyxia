@@ -1196,6 +1196,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "onyxia-core"
+version = "0.1.0"
+dependencies = [
+ "half",
+ "naga",
+ "naga_oil",
+ "onyxia-onnx",
+ "petgraph",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "onyxia-onnx"
 version = "0.1.0"
 dependencies = [

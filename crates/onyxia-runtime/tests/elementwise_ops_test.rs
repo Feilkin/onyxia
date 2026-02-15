@@ -5,8 +5,8 @@
 mod common;
 
 use common::make_binary_elementwise_graph;
-use onyxia_onnx::{DataType, Graph, TensorInfo, TensorKind, TensorShape};
 use onyxia_compiler::{OperatorRegistry, compile};
+use onyxia_onnx::{DataType, Graph, TensorInfo, TensorKind, TensorShape};
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 

@@ -550,7 +550,9 @@ mod tests {
             &mut shaders,
         );
 
-        let steps = SliceOperator.plan(&mut ctx).expect("Planning should succeed");
+        let steps = SliceOperator
+            .plan(&mut ctx)
+            .expect("Planning should succeed");
 
         // Verify we got exactly one dispatch step
         assert_eq!(steps.len(), 1);

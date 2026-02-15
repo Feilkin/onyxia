@@ -2,8 +2,8 @@
 //!
 //! Tests: MatMul, MatMulNBits (Q4 quantization)
 
-use onyxia_onnx::{DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
 use onyxia_compiler::{OperatorRegistry, compile};
+use onyxia_onnx::{DataType, Graph, Node, TensorInfo, TensorKind, TensorShape};
 use onyxia_runtime::{Runtime, Tensor};
 use std::collections::HashMap;
 
