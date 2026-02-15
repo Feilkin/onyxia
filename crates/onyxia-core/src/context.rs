@@ -416,25 +416,26 @@ impl<'a> PlanCtx<'a> {
         }
 
         // Compile shader using naga_oil
-        let mut composer = naga_oil::compose::Composer::default();
+        let mut composer = naga_oil::compose::Composer::default()
+            .with_capabilities(naga::valid::Capabilities::all());
 
-        // Add defines
-        for key in defines.keys() {
-            composer
-                .add_composable_module(naga_oil::compose::ComposableModuleDescriptor {
-                    source,
-                    file_path: &format!("{}_{}.wgsl", label, key),
-                    ..Default::default()
-                })
-                .map_err(|e| {
-                    Error::ShaderCompilation(format!("Failed to add composable module: {:?}", e))
-                })?;
-        }
+        // Convert string defines to ShaderDefValue (parse as UInt)
+        let shader_defs: HashMap<String, naga_oil::compose::ShaderDefValue> = defines
+            .iter()
+            .map(|(k, v)| {
+                // Parse the value as u32 for shader defines
+                let value = v.parse::<u32>().unwrap_or_else(|_| {
+                    panic!("Shader define '{}' has non-numeric value '{}'", k, v)
+                });
+                (k.clone(), naga_oil::compose::ShaderDefValue::UInt(value))
+            })
+            .collect();
 
         let naga_module = composer
             .make_naga_module(naga_oil::compose::NagaModuleDescriptor {
                 source,
                 file_path: &format!("{}.wgsl", label),
+                shader_defs,
                 ..Default::default()
             })
             .map_err(|e| Error::ShaderCompilation(format!("Shader compilation failed: {:?}", e)))?;
