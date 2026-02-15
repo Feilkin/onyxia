@@ -24,7 +24,7 @@ pub use operator::Operator;
 pub use pass::{Pass, Stage};
 pub use plan::{
     BindingDesc, BufferRef, CompiledModel, CompiledShader, ModelMetadata, PlannedOp,
-    ScratchBufferDesc, ShaderIndex, Step, SymbolicBinding, TensorRegistry,
+    ScratchBufferDesc, ShaderIndex, Step, SymbolicBinding, TensorMetadata, TensorRegistry,
 };
 pub use registry::OperatorRegistry;
 pub use symbolic_expr::{BinOpKind, SymbolicExpr};
