@@ -36,20 +36,12 @@
 //! ```
 
 pub mod error;
-pub mod inference;
-pub mod operator;
 pub mod passes;
-pub mod plan;
 pub mod scheduler;
 pub mod symbolic_expr;
 
 pub use error::{CodegenError, Result};
-pub use operator::{Operator, OperatorRegistry, PlanContext};
 pub use passes::{ConstantFoldingPass, PlanningPass, ShapeInferencePass, SymbolicResolutionPass};
-pub use plan::{
-    BindingDesc, BufferRef, CompiledShader, ExecutionPlan, ModelMetadata, PlannedOp,
-    ScratchBufferDesc, ShaderIndex, Step, TensorRegistry,
-};
 
 // Re-export commonly used types from onyxia-core
 pub use onyxia_core::{CompiledModel, IrGraph, Pass, Stage};
