@@ -29,11 +29,7 @@ impl ShapeInferencePass {
         graph: &mut IrGraph,
         registry: &OperatorRegistry,
     ) -> Result<bool> {
-        // Skip Value nodes (they don't need shape inference)
-        let op_type = match node.op_type() {
-            Some(op_type) => op_type,
-            None => return Ok(false),
-        };
+        let op_type = node.op_type();
 
         // Look up operator
         let operator = registry.get(op_type).ok_or_else(|| {
@@ -97,12 +93,6 @@ impl Pass for ShapeInferencePass {
 
         for node_id in topo_order {
             let node = graph.node(node_id)?.clone();
-
-            // Skip nodes that are fully folded (Value nodes)
-            // Their shapes are already determined by the folded values
-            if node.is_value() {
-                continue;
-            }
 
             let node_changed = self.infer_node(&node, graph, registry)?;
             changed = changed || node_changed;

@@ -1,31 +1,35 @@
 //! Intermediate representation for the compiler graph.
 //!
-//! The IR is built from an ONNX graph and provides a mutable representation
-//! suitable for optimization passes and planning. Uses `petgraph::StableGraph`
-//! to ensure node/tensor indices remain valid after removals.
+//! The IR is a directed graph where:
+//! - **Nodes** (`IrNode`) are operators (e.g., Add, MatMul, Reshape)
+//! - **Edges** (`IrEdge`) are tensor value flows between operators
+//!
+//! During constant folding, edges can acquire a `constant_value` and their
+//! producing operator is removed from the graph. Downstream consumers
+//! see the constant directly on the edge.
 
 use crate::types::{DataType, TensorKind, TensorShape, TensorValue};
 use crate::{Error, Result};
 use onyxia_onnx::AttributeValue;
 use petgraph::graph::NodeIndex;
 use petgraph::stable_graph::StableGraph;
-use petgraph::visit::{EdgeRef, Topo};
+use petgraph::visit::Topo;
 
 use std::collections::HashMap;
 
 /// Type alias for IR node identifiers (backed by petgraph NodeIndex).
 pub type IrNodeId = NodeIndex;
 
-/// Unique identifier for a tensor in the IR graph.
+/// Unique identifier for an edge (tensor flow) in the IR graph.
 ///
-/// This is an index into `IrGraph::tensors`. Unlike node IDs (which use petgraph's
-/// stable NodeIndex), tensor IDs are simple usize indices that remain valid across
+/// This is an index into `IrGraph::edges`. Unlike node IDs (which use petgraph's
+/// stable NodeIndex), edge IDs are simple usize indices that remain valid across
 /// graph mutations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct IrTensorId(pub usize);
+pub struct IrEdgeId(pub usize);
 
-impl IrTensorId {
-    /// Create a new tensor ID.
+impl IrEdgeId {
+    /// Create a new edge ID.
     pub fn new(id: usize) -> Self {
         Self(id)
     }
@@ -36,71 +40,36 @@ impl IrTensorId {
     }
 }
 
-/// Input to an IR node — either a tensor ID or a reference to a Value node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum IrInput {
-    /// Reference to a tensor in the tensor side-table.
-    Tensor(IrTensorId),
+/// Backward-compatibility alias: `IrTensorId` equals `IrEdgeId`.
+pub type IrTensorId = IrEdgeId;
 
-    /// Reference to a Value node in the graph.
-    /// (Not yet used — will be populated in Task 032 during constant folding)
-    ValueNode(IrNodeId),
-}
-
-impl IrInput {
-    /// Create a tensor input.
-    pub fn tensor(id: IrTensorId) -> Self {
-        Self::Tensor(id)
-    }
-
-    /// Create a value node input.
-    pub fn value_node(id: IrNodeId) -> Self {
-        Self::ValueNode(id)
-    }
-
-    /// Get the tensor ID if this is a Tensor input.
-    pub fn as_tensor(&self) -> Option<IrTensorId> {
-        match self {
-            IrInput::Tensor(id) => Some(*id),
-            IrInput::ValueNode(_) => None,
-        }
-    }
-
-    /// Get the node ID if this is a ValueNode input.
-    pub fn as_value_node(&self) -> Option<IrNodeId> {
-        match self {
-            IrInput::Tensor(_) => None,
-            IrInput::ValueNode(id) => Some(*id),
-        }
-    }
-}
+// ──────────────────────────────── IrGraph ────────────────────────────────
 
 /// Intermediate representation graph.
 ///
-/// Uses `petgraph::StableGraph` to ensure node indices remain valid after node
-/// removal during optimization passes. Tensors are stored in a side-table rather
-/// than as graph edges to provide efficient random access and mutation.
+/// Nodes are operators; edges are tensor value flows stored in a side-table.
+/// petgraph edges exist solely for topological ordering.
 pub struct IrGraph {
     /// The graph structure (nodes only, no edge data).
     graph: StableGraph<IrNode, ()>,
 
-    /// Tensor metadata side-table.
-    tensors: Vec<TensorDef>,
+    /// Edge metadata side-table.
+    edges: Vec<IrEdge>,
 
-    /// Lookup table: tensor name → tensor ID.
-    tensor_by_name: HashMap<String, IrTensorId>,
+    /// Lookup table: edge name -> edge ID.
+    edge_by_name: HashMap<String, IrEdgeId>,
 
-    /// Lookup table: tensor ID → producing node ID.
-    tensor_producer: HashMap<IrTensorId, IrNodeId>,
+    /// Lookup table: edge ID -> producing node ID.
+    edge_producer: HashMap<IrEdgeId, IrNodeId>,
 
-    /// Lookup table: tensor ID → consuming node IDs.
-    tensor_consumers: HashMap<IrTensorId, Vec<IrNodeId>>,
+    /// Lookup table: edge ID -> consuming node IDs.
+    edge_consumers: HashMap<IrEdgeId, Vec<IrNodeId>>,
 
-    /// Graph input tensor IDs.
-    pub inputs: Vec<IrTensorId>,
+    /// Graph input edge IDs.
+    pub inputs: Vec<IrEdgeId>,
 
-    /// Graph output tensor IDs.
-    pub outputs: Vec<IrTensorId>,
+    /// Graph output edge IDs.
+    pub outputs: Vec<IrEdgeId>,
 }
 
 impl IrGraph {
@@ -108,16 +77,16 @@ impl IrGraph {
     pub fn new() -> Self {
         Self {
             graph: StableGraph::new(),
-            tensors: Vec::new(),
-            tensor_by_name: HashMap::new(),
-            tensor_producer: HashMap::new(),
-            tensor_consumers: HashMap::new(),
+            edges: Vec::new(),
+            edge_by_name: HashMap::new(),
+            edge_producer: HashMap::new(),
+            edge_consumers: HashMap::new(),
             inputs: Vec::new(),
             outputs: Vec::new(),
         }
     }
 
-    // --- Node access ---
+    // ── Node access ──
 
     /// Get an immutable reference to a node.
     pub fn node(&self, id: IrNodeId) -> Result<&IrNode> {
@@ -134,12 +103,12 @@ impl IrGraph {
     }
 
     /// Get the inputs of a node.
-    pub fn node_inputs(&self, id: IrNodeId) -> Result<&[IrInput]> {
+    pub fn node_inputs(&self, id: IrNodeId) -> Result<&[IrEdgeId]> {
         Ok(self.node(id)?.inputs())
     }
 
     /// Get the outputs of a node.
-    pub fn node_outputs(&self, id: IrNodeId) -> Result<&[IrTensorId]> {
+    pub fn node_outputs(&self, id: IrNodeId) -> Result<&[IrEdgeId]> {
         Ok(self.node(id)?.outputs())
     }
 
@@ -150,79 +119,79 @@ impl IrGraph {
             .filter_map(|id| self.graph.node_weight(id).map(|node| (id, node)))
     }
 
-    // --- Tensor access ---
+    // ── Edge (tensor) access ──
 
-    /// Get an immutable reference to a tensor.
-    pub fn tensor(&self, id: IrTensorId) -> Result<&TensorDef> {
-        self.tensors
+    /// Get an immutable reference to an edge.
+    pub fn edge(&self, id: IrEdgeId) -> Result<&IrEdge> {
+        self.edges
             .get(id.index())
-            .ok_or_else(|| Error::InvalidGraph(format!("Tensor {:?} not found", id)))
+            .ok_or_else(|| Error::InvalidGraph(format!("Edge {:?} not found", id)))
     }
 
-    /// Get a mutable reference to a tensor.
-    pub fn tensor_mut(&mut self, id: IrTensorId) -> Result<&mut TensorDef> {
-        self.tensors
+    /// Get a mutable reference to an edge.
+    pub fn edge_mut(&mut self, id: IrEdgeId) -> Result<&mut IrEdge> {
+        self.edges
             .get_mut(id.index())
-            .ok_or_else(|| Error::InvalidGraph(format!("Tensor {:?} not found", id)))
+            .ok_or_else(|| Error::InvalidGraph(format!("Edge {:?} not found", id)))
     }
 
-    /// Look up a tensor by name.
-    pub fn tensor_by_name(&self, name: &str) -> Option<IrTensorId> {
-        self.tensor_by_name.get(name).copied()
+    /// Backward-compat alias for `edge()`.
+    pub fn tensor(&self, id: IrEdgeId) -> Result<&IrEdge> {
+        self.edge(id)
     }
 
-    /// Get the node that produces a tensor, if any.
-    pub fn tensor_producer(&self, tensor_id: IrTensorId) -> Option<IrNodeId> {
-        self.tensor_producer.get(&tensor_id).copied()
+    /// Backward-compat alias for `edge_mut()`.
+    pub fn tensor_mut(&mut self, id: IrEdgeId) -> Result<&mut IrEdge> {
+        self.edge_mut(id)
     }
 
-    /// Get the nodes that consume a tensor.
-    pub fn tensor_consumers(&self, tensor_id: IrTensorId) -> Vec<IrNodeId> {
-        self.tensor_consumers
-            .get(&tensor_id)
+    /// Look up an edge by name.
+    pub fn tensor_by_name(&self, name: &str) -> Option<IrEdgeId> {
+        self.edge_by_name.get(name).copied()
+    }
+
+    /// Get the node that produces an edge, if any.
+    pub fn tensor_producer(&self, id: IrEdgeId) -> Option<IrNodeId> {
+        self.edge_producer.get(&id).copied()
+    }
+
+    /// Get the nodes that consume an edge.
+    pub fn tensor_consumers(&self, id: IrEdgeId) -> Vec<IrNodeId> {
+        self.edge_consumers
+            .get(&id)
             .cloned()
             .unwrap_or_default()
     }
 
-    // --- Graph mutation ---
+    // ── Graph mutation ──
 
     /// Add a new node to the graph and return its ID.
     ///
-    /// This also updates the producer/consumer lookup tables.
+    /// This also updates the producer/consumer lookup tables and
+    /// adds petgraph edges for topological ordering.
     pub fn add_node(&mut self, mut node: IrNode) -> IrNodeId {
-        let node_id = self.graph.add_node(IrNode::new_operator(String::new()));
-        node.set_node_index(node_id);
+        let placeholder = IrNode::new(String::new());
+        let node_id = self.graph.add_node(placeholder);
+        node.node_index = node_id;
 
-        // Only update producer/consumer for Operator nodes
-        if let IrNode::Operator {
-            inputs, outputs, ..
-        } = &node
-        {
-            // Update producer/consumer lookup tables
-            for &output_id in outputs {
-                self.tensor_producer.insert(output_id, node_id);
-            }
+        // Register producer/consumer relationships
+        for &output_id in &node.outputs {
+            self.edge_producer.insert(output_id, node_id);
+        }
 
-            for input in inputs {
-                match input {
-                    IrInput::Tensor(tensor_id) => {
-                        self.tensor_consumers
-                            .entry(*tensor_id)
-                            .or_default()
-                            .push(node_id);
+        for &input_id in &node.inputs {
+            self.edge_consumers
+                .entry(input_id)
+                .or_default()
+                .push(node_id);
 
-                        if let Some(producer_id) = self.tensor_producer(*tensor_id) {
-                            self.graph.add_edge(producer_id, node_id, ());
-                        }
-                    }
-                    IrInput::ValueNode(value_node_id) => {
-                        self.graph.add_edge(*value_node_id, node_id, ());
-                    }
-                }
+            // Add petgraph edge for topological ordering
+            if let Some(&producer_id) = self.edge_producer.get(&input_id) {
+                self.graph.add_edge(producer_id, node_id, ());
             }
         }
 
-        // Update the node in place
+        // Replace the placeholder with the real node
         *self.graph.node_weight_mut(node_id).unwrap() = node;
 
         node_id
@@ -233,40 +202,29 @@ impl IrGraph {
     /// This also removes the node from producer/consumer lookup tables. With
     /// `StableGraph`, other node indices remain valid.
     pub fn remove_node(&mut self, id: IrNodeId) -> Result<()> {
-        let node = self.node(id)?;
+        let node = self.node(id)?.clone();
 
-        if let IrNode::Operator {
-            inputs, outputs, ..
-        } = node
-        {
-            let inputs = inputs.clone();
-            let outputs = outputs.clone();
+        // Remove from producer lookup
+        for &output_id in &node.outputs {
+            self.edge_producer.remove(&output_id);
+        }
 
-            // Remove from producer lookup
-            for output_id in outputs {
-                self.tensor_producer.remove(&output_id);
-            }
-
-            // Remove from consumer lookup
-            for input in inputs {
-                if let IrInput::Tensor(tensor_id) = input
-                    && let Some(consumers) = self.tensor_consumers.get_mut(&tensor_id)
-                {
-                    consumers.retain(|&consumer_id| consumer_id != id);
-                }
+        // Remove from consumer lookup
+        for &input_id in &node.inputs {
+            if let Some(consumers) = self.edge_consumers.get_mut(&input_id) {
+                consumers.retain(|&c| c != id);
             }
         }
 
-        // Remove node from graph
+        // Remove node from graph (automatically removes petgraph edges)
         self.graph.remove_node(id);
 
         Ok(())
     }
 
-    /// Replace a node with a new operation and attributes.
+    /// Replace a node's operation and attributes.
     ///
-    /// This is a convenience method for rewrite passes that preserves the node ID
-    /// and input/output tensors but changes the operation.
+    /// Preserves the node ID and input/output edges.
     pub fn replace_node(
         &mut self,
         id: IrNodeId,
@@ -274,43 +232,85 @@ impl IrGraph {
         new_attributes: HashMap<String, AttributeValue>,
     ) -> Result<()> {
         let node = self.node_mut(id)?;
-        match node {
-            IrNode::Operator {
-                op_type,
-                attributes,
-                ..
-            } => {
-                *op_type = new_op_type;
-                *attributes = new_attributes;
-                Ok(())
-            }
-            IrNode::Value { .. } => Err(Error::InvalidGraph(
-                "Cannot replace Value node with operator".to_string(),
-            )),
-        }
+        node.op_type = new_op_type;
+        node.attributes = new_attributes;
+        Ok(())
     }
 
-    /// Add a tensor to the graph and return its ID.
-    pub fn add_tensor(&mut self, tensor: TensorDef) -> IrTensorId {
-        let id = IrTensorId::new(self.tensors.len());
-        self.tensor_by_name.insert(tensor.name.clone(), id);
-        self.tensors.push(tensor);
+    /// Add an edge (tensor) to the graph and return its ID.
+    pub fn add_edge(&mut self, edge: IrEdge) -> IrEdgeId {
+        let id = IrEdgeId::new(self.edges.len());
+        self.edge_by_name.insert(edge.name.clone(), id);
+        self.edges.push(edge);
         id
     }
 
-    // --- Graph queries ---
+    /// Backward-compat alias for `add_edge()`.
+    pub fn add_tensor(&mut self, tensor: IrEdge) -> IrEdgeId {
+        self.add_edge(tensor)
+    }
+
+    // ── Constant folding ──
+
+    /// Fold a single-output operator into a constant on its output edge.
+    ///
+    /// Removes the operator node from the graph and stores the constant
+    /// value on the output edge. Consumers keep referencing the same
+    /// `IrEdgeId`; they see the constant via `edge.constant_value`.
+    pub fn fold_node_to_constant(
+        &mut self,
+        node_id: IrNodeId,
+        value: TensorValue,
+    ) -> Result<()> {
+        let node = self.node(node_id)?.clone();
+
+        if node.outputs.len() != 1 {
+            return Err(Error::InvalidGraph(format!(
+                "fold_node_to_constant requires exactly 1 output, got {}",
+                node.outputs.len()
+            )));
+        }
+
+        let output_edge_id = node.outputs[0];
+
+        // Store the constant value on the output edge
+        self.edge_mut(output_edge_id)?.constant_value = Some(value);
+
+        // Remove the node (cleans up producer/consumer tables + petgraph)
+        self.remove_node(node_id)
+    }
+
+    /// Backward-compat alias for `fold_node_to_constant`.
+    pub fn replace_single_output_with_value(
+        &mut self,
+        node_id: IrNodeId,
+        value: TensorValue,
+    ) -> Result<IrNodeId> {
+        self.fold_node_to_constant(node_id, value)?;
+        Ok(node_id)
+    }
+
+    /// Check if an operator node has been folded away.
+    ///
+    /// Returns `true` if the node no longer exists in the graph
+    /// (it was removed during constant folding).
+    pub fn is_fully_folded(&self, node_id: IrNodeId) -> Result<bool> {
+        Ok(self.graph.node_weight(node_id).is_none())
+    }
+
+    // ── Graph queries ──
 
     /// Get the topological order of nodes in the graph.
     ///
     /// Returns nodes in an order such that all inputs to a node are produced
-    /// before the node itself. This replaces the standalone `Scheduler`.
+    /// before the node itself.
     pub fn topological_order(&self) -> Vec<IrNodeId> {
         let mut topo = Topo::new(&self.graph);
         let mut order = Vec::new();
 
-        while let Some(node_id) = topo.next(&self.graph) {
-            if self.graph.node_weight(node_id).is_some() {
-                order.push(node_id);
+        while let Some(id) = topo.next(&self.graph) {
+            if self.graph.node_weight(id).is_some() {
+                order.push(id);
             }
         }
 
@@ -322,164 +322,9 @@ impl IrGraph {
         self.graph.node_count()
     }
 
-    /// Get the number of tensors in the graph.
+    /// Get the number of edges (tensors) in the graph.
     pub fn tensor_count(&self) -> usize {
-        self.tensors.len()
-    }
-
-    /// Replace an operator node with a constant value node.
-    ///
-    /// This is used during constant folding when an operator's output can be
-    /// computed at compile time. The operator node is replaced with a Value node,
-    /// and all consumers that referenced the operator's output tensor are updated
-    /// to reference the value node directly.
-    ///
-    /// # Arguments
-    /// * `node_id` - The operator node to replace
-    /// * `output_index` - Which output of the operator to replace (usually 0)
-    /// * `value` - The constant value
-    ///
-    /// # Returns
-    /// The new value node's ID (same as the old node_id due to StableGraph)
-    ///
-    /// # Errors
-    /// Returns error if:
-    /// - Node is not an Operator
-    /// - Output index out of bounds
-    /// - Graph structure is inconsistent
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use onyxia_core::{IrGraph, IrNode, TensorDef, TensorValue, TensorData, DataType, TensorShape, TensorKind};
-    /// // During constant folding, if we can evaluate "Add" at compile time:
-    /// let mut graph = IrGraph::new();
-    /// let input = graph.add_tensor(TensorDef::new(
-    ///     "input".to_string(),
-    ///     DataType::F32,
-    ///     TensorShape::Static(vec![2]),
-    ///     TensorKind::Input,
-    /// ));
-    /// let output = graph.add_tensor(TensorDef::new(
-    ///     "output".to_string(),
-    ///     DataType::F32,
-    ///     TensorShape::Static(vec![2]),
-    ///     TensorKind::Intermediate,
-    /// ));
-    /// let mut node = IrNode::new_operator("Add".to_string());
-    /// node.add_tensor_input(input).unwrap();
-    /// node.add_output(output).unwrap();
-    /// let add_node_id = graph.add_node(node);
-    ///
-    /// let result = TensorValue::new(
-    ///     TensorData::F32(vec![3.0, 4.0]),
-    ///     vec![2],
-    ///     DataType::F32,
-    /// );
-    /// let value_node_id = graph.replace_single_output_with_value(add_node_id, result).unwrap();
-    ///
-    /// // Consumers now reference the value node:
-    /// // OLD: consumer.inputs = [IrInput::Tensor(add_output_tensor_id)]
-    /// // NEW: consumer.inputs = [IrInput::ValueNode(value_node_id)]
-    /// ```
-    pub fn replace_with_value(
-        &mut self,
-        node_id: IrNodeId,
-        output_index: usize,
-        value: TensorValue,
-    ) -> Result<IrNodeId> {
-        // Get the old operator node
-        let old_node = self.node(node_id)?.clone();
-        let (_op_type, _, inputs, outputs) = old_node
-            .as_operator()
-            .ok_or_else(|| Error::InvalidGraph("Can only replace Operator nodes".to_string()))?;
-
-        // Validate output index
-        if output_index >= outputs.len() {
-            return Err(Error::InvalidGraph(format!(
-                "Output index {} out of bounds for node with {} outputs",
-                output_index,
-                outputs.len()
-            )));
-        }
-
-        let replaced_tensor_id = outputs[output_index];
-
-        // Find all consumers of this output tensor
-        let consumers = self.tensor_consumers(replaced_tensor_id);
-
-        // Update each consumer to reference the value node instead of the tensor
-        for consumer_id in consumers {
-            let consumer = self.node_mut(consumer_id)?;
-
-            if let IrNode::Operator { inputs, .. } = consumer {
-                for input in inputs.iter_mut() {
-                    if let IrInput::Tensor(tensor_id) = input
-                        && *tensor_id == replaced_tensor_id
-                    {
-                        *input = IrInput::ValueNode(node_id);
-                    }
-                }
-            }
-        }
-
-        // Remove the old node's producer/consumer registrations
-        for &output_id in outputs {
-            self.tensor_producer.remove(&output_id);
-        }
-
-        for &input in inputs {
-            if let IrInput::Tensor(tensor_id) = input
-                && let Some(consumers) = self.tensor_consumers.get_mut(&tensor_id)
-            {
-                consumers.retain(|&id| id != node_id);
-            }
-        }
-
-        // Remove old edges (operator's inputs → operator)
-        let old_edges: Vec<_> = self
-            .graph
-            .edges_directed(node_id, petgraph::Direction::Incoming)
-            .map(|e| e.id())
-            .collect();
-
-        for edge_id in old_edges {
-            self.graph.remove_edge(edge_id);
-        }
-
-        // Create new Value node with the same node_id
-        let value_node = IrNode::Value {
-            value,
-            node_index: node_id,
-        };
-
-        // Replace in graph (StableGraph preserves node_id)
-        *self.graph.node_weight_mut(node_id).ok_or_else(|| {
-            Error::InvalidGraph("Node disappeared during replacement".to_string())
-        })? = value_node;
-
-        Ok(node_id)
-    }
-
-    /// Replace an operator node with a value node when it has a single output.
-    ///
-    /// Convenience wrapper around `replace_with_value()` for the common case
-    /// of single-output operators.
-    pub fn replace_single_output_with_value(
-        &mut self,
-        node_id: IrNodeId,
-        value: TensorValue,
-    ) -> Result<IrNodeId> {
-        self.replace_with_value(node_id, 0, value)
-    }
-
-    /// Check if an operator node is fully constant-folded.
-    ///
-    /// Returns true if the node is a Value node (already folded).
-    /// This is used during planning to skip nodes that don't need GPU execution.
-    pub fn is_fully_folded(&self, node_id: IrNodeId) -> Result<bool> {
-        let node = self.node(node_id)?;
-        Ok(node.is_value())
+        self.edges.len()
     }
 }
 
@@ -489,42 +334,34 @@ impl Default for IrGraph {
     }
 }
 
-/// A node in the IR graph — either an operator or a constant value.
+// ──────────────────────────────── IrNode ─────────────────────────────────
+
+/// A node in the IR graph — an operator that transforms tensor edges.
+///
+/// After constant folding, folded operators are *removed* from the graph
+/// entirely; the constant value lives on the output `IrEdge`.
 #[derive(Debug, Clone)]
-pub enum IrNode {
-    /// An operator node that will be executed on the GPU.
-    Operator {
-        /// ONNX operator type (e.g., "Add", "MatMul", "RmsNorm").
-        op_type: String,
+pub struct IrNode {
+    /// ONNX operator type (e.g., "Add", "MatMul").
+    pub op_type: String,
 
-        /// Operator attributes (e.g., axis, epsilon, transpose flags).
-        attributes: HashMap<String, AttributeValue>,
+    /// Operator attributes (e.g., axis, epsilon, transpose flags).
+    pub attributes: HashMap<String, AttributeValue>,
 
-        /// Input references (tensor IDs or value node IDs).
-        inputs: Vec<IrInput>,
+    /// Input edge IDs.
+    pub inputs: Vec<IrEdgeId>,
 
-        /// Output tensor IDs.
-        outputs: Vec<IrTensorId>,
+    /// Output edge IDs.
+    pub outputs: Vec<IrEdgeId>,
 
-        /// The graph node index (for efficient graph traversal).
-        node_index: IrNodeId,
-    },
-
-    /// A constant value node (result of constant folding).
-    /// Replaces operators whose outputs are fully determined at compile time.
-    Value {
-        /// The constant value.
-        value: TensorValue,
-
-        /// The graph node index.
-        node_index: IrNodeId,
-    },
+    /// The graph node index (for efficient graph traversal).
+    pub node_index: IrNodeId,
 }
 
 impl IrNode {
     /// Create a new operator node.
-    pub fn new_operator(op_type: String) -> Self {
-        Self::Operator {
+    pub fn new(op_type: String) -> Self {
+        Self {
             op_type,
             attributes: HashMap::new(),
             inputs: Vec::new(),
@@ -533,175 +370,74 @@ impl IrNode {
         }
     }
 
-    /// Create a new operator node (alias for backward compatibility).
-    pub fn new(op_type: String) -> Self {
-        Self::new_operator(op_type)
+    /// Alias for `new`.
+    pub fn new_operator(op_type: String) -> Self {
+        Self::new(op_type)
     }
 
-    /// Create a new value node.
-    pub fn new_value(value: TensorValue) -> Self {
-        Self::Value {
-            value,
-            node_index: NodeIndex::default(),
-        }
+    /// Get the operator type.
+    pub fn op_type(&self) -> &str {
+        &self.op_type
     }
 
-    /// Check if this is an operator node.
-    pub fn is_operator(&self) -> bool {
-        matches!(self, IrNode::Operator { .. })
+    /// Get input edge IDs.
+    pub fn inputs(&self) -> &[IrEdgeId] {
+        &self.inputs
     }
 
-    /// Check if this is a value node.
-    pub fn is_value(&self) -> bool {
-        matches!(self, IrNode::Value { .. })
+    /// Get output edge IDs.
+    pub fn outputs(&self) -> &[IrEdgeId] {
+        &self.outputs
     }
 
-    /// Get the operator fields, if this is an operator.
-    pub fn as_operator(
-        &self,
-    ) -> Option<(
-        &String,
-        &HashMap<String, AttributeValue>,
-        &[IrInput],
-        &[IrTensorId],
-    )> {
-        match self {
-            IrNode::Operator {
-                op_type,
-                attributes,
-                inputs,
-                outputs,
-                ..
-            } => Some((op_type, attributes, inputs, outputs)),
-            IrNode::Value { .. } => None,
-        }
-    }
-
-    /// Get mutable operator fields, if this is an operator.
-    pub fn as_operator_mut(
-        &mut self,
-    ) -> Option<(
-        &mut String,
-        &mut HashMap<String, AttributeValue>,
-        &mut Vec<IrInput>,
-        &mut Vec<IrTensorId>,
-    )> {
-        match self {
-            IrNode::Operator {
-                op_type,
-                attributes,
-                inputs,
-                outputs,
-                ..
-            } => Some((op_type, attributes, inputs, outputs)),
-            IrNode::Value { .. } => None,
-        }
-    }
-
-    /// Get the value, if this is a value node.
-    pub fn as_value(&self) -> Option<&TensorValue> {
-        match self {
-            IrNode::Value { value, .. } => Some(value),
-            IrNode::Operator { .. } => None,
-        }
-    }
-
-    /// Get the node index (works for both variants).
+    /// Get the node index.
     pub fn node_index(&self) -> IrNodeId {
-        match self {
-            IrNode::Operator { node_index, .. } => *node_index,
-            IrNode::Value { node_index, .. } => *node_index,
-        }
+        self.node_index
     }
 
-    /// Set the node index (works for both variants).
+    /// Set the node index.
     pub fn set_node_index(&mut self, index: IrNodeId) {
-        match self {
-            IrNode::Operator { node_index, .. } => *node_index = index,
-            IrNode::Value { node_index, .. } => *node_index = index,
-        }
+        self.node_index = index;
     }
 
-    /// Get the op_type if this is an operator (convenience method).
-    pub fn op_type(&self) -> Option<&str> {
-        match self {
-            IrNode::Operator { op_type, .. } => Some(op_type),
-            IrNode::Value { .. } => None,
-        }
+    /// Add an input edge.
+    pub fn add_input(&mut self, edge_id: IrEdgeId) {
+        self.inputs.push(edge_id);
     }
 
-    /// Get inputs if this is an operator.
-    pub fn inputs(&self) -> &[IrInput] {
-        match self {
-            IrNode::Operator { inputs, .. } => inputs,
-            IrNode::Value { .. } => &[],
-        }
+    /// Backward-compat alias for `add_input`.
+    pub fn add_tensor_input(&mut self, tensor_id: IrEdgeId) -> Result<()> {
+        self.add_input(tensor_id);
+        Ok(())
     }
 
-    /// Get outputs if this is an operator.
-    pub fn outputs(&self) -> &[IrTensorId] {
-        match self {
-            IrNode::Operator { outputs, .. } => outputs,
-            IrNode::Value { .. } => &[],
-        }
+    /// Add an output edge.
+    pub fn add_output(&mut self, edge_id: IrEdgeId) -> Result<()> {
+        self.outputs.push(edge_id);
+        Ok(())
     }
 
-    /// Add an input (only for operators).
-    pub fn add_input(&mut self, input: IrInput) -> Result<()> {
-        match self {
-            IrNode::Operator { inputs, .. } => {
-                inputs.push(input);
-                Ok(())
-            }
-            IrNode::Value { .. } => Err(Error::InvalidGraph(
-                "Cannot add input to Value node".to_string(),
-            )),
-        }
-    }
-
-    /// Add a tensor input (convenience method).
-    pub fn add_tensor_input(&mut self, tensor_id: IrTensorId) -> Result<()> {
-        self.add_input(IrInput::Tensor(tensor_id))
-    }
-
-    /// Add an output (only for operators).
-    pub fn add_output(&mut self, tensor_id: IrTensorId) -> Result<()> {
-        match self {
-            IrNode::Operator { outputs, .. } => {
-                outputs.push(tensor_id);
-                Ok(())
-            }
-            IrNode::Value { .. } => Err(Error::InvalidGraph(
-                "Cannot add output to Value node".to_string(),
-            )),
-        }
-    }
-
-    /// Set an attribute (only for operators).
+    /// Set an attribute.
     pub fn set_attribute(&mut self, key: String, value: AttributeValue) -> Result<()> {
-        match self {
-            IrNode::Operator { attributes, .. } => {
-                attributes.insert(key, value);
-                Ok(())
-            }
-            IrNode::Value { .. } => Err(Error::InvalidGraph(
-                "Cannot set attribute on Value node".to_string(),
-            )),
-        }
+        self.attributes.insert(key, value);
+        Ok(())
     }
 
-    /// Get an attribute (only for operators).
+    /// Get an attribute.
     pub fn get_attribute(&self, key: &str) -> Option<&AttributeValue> {
-        match self {
-            IrNode::Operator { attributes, .. } => attributes.get(key),
-            IrNode::Value { .. } => None,
-        }
+        self.attributes.get(key)
     }
 }
 
-/// Tensor metadata in the IR graph.
+// ──────────────────────────────── IrEdge ─────────────────────────────────
+
+/// An edge (tensor value flow) in the IR graph.
+///
+/// Edges carry metadata about the tensor that flows along them. During constant
+/// folding, the `constant_value` field is populated and the producing operator
+/// is removed.
 #[derive(Debug, Clone)]
-pub struct TensorDef {
+pub struct IrEdge {
     /// Tensor name (must be unique within the graph).
     pub name: String,
 
@@ -715,12 +451,18 @@ pub struct TensorDef {
     pub kind: TensorKind,
 
     /// Initializer data for constants (raw bytes from ONNX).
-    /// Parsed on-demand during constant folding into Value nodes.
+    /// Parsed on-demand during constant folding.
     pub initializer: Option<Vec<u8>>,
+
+    /// Constant value set during constant folding.
+    pub constant_value: Option<TensorValue>,
 }
 
-impl TensorDef {
-    /// Create a new tensor definition.
+/// Backward-compatibility alias.
+pub type TensorDef = IrEdge;
+
+impl IrEdge {
+    /// Create a new edge definition.
     pub fn new(name: String, dtype: DataType, shape: TensorShape, kind: TensorKind) -> Self {
         Self {
             name,
@@ -728,12 +470,18 @@ impl TensorDef {
             shape,
             kind,
             initializer: None,
+            constant_value: None,
         }
     }
 
-    /// Check if this tensor has initializer data.
+    /// Check if this edge has initializer data.
     pub fn has_initializer(&self) -> bool {
         self.initializer.is_some()
+    }
+
+    /// Check if this edge holds a constant value.
+    pub fn is_constant(&self) -> bool {
+        self.constant_value.is_some()
     }
 }
 
@@ -749,51 +497,48 @@ mod tests {
     }
 
     #[test]
-    fn test_add_tensor() {
+    fn test_add_edge() {
         let mut graph = IrGraph::new();
-        let tensor = TensorDef::new(
+        let edge = IrEdge::new(
             "x".to_string(),
             DataType::F32,
             TensorShape::Static(vec![1, 2, 3]),
             TensorKind::Input,
         );
-        let tensor_id = graph.add_tensor(tensor);
+        let edge_id = graph.add_edge(edge);
 
         assert_eq!(graph.tensor_count(), 1);
-        assert_eq!(graph.tensor(tensor_id).unwrap().name, "x");
-        assert_eq!(graph.tensor_by_name("x"), Some(tensor_id));
+        assert_eq!(graph.edge(edge_id).unwrap().name, "x");
+        assert_eq!(graph.tensor_by_name("x"), Some(edge_id));
     }
 
     #[test]
     fn test_add_node() {
         let mut graph = IrGraph::new();
 
-        // Add input and output tensors
-        let input = TensorDef::new(
+        let input = IrEdge::new(
             "input".to_string(),
             DataType::F32,
             TensorShape::Static(vec![1, 2]),
             TensorKind::Input,
         );
-        let output = TensorDef::new(
+        let output = IrEdge::new(
             "output".to_string(),
             DataType::F32,
             TensorShape::Static(vec![1, 2]),
             TensorKind::Intermediate,
         );
 
-        let input_id = graph.add_tensor(input);
-        let output_id = graph.add_tensor(output);
+        let input_id = graph.add_edge(input);
+        let output_id = graph.add_edge(output);
 
-        // Add node
         let mut node = IrNode::new("Relu".to_string());
-        node.add_tensor_input(input_id);
-        node.add_output(output_id);
-
+        node.add_input(input_id);
+        node.add_output(output_id).unwrap();
         let node_id = graph.add_node(node);
 
         assert_eq!(graph.node_count(), 1);
-        assert_eq!(graph.node(node_id).unwrap().op_type(), Some("Relu"));
+        assert_eq!(graph.node(node_id).unwrap().op_type(), "Relu");
         assert_eq!(graph.tensor_producer(output_id), Some(node_id));
         assert_eq!(graph.tensor_consumers(input_id), vec![node_id]);
     }
@@ -802,27 +547,24 @@ mod tests {
     fn test_remove_node() {
         let mut graph = IrGraph::new();
 
-        // Add tensors
-        let input_id = graph.add_tensor(TensorDef::new(
+        let input_id = graph.add_edge(IrEdge::new(
             "input".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2, 2]),
             TensorKind::Input,
         ));
-        let output_id = graph.add_tensor(TensorDef::new(
+        let output_id = graph.add_edge(IrEdge::new(
             "output".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2, 2]),
             TensorKind::Intermediate,
         ));
 
-        // Add node
         let mut node = IrNode::new("Add".to_string());
-        node.add_tensor_input(input_id);
-        node.add_output(output_id);
+        node.add_input(input_id);
+        node.add_output(output_id).unwrap();
         let node_id = graph.add_node(node);
 
-        // Remove node
         graph.remove_node(node_id).unwrap();
 
         assert_eq!(graph.node_count(), 0);
@@ -834,26 +576,25 @@ mod tests {
     fn test_topological_order() {
         let mut graph = IrGraph::new();
 
-        // Create a simple chain: A -> B -> C
-        let t0 = graph.add_tensor(TensorDef::new(
+        let t0 = graph.add_edge(IrEdge::new(
             "t0".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
             TensorKind::Input,
         ));
-        let t1 = graph.add_tensor(TensorDef::new(
+        let t1 = graph.add_edge(IrEdge::new(
             "t1".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
             TensorKind::Intermediate,
         ));
-        let t2 = graph.add_tensor(TensorDef::new(
+        let t2 = graph.add_edge(IrEdge::new(
             "t2".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
             TensorKind::Intermediate,
         ));
-        let t3 = graph.add_tensor(TensorDef::new(
+        let t3 = graph.add_edge(IrEdge::new(
             "t3".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
@@ -861,18 +602,18 @@ mod tests {
         ));
 
         let mut node_a = IrNode::new("A".to_string());
-        node_a.add_tensor_input(t0);
-        node_a.add_output(t1);
+        node_a.add_input(t0);
+        node_a.add_output(t1).unwrap();
         let id_a = graph.add_node(node_a);
 
         let mut node_b = IrNode::new("B".to_string());
-        node_b.add_tensor_input(t1);
-        node_b.add_output(t2);
+        node_b.add_input(t1);
+        node_b.add_output(t2).unwrap();
         let id_b = graph.add_node(node_b);
 
         let mut node_c = IrNode::new("C".to_string());
-        node_c.add_tensor_input(t2);
-        node_c.add_output(t3);
+        node_c.add_input(t2);
+        node_c.add_output(t3).unwrap();
         let id_c = graph.add_node(node_c);
 
         let order = graph.topological_order();
@@ -883,20 +624,19 @@ mod tests {
     fn test_stable_graph_indices() {
         let mut graph = IrGraph::new();
 
-        // Add three nodes
-        let t0 = graph.add_tensor(TensorDef::new(
+        let t0 = graph.add_edge(IrEdge::new(
             "t0".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
             TensorKind::Input,
         ));
-        let t1 = graph.add_tensor(TensorDef::new(
+        let t1 = graph.add_edge(IrEdge::new(
             "t1".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
             TensorKind::Intermediate,
         ));
-        let t2 = graph.add_tensor(TensorDef::new(
+        let t2 = graph.add_edge(IrEdge::new(
             "t2".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
@@ -904,21 +644,21 @@ mod tests {
         ));
 
         let mut node_a = IrNode::new("A".to_string());
-        node_a.add_tensor_input(t0);
-        node_a.add_output(t1);
+        node_a.add_input(t0);
+        node_a.add_output(t1).unwrap();
         let id_a = graph.add_node(node_a);
 
         let mut node_b = IrNode::new("B".to_string());
-        node_b.add_tensor_input(t1);
-        node_b.add_output(t2);
-        let _id_b = graph.add_node(node_b);
+        node_b.add_input(t1);
+        node_b.add_output(t2).unwrap();
+        let id_b = graph.add_node(node_b);
 
         let mut node_c = IrNode::new("C".to_string());
-        node_c.add_tensor_input(t2).unwrap();
+        node_c.add_input(t2);
         let id_c = graph.add_node(node_c);
 
         // Remove middle node
-        graph.remove_node(_id_b).unwrap();
+        graph.remove_node(id_b).unwrap();
 
         // Original node IDs should still be valid
         assert!(graph.node(id_a).is_ok());
@@ -926,77 +666,57 @@ mod tests {
     }
 
     #[test]
-    fn test_replace_with_value() {
+    fn test_fold_node_to_constant() {
         use crate::types::TensorData;
 
         let mut graph = IrGraph::new();
 
-        // Create input tensor
-        let input = TensorDef::new(
+        let input_id = graph.add_edge(IrEdge::new(
             "input".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2, 3]),
             TensorKind::Input,
-        );
-        let input_id = graph.add_tensor(input);
-
-        // Create output tensor
-        let output = TensorDef::new(
+        ));
+        let output_id = graph.add_edge(IrEdge::new(
             "output".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2, 3]),
             TensorKind::Intermediate,
-        );
-        let output_id = graph.add_tensor(output);
+        ));
 
-        // Create operator node
-        let mut node = IrNode::new_operator("Relu".to_string());
-        node.add_tensor_input(input_id).unwrap();
+        let mut node = IrNode::new("Relu".to_string());
+        node.add_input(input_id);
         node.add_output(output_id).unwrap();
         let node_id = graph.add_node(node);
 
-        // Create consumer node
-        let mut consumer = IrNode::new_operator("Add".to_string());
-        consumer.add_tensor_input(output_id).unwrap();
+        // Create a consumer
+        let mut consumer = IrNode::new("Add".to_string());
+        consumer.add_input(output_id);
         let consumer_id = graph.add_node(consumer);
 
-        // Replace with value
+        // Fold the node
         let value = TensorValue::new(
             TensorData::F32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
             vec![2, 3],
             DataType::F32,
         );
 
-        graph
-            .replace_single_output_with_value(node_id, value)
-            .unwrap();
+        graph.fold_node_to_constant(node_id, value.clone()).unwrap();
 
-        // Verify node is now a Value node
-        assert!(graph.node(node_id).unwrap().is_value());
+        // Node should be removed
+        assert!(graph.node(node_id).is_err());
+        assert!(graph.is_fully_folded(node_id).unwrap());
 
-        // Verify consumer now references value node
+        // Output edge should have the constant value
+        let output_edge = graph.edge(output_id).unwrap();
+        assert!(output_edge.is_constant());
+        assert_eq!(
+            output_edge.constant_value.as_ref().unwrap().shape,
+            vec![2, 3]
+        );
+
+        // Consumer still references the edge (unchanged)
         let consumer_node = graph.node(consumer_id).unwrap();
-        match consumer_node.inputs().get(0).unwrap() {
-            IrInput::ValueNode(id) => assert_eq!(*id, node_id),
-            _ => panic!("Expected ValueNode input"),
-        }
-    }
-
-    #[test]
-    fn test_is_fully_folded() {
-        use crate::types::TensorData;
-
-        let mut graph = IrGraph::new();
-
-        // Create regular operator node
-        let op_node = IrNode::new_operator("Add".to_string());
-        let op_id = graph.add_node(op_node);
-        assert!(!graph.is_fully_folded(op_id).unwrap());
-
-        // Create value node
-        let value = TensorValue::new(TensorData::F32(vec![1.0, 2.0]), vec![2], DataType::F32);
-        let value_node = IrNode::new_value(value);
-        let value_id = graph.add_node(value_node);
-        assert!(graph.is_fully_folded(value_id).unwrap());
+        assert_eq!(consumer_node.inputs()[0], output_id);
     }
 }

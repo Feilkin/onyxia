@@ -182,7 +182,7 @@ mod tests {
         let nodes: Vec<_> = ir_graph.nodes().collect();
         assert_eq!(nodes.len(), 1);
         let (node_id, node) = nodes[0];
-        assert_eq!(node.op_type(), Some("Relu"));
+        assert_eq!(node.op_type(), "Relu");
         assert_eq!(node.inputs().len(), 1);
         assert_eq!(node.outputs().len(), 1);
 
@@ -246,8 +246,8 @@ mod tests {
         // First node should be Add, second should be Mul
         let node_a = ir_graph.node(topo_order[0]).unwrap();
         let node_b = ir_graph.node(topo_order[1]).unwrap();
-        assert_eq!(node_a.op_type(), Some("Add"));
-        assert_eq!(node_b.op_type(), Some("Mul"));
+        assert_eq!(node_a.op_type(), "Add");
+        assert_eq!(node_b.op_type(), "Mul");
     }
 
     #[test]

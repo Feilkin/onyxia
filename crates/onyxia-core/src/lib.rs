@@ -1,7 +1,7 @@
 //! Core intermediate representation, operator traits, and plan types for Onyxia.
 //!
 //! This crate provides the foundational abstractions that all other Onyxia crates depend on:
-//! - Graph-based IR (`IrGraph`, `IrNode`, `TensorDef`)
+//! - Graph-based IR (`IrGraph`, `IrNode`, `IrEdge`)
 //! - Operator and Pass traits for extensibility
 //! - Context types for shape inference, constant folding, and planning
 //! - Plan types for execution (`CompiledModel`, `PlannedOp`, `Step`)
@@ -19,7 +19,7 @@ pub mod types;
 
 // Re-export commonly used types
 pub use context::{FoldCtx, InferenceCtx, PlanCtx};
-pub use ir::{IrGraph, IrNode, IrNodeId, IrTensorId, TensorDef};
+pub use ir::{IrEdge, IrEdgeId, IrGraph, IrNode, IrNodeId, IrTensorId, TensorDef};
 pub use operator::Operator;
 pub use pass::{Pass, Stage};
 pub use plan::{

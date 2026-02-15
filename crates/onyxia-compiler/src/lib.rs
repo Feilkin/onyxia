@@ -181,15 +181,7 @@ impl CompilerPipeline {
         for node_id in topo_order {
             let node = graph.node(node_id)?.clone();
 
-            // Skip Value nodes (already folded)
-            if node.is_value() {
-                continue;
-            }
-
-            let op_type = match node.op_type() {
-                Some(op_type) => op_type,
-                None => continue, // Skip Value nodes (redundant check but kept for clarity)
-            };
+            let op_type = node.op_type();
 
             // Look up operator
             let operator = registry.get(op_type).ok_or_else(|| {
