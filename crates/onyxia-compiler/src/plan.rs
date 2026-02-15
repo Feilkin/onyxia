@@ -184,6 +184,12 @@ pub struct ExecutionPlan {
     pub inputs: Vec<TensorId>,
     /// Output tensor IDs (in order).
     pub outputs: Vec<TensorId>,
+    /// Symbolic dimension bindings (for runtime resolution).
+    ///
+    /// Maps symbolic expressions to their locations in shader immediates.
+    /// The runtime evaluates these expressions with user-provided dimension
+    /// values and patches the immediates before execution.
+    pub symbolic_bindings: Vec<onyxia_core::SymbolicBinding>,
     /// Model metadata.
     pub metadata: ModelMetadata,
 }
@@ -257,6 +263,7 @@ mod tests {
             tensors: registry,
             inputs: vec![input_id],
             outputs: vec![output_id],
+            symbolic_bindings: Vec::new(),
             metadata: ModelMetadata {
                 name: "test_model".to_string(),
                 version: 1,

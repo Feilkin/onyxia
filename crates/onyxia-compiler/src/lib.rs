@@ -173,6 +173,7 @@ impl CompilerPipeline {
         let mut operations = Vec::new();
         let mut shaders = Vec::new();
         let mut shader_cache = HashMap::new();
+        let mut symbolic_bindings = Vec::new();
 
         // Process nodes in topological order
         let topo_order = graph.topological_order();
@@ -209,6 +210,7 @@ impl CompilerPipeline {
                 shader_cache: &mut shader_cache,
                 scratch_buffers: &mut scratch_buffers,
                 dynamic_dimensions: &self.dynamic_dimensions,
+                symbolic_bindings: &mut symbolic_bindings,
             };
 
             // Call operator's planning
@@ -245,7 +247,7 @@ impl CompilerPipeline {
             tensors: tensor_registry,
             inputs: graph.inputs.clone(),
             outputs: graph.outputs.clone(),
-            symbolic_bindings: Vec::new(), // Will be populated by runtime
+            symbolic_bindings,
             metadata: ModelMetadata::default(),
         })
     }

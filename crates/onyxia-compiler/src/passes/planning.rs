@@ -56,6 +56,7 @@ impl PlanningPass {
         shaders: &mut Vec<CompiledShader>,
         shader_cache: &mut HashMap<(String, String), usize>,
         dynamic_dimensions: &HashMap<String, usize>,
+        symbolic_bindings: &mut Vec<onyxia_core::SymbolicBinding>,
     ) -> Result<PlannedOp> {
         // Look up operator
         let operator = registry.get(&node.op_type).ok_or_else(|| {
@@ -71,6 +72,7 @@ impl PlanningPass {
             shader_cache,
             scratch_buffers: &mut scratch_buffers,
             dynamic_dimensions,
+            symbolic_bindings,
         };
 
         // Call operator's planning
@@ -119,6 +121,7 @@ impl Pass for PlanningPass {
         let mut operations = Vec::new();
         let mut shaders = Vec::new();
         let mut shader_cache = HashMap::new();
+        let mut symbolic_bindings = Vec::new();
         let dynamic_dimensions = HashMap::new(); // Empty for now, will be passed from pipeline
 
         // Process nodes in topological order
@@ -140,6 +143,7 @@ impl Pass for PlanningPass {
                 &mut shaders,
                 &mut shader_cache,
                 &dynamic_dimensions,
+                &mut symbolic_bindings,
             )?;
 
             operations.push(planned_op);
@@ -155,7 +159,7 @@ impl Pass for PlanningPass {
             tensors: tensor_registry,
             inputs: graph.inputs.clone(),
             outputs: graph.outputs.clone(),
-            symbolic_bindings: Vec::new(), // Will be populated by runtime
+            symbolic_bindings,
             metadata: ModelMetadata {
                 name: "model".to_string(),
                 ir_version: 0,

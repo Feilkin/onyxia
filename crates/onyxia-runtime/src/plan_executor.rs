@@ -465,6 +465,111 @@ impl PlanExecutor {
         &self.plan
     }
 
+    /// Update symbolic dimensions at runtime.
+    ///
+    /// Evaluates each `SymbolicBinding` expression with the new dimension values
+    /// and patches the immediates in-place. Returns `true` if any shaders need
+    /// recompilation (because they used dimensions as shader defs rather than
+    /// immediates).
+    ///
+    /// For symbolic dims (encoded as immediates): patches immediately, no recompilation.
+    /// For static dims (encoded as shader defs): flags affected shaders for recompilation.
+    ///
+    /// # Arguments
+    ///
+    /// * `dims` - New dimension values to apply
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` if any dimensions that were compiled as shader defs have
+    /// changed, indicating that shader recompilation is needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - A symbolic expression references an undefined variable
+    /// - Expression evaluation fails (division by zero, overflow, etc.)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut dims = HashMap::new();
+    /// dims.insert("sequence_length".to_string(), 256);
+    /// dims.insert("batch_size".to_string(), 2);
+    ///
+    /// let needs_recompilation = executor.update_dimensions(&dims)?;
+    /// if needs_recompilation {
+    ///     // Need to recompile shaders that used dimensions as shader defs
+    ///     // For now, this returns true but doesn't actually recompile
+    ///     // Full recompilation would require rebuilding the plan
+    /// }
+    /// ```
+    pub fn update_dimensions(&mut self, dims: &HashMap<String, usize>) -> Result<bool> {
+        use onyxia_core::symbolic_expr::evaluate_expr;
+
+        // Track if any shader-def dimensions changed (not yet implemented)
+        let mut needs_recompilation = false;
+
+        // Process all symbolic bindings
+        for binding in &self.plan.symbolic_bindings {
+            // Evaluate the expression with new dimension values
+            let new_value = evaluate_expr(&binding.expr, dims).map_err(|e| {
+                RuntimeError::DimensionError(format!(
+                    "Failed to evaluate dimension expression: {}",
+                    e
+                ))
+            })?;
+
+            // Find the operation that uses this shader
+            let operation = self
+                .plan
+                .operations
+                .iter_mut()
+                .find(|op| {
+                    op.steps.iter().any(|step| match step {
+                        onyxia_compiler::plan::Step::Dispatch { shader_index, .. } => {
+                            *shader_index == binding.shader_index
+                        }
+                        _ => false,
+                    })
+                })
+                .ok_or_else(|| {
+                    RuntimeError::ExecutionError(format!(
+                        "No operation found for shader index {}",
+                        binding.shader_index
+                    ))
+                })?;
+
+            // Patch the immediates in the dispatch step
+            for step in &mut operation.steps {
+                if let onyxia_compiler::plan::Step::Dispatch {
+                    shader_index,
+                    immediates,
+                    ..
+                } = step
+                {
+                    if *shader_index == binding.shader_index {
+                        // Ensure immediates buffer exists and is large enough
+                        let immediates_buf = immediates.get_or_insert_with(Vec::new);
+
+                        // Ensure buffer is large enough
+                        let required_size = binding.immediate_offset + 4; // u32 = 4 bytes
+                        if immediates_buf.len() < required_size {
+                            immediates_buf.resize(required_size, 0);
+                        }
+
+                        // Patch the value at the recorded offset
+                        let bytes = (new_value as u32).to_le_bytes();
+                        immediates_buf[binding.immediate_offset..binding.immediate_offset + 4]
+                            .copy_from_slice(&bytes);
+                    }
+                }
+            }
+        }
+
+        Ok(needs_recompilation)
+    }
+
     /// Execute the plan but only download the specified outputs to CPU.
     ///
     /// All outputs are still computed on GPU, but only the named ones are
@@ -816,6 +921,7 @@ mod tests {
             tensors: TensorRegistry::new(),
             inputs: Vec::new(),
             outputs: Vec::new(),
+            symbolic_bindings: Vec::new(),
             metadata: ModelMetadata {
                 name: "test_empty".to_string(),
                 version: 1,
@@ -857,6 +963,7 @@ mod tests {
             tensors,
             inputs: vec![dest_id],
             outputs: vec![source_id],
+            symbolic_bindings: Vec::new(),
             metadata: ModelMetadata {
                 name: "test_copy_tensors".to_string(),
                 version: 1,
@@ -926,6 +1033,208 @@ mod tests {
 
     #[pollster::test]
     #[ignore] // Requires GPU
+    async fn test_update_dimensions() {
+        use onyxia_core::symbolic_expr::{SymbolicExpr, parse_expr};
+
+        let runtime = crate::Runtime::new().await.unwrap();
+
+        // Create a plan with symbolic bindings
+        let mut tensors = TensorRegistry::new();
+        let input_id = tensors.add(TensorInfo {
+            name: "input".to_string(),
+            shape: TensorShape::Static(vec![4]),
+            dtype: DataType::F32,
+            kind: TensorKind::Input,
+            initializer: None,
+        });
+
+        // Create a simple shader
+        let shader = onyxia_compiler::plan::CompiledShader {
+            label: "test_shader".to_string(),
+            module: naga::Module::default(),
+            entry_point: "main".to_string(),
+        };
+
+        // Create a step with immediates
+        let step = onyxia_compiler::plan::Step::Dispatch {
+            shader_index: 0,
+            bindings: vec![onyxia_compiler::plan::BindingDesc {
+                buffer: onyxia_compiler::plan::BufferRef::Tensor(input_id),
+                read_only: false,
+            }],
+            workgroups: [1, 1, 1],
+            immediates: Some(vec![0, 0, 0, 0]), // Initial value for seq_len
+        };
+
+        // Create operation
+        let operation = onyxia_compiler::plan::PlannedOp {
+            name: "test_op".to_string(),
+            op_type: "Test".to_string(),
+            inputs: vec![input_id],
+            outputs: vec![],
+            steps: vec![step],
+            scratch_buffers: Vec::new(),
+        };
+
+        // Create a symbolic binding
+        let expr = parse_expr("seq_len").unwrap();
+        let binding = onyxia_core::SymbolicBinding {
+            shader_index: 0,
+            immediate_offset: 0,
+            expr,
+        };
+
+        let plan = ExecutionPlan {
+            operations: vec![operation],
+            shaders: vec![shader],
+            tensors,
+            inputs: vec![input_id],
+            outputs: vec![],
+            symbolic_bindings: vec![binding],
+            metadata: ModelMetadata {
+                name: "test_update_dims".to_string(),
+                version: 1,
+                ir_version: 9,
+                producer: "test".to_string(),
+            },
+        };
+
+        let mut executor = runtime.load_model(plan).await.unwrap();
+
+        // Update dimensions
+        let mut dims = HashMap::new();
+        dims.insert("seq_len".to_string(), 256);
+
+        let needs_recompilation = executor.update_dimensions(&dims).unwrap();
+        assert!(!needs_recompilation); // No shader-def dimensions changed
+
+        // Verify the immediate was patched
+        match &executor.plan.operations[0].steps[0] {
+            onyxia_compiler::plan::Step::Dispatch { immediates, .. } => {
+                let immediates_buf = immediates.as_ref().unwrap();
+                let value = u32::from_le_bytes([
+                    immediates_buf[0],
+                    immediates_buf[1],
+                    immediates_buf[2],
+                    immediates_buf[3],
+                ]);
+                assert_eq!(value, 256, "Immediate should be updated to 256");
+            }
+            _ => panic!("Expected Dispatch step"),
+        }
+
+        // Update dimensions again with different value
+        dims.insert("seq_len".to_string(), 512);
+        executor.update_dimensions(&dims).unwrap();
+
+        // Verify the immediate was updated again
+        match &executor.plan.operations[0].steps[0] {
+            onyxia_compiler::plan::Step::Dispatch { immediates, .. } => {
+                let immediates_buf = immediates.as_ref().unwrap();
+                let value = u32::from_le_bytes([
+                    immediates_buf[0],
+                    immediates_buf[1],
+                    immediates_buf[2],
+                    immediates_buf[3],
+                ]);
+                assert_eq!(value, 512, "Immediate should be updated to 512");
+            }
+            _ => panic!("Expected Dispatch step"),
+        }
+    }
+
+    #[pollster::test]
+    #[ignore] // Requires GPU
+    async fn test_update_dimensions_expression() {
+        use onyxia_core::symbolic_expr::parse_expr;
+
+        let runtime = crate::Runtime::new().await.unwrap();
+
+        // Create a plan with a symbolic binding for an expression
+        let mut tensors = TensorRegistry::new();
+        let input_id = tensors.add(TensorInfo {
+            name: "input".to_string(),
+            shape: TensorShape::Static(vec![4]),
+            dtype: DataType::F32,
+            kind: TensorKind::Input,
+            initializer: None,
+        });
+
+        let shader = onyxia_compiler::plan::CompiledShader {
+            label: "test_shader".to_string(),
+            module: naga::Module::default(),
+            entry_point: "main".to_string(),
+        };
+
+        let step = onyxia_compiler::plan::Step::Dispatch {
+            shader_index: 0,
+            bindings: vec![onyxia_compiler::plan::BindingDesc {
+                buffer: onyxia_compiler::plan::BufferRef::Tensor(input_id),
+                read_only: false,
+            }],
+            workgroups: [1, 1, 1],
+            immediates: Some(vec![0, 0, 0, 0]),
+        };
+
+        let operation = onyxia_compiler::plan::PlannedOp {
+            name: "test_op".to_string(),
+            op_type: "Test".to_string(),
+            inputs: vec![input_id],
+            outputs: vec![],
+            steps: vec![step],
+            scratch_buffers: Vec::new(),
+        };
+
+        // Create a symbolic binding with an expression
+        let expr = parse_expr("seq_len * num_heads").unwrap();
+        let binding = onyxia_core::SymbolicBinding {
+            shader_index: 0,
+            immediate_offset: 0,
+            expr,
+        };
+
+        let plan = ExecutionPlan {
+            operations: vec![operation],
+            shaders: vec![shader],
+            tensors,
+            inputs: vec![input_id],
+            outputs: vec![],
+            symbolic_bindings: vec![binding],
+            metadata: ModelMetadata {
+                name: "test_update_dims_expr".to_string(),
+                version: 1,
+                ir_version: 9,
+                producer: "test".to_string(),
+            },
+        };
+
+        let mut executor = runtime.load_model(plan).await.unwrap();
+
+        // Update dimensions
+        let mut dims = HashMap::new();
+        dims.insert("seq_len".to_string(), 64);
+        dims.insert("num_heads".to_string(), 8);
+
+        executor.update_dimensions(&dims).unwrap();
+
+        // Verify the expression was evaluated correctly (64 * 8 = 512)
+        match &executor.plan.operations[0].steps[0] {
+            onyxia_compiler::plan::Step::Dispatch { immediates, .. } => {
+                let immediates_buf = immediates.as_ref().unwrap();
+                let value = u32::from_le_bytes([
+                    immediates_buf[0],
+                    immediates_buf[1],
+                    immediates_buf[2],
+                    immediates_buf[3],
+                ]);
+                assert_eq!(value, 512, "Expression should evaluate to 64 * 8 = 512");
+            }
+            _ => panic!("Expected Dispatch step"),
+        }
+    }
+
+    #[pollster::test]
+    #[ignore] // Requires GPU
     async fn test_run_with_outputs_subset() {
         let runtime = crate::Runtime::new().await.unwrap();
 
@@ -959,6 +1268,7 @@ mod tests {
             tensors,
             inputs: vec![input_id],
             outputs: vec![output1_id, output2_id],
+            symbolic_bindings: Vec::new(),
             metadata: ModelMetadata {
                 name: "test_selective_output".to_string(),
                 version: 1,

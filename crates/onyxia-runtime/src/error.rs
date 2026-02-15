@@ -29,6 +29,10 @@ pub enum RuntimeError {
     #[error("Tensor not found: {0}")]
     TensorNotFound(String),
 
+    /// Dimension error.
+    #[error("Dimension error: {0}")]
+    DimensionError(String),
+
     /// Invalid input/output.
     #[error("Invalid input or output: {0}")]
     InvalidInputOutput(String),

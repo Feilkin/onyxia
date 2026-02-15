@@ -285,6 +285,7 @@ impl<'a> std::ops::Deref for FoldCtx<'a> {
 /// - Tensor metadata (shapes, dtypes)
 /// - Shader compilation services
 /// - Scratch buffer allocation
+/// - Dimension encoding (shader defs vs immediates)
 pub struct PlanCtx<'a> {
     /// The node being planned.
     pub node: &'a IrNode,
@@ -303,6 +304,9 @@ pub struct PlanCtx<'a> {
 
     /// Dynamic dimension values (for resolving symbolic dimensions at runtime).
     pub dynamic_dimensions: &'a HashMap<String, usize>,
+
+    /// Symbolic dimension bindings (for runtime update support).
+    pub symbolic_bindings: &'a mut Vec<crate::plan::SymbolicBinding>,
 }
 
 impl<'a> PlanCtx<'a> {
@@ -501,6 +505,72 @@ impl<'a> PlanCtx<'a> {
             ))),
         }
     }
+
+    /// Encode a symbolic dimension as an immediate value.
+    ///
+    /// For dimensions that remain symbolic after resolution, this encodes them
+    /// as runtime-patchable immediate values and records a binding so they can
+    /// be updated by `PlanExecutor::update_dimensions()`.
+    ///
+    /// # Arguments
+    ///
+    /// * `shader_index` - The shader that will use this dimension
+    /// * `dim` - The symbolic dimension to encode
+    /// * `immediates` - The immediates buffer to append to
+    ///
+    /// # Returns
+    ///
+    /// Returns the offset in the immediates buffer where the value was encoded.
+    pub fn encode_dim_as_immediate(
+        &mut self,
+        shader_index: ShaderIndex,
+        dim: &SymbolicDim,
+        immediates: &mut Vec<u8>,
+    ) -> Result<usize> {
+        use crate::symbolic_expr::evaluate_expr;
+
+        let offset = immediates.len();
+
+        match dim {
+            SymbolicDim::Fixed(value) => {
+                // Fixed dimensions are encoded directly as u32
+                immediates.extend_from_slice(&(*value as u32).to_le_bytes());
+            }
+            SymbolicDim::Expr(expr) => {
+                // Evaluate the expression with current dimension values
+                let value = evaluate_expr(expr, self.dynamic_dimensions).map_err(|e| {
+                    Error::Planning(format!("Failed to evaluate dimension expression: {}", e))
+                })?;
+
+                // Encode the evaluated value
+                immediates.extend_from_slice(&(value as u32).to_le_bytes());
+
+                // Record a symbolic binding for runtime updates
+                self.symbolic_bindings.push(crate::plan::SymbolicBinding {
+                    shader_index,
+                    immediate_offset: offset,
+                    expr: expr.clone(),
+                });
+            }
+        }
+
+        Ok(offset)
+    }
+
+    /// Evaluate a symbolic dimension to a concrete value.
+    ///
+    /// This is useful for dimensions that need to be resolved at plan time
+    /// (e.g., for workgroup calculations) but don't need runtime updates.
+    pub fn evaluate_dim(&self, dim: &SymbolicDim) -> Result<usize> {
+        use crate::symbolic_expr::evaluate_expr;
+
+        match dim {
+            SymbolicDim::Fixed(value) => Ok(*value),
+            SymbolicDim::Expr(expr) => evaluate_expr(expr, self.dynamic_dimensions).map_err(|e| {
+                Error::Planning(format!("Failed to evaluate dimension expression: {}", e))
+            }),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -601,5 +671,120 @@ mod tests {
 
         let value = result[0].as_ref().unwrap();
         assert_eq!(value.as_f32(), Some(&[4.0, 6.0][..]));
+    }
+
+    #[test]
+    fn test_plan_ctx_encode_dim_as_immediate_fixed() {
+        use crate::symbolic_expr::SymbolicExpr;
+
+        let mut graph = IrGraph::new();
+        let node = IrNode::new("Test".to_string());
+
+        let mut shaders = Vec::new();
+        let mut shader_cache = HashMap::new();
+        let mut scratch_buffers = Vec::new();
+        let dynamic_dimensions = HashMap::new();
+        let mut symbolic_bindings = Vec::new();
+
+        let mut ctx = PlanCtx {
+            node: &node,
+            graph: &graph,
+            shaders: &mut shaders,
+            shader_cache: &mut shader_cache,
+            scratch_buffers: &mut scratch_buffers,
+            dynamic_dimensions: &dynamic_dimensions,
+            symbolic_bindings: &mut symbolic_bindings,
+        };
+
+        let dim = SymbolicDim::Fixed(128);
+        let mut immediates = Vec::new();
+        let offset = ctx
+            .encode_dim_as_immediate(0, &dim, &mut immediates)
+            .unwrap();
+
+        assert_eq!(offset, 0);
+        assert_eq!(immediates.len(), 4); // u32 = 4 bytes
+        assert_eq!(
+            u32::from_le_bytes([immediates[0], immediates[1], immediates[2], immediates[3]]),
+            128
+        );
+        assert_eq!(symbolic_bindings.len(), 0); // Fixed dims don't create bindings
+    }
+
+    #[test]
+    fn test_plan_ctx_encode_dim_as_immediate_expr() {
+        use crate::symbolic_expr::SymbolicExpr;
+
+        let mut graph = IrGraph::new();
+        let node = IrNode::new("Test".to_string());
+
+        let mut shaders = Vec::new();
+        let mut shader_cache = HashMap::new();
+        let mut scratch_buffers = Vec::new();
+        let mut dynamic_dimensions = HashMap::new();
+        dynamic_dimensions.insert("seq_len".to_string(), 256);
+        let mut symbolic_bindings = Vec::new();
+
+        let mut ctx = PlanCtx {
+            node: &node,
+            graph: &graph,
+            shaders: &mut shaders,
+            shader_cache: &mut shader_cache,
+            scratch_buffers: &mut scratch_buffers,
+            dynamic_dimensions: &dynamic_dimensions,
+            symbolic_bindings: &mut symbolic_bindings,
+        };
+
+        let expr = SymbolicExpr::Variable("seq_len".to_string());
+        let dim = SymbolicDim::Expr(expr.clone());
+        let mut immediates = Vec::new();
+        let offset = ctx
+            .encode_dim_as_immediate(0, &dim, &mut immediates)
+            .unwrap();
+
+        assert_eq!(offset, 0);
+        assert_eq!(immediates.len(), 4);
+        assert_eq!(
+            u32::from_le_bytes([immediates[0], immediates[1], immediates[2], immediates[3]]),
+            256
+        );
+
+        // Should create a symbolic binding
+        assert_eq!(symbolic_bindings.len(), 1);
+        assert_eq!(symbolic_bindings[0].shader_index, 0);
+        assert_eq!(symbolic_bindings[0].immediate_offset, 0);
+        assert_eq!(symbolic_bindings[0].expr, expr);
+    }
+
+    #[test]
+    fn test_plan_ctx_evaluate_dim() {
+        let mut graph = IrGraph::new();
+        let node = IrNode::new("Test".to_string());
+
+        let mut shaders = Vec::new();
+        let mut shader_cache = HashMap::new();
+        let mut scratch_buffers = Vec::new();
+        let mut dynamic_dimensions = HashMap::new();
+        dynamic_dimensions.insert("batch_size".to_string(), 4);
+        let mut symbolic_bindings = Vec::new();
+
+        let ctx = PlanCtx {
+            node: &node,
+            graph: &graph,
+            shaders: &mut shaders,
+            shader_cache: &mut shader_cache,
+            scratch_buffers: &mut scratch_buffers,
+            dynamic_dimensions: &dynamic_dimensions,
+            symbolic_bindings: &mut symbolic_bindings,
+        };
+
+        // Test fixed dimension
+        let fixed_dim = SymbolicDim::Fixed(64);
+        assert_eq!(ctx.evaluate_dim(&fixed_dim).unwrap(), 64);
+
+        // Test symbolic dimension
+        use crate::symbolic_expr::SymbolicExpr;
+        let expr_dim = SymbolicDim::Expr(SymbolicExpr::Variable("batch_size".to_string()));
+        assert_eq!(ctx.evaluate_dim(&expr_dim).unwrap(), 4);
     }
 }
