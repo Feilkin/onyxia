@@ -184,7 +184,7 @@ impl Operator for UnsqueezeOp {
         // Get axes - try attribute first (opset < 13), then second input (opset >= 13)
         let axes: Vec<i64> = if ctx.has_attr("axes") {
             // Opset < 13: axes from attribute
-            ctx.attr_ints("axes").unwrap_or_else(|_| &[]).to_vec()
+            ctx.attr_ints("axes").unwrap_or(&[]).to_vec()
         } else if ctx.input_count() >= 2 {
             // Opset >= 13: axes from second input (must be constant)
             let Some(axes_val) = ctx.input_value(1) else {
@@ -409,17 +409,17 @@ impl Operator for TransposeOp {
         }
 
         let workgroup_size: u32 = 256;
-        let total_workgroups = (num_elements as u32 + workgroup_size - 1) / workgroup_size;
+        let total_workgroups = (num_elements as u32).div_ceil(workgroup_size);
 
         const MAX_DISPATCH_DIM: u32 = 65535;
         let (workgroups_x, workgroups_y, workgroups_z) = if total_workgroups <= MAX_DISPATCH_DIM {
             (total_workgroups, 1, 1)
         } else {
-            let workgroups_y = (total_workgroups + MAX_DISPATCH_DIM - 1) / MAX_DISPATCH_DIM;
+            let workgroups_y = total_workgroups.div_ceil(MAX_DISPATCH_DIM);
             if workgroups_y <= MAX_DISPATCH_DIM {
                 (MAX_DISPATCH_DIM, workgroups_y, 1)
             } else {
-                let workgroups_z = (workgroups_y + MAX_DISPATCH_DIM - 1) / MAX_DISPATCH_DIM;
+                let workgroups_z = workgroups_y.div_ceil(MAX_DISPATCH_DIM);
                 (MAX_DISPATCH_DIM, MAX_DISPATCH_DIM, workgroups_z)
             }
         };
@@ -666,7 +666,7 @@ impl Operator for ConcatOp {
 
             // Calculate number of elements in this input
             let input_size = outer_size * input_axis_size * inner_size;
-            let num_workgroups = (input_size as u32 + workgroup_size - 1) / workgroup_size;
+            let num_workgroups = (input_size as u32).div_ceil(workgroup_size);
 
             // Encode immediate constants for this input
             let mut immediates_data = Vec::new();
@@ -814,7 +814,7 @@ impl Operator for ExpandOp {
 
         let output_size: usize = output_shape.iter().product();
         let workgroup_size: u32 = 256;
-        let num_workgroups = (output_size as u32 + workgroup_size - 1) / workgroup_size;
+        let num_workgroups = (output_size as u32).div_ceil(workgroup_size);
 
         let mut shader_defs = HashMap::new();
         shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());

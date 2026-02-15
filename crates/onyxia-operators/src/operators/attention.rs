@@ -67,7 +67,7 @@ impl Operator for RotaryEmbeddingOp {
         let total_pairs = batch_size * seq_len * num_heads * (head_dim / 2);
 
         let workgroup_size: u32 = 256;
-        let num_workgroups = (total_pairs as u32 + workgroup_size - 1) / workgroup_size;
+        let num_workgroups = (total_pairs as u32).div_ceil(workgroup_size);
 
         let mut shader_defs = HashMap::new();
         shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());
@@ -254,7 +254,7 @@ impl Operator for GroupQueryAttentionOp {
                 },
             ],
             workgroups: [
-                (update_key_elements as u32 + workgroup_size - 1) / workgroup_size,
+                (update_key_elements as u32).div_ceil(workgroup_size),
                 1,
                 1,
             ],
@@ -290,7 +290,7 @@ impl Operator for GroupQueryAttentionOp {
                 },
             ],
             workgroups: [
-                (update_value_elements as u32 + workgroup_size - 1) / workgroup_size,
+                (update_value_elements as u32).div_ceil(workgroup_size),
                 1,
                 1,
             ],
@@ -339,7 +339,7 @@ impl Operator for GroupQueryAttentionOp {
                 },
             ],
             workgroups: [
-                (scores_elements as u32 + workgroup_size - 1) / workgroup_size,
+                (scores_elements as u32).div_ceil(workgroup_size),
                 1,
                 1,
             ],
@@ -369,7 +369,7 @@ impl Operator for GroupQueryAttentionOp {
                 read_only: false,
             }],
             workgroups: [
-                (softmax_rows as u32 + workgroup_size - 1) / workgroup_size,
+                (softmax_rows as u32).div_ceil(workgroup_size),
                 1,
                 1,
             ],
@@ -409,7 +409,7 @@ impl Operator for GroupQueryAttentionOp {
                 },
             ],
             workgroups: [
-                (output_elements as u32 + workgroup_size - 1) / workgroup_size,
+                (output_elements as u32).div_ceil(workgroup_size),
                 1,
                 1,
             ],

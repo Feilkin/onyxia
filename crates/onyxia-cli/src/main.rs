@@ -254,10 +254,7 @@ fn generate_filtered_dot(
 
         let node_id = node
             .name
-            .replace('/', "_")
-            .replace('.', "_")
-            .replace('[', "_")
-            .replace(']', "_");
+            .replace(['/', '.', '[', ']'], "_");
         dot.push_str(&format!(
             "  {} [label=\"{}\\n({})\"];\n",
             node_id,
@@ -274,15 +271,12 @@ fn generate_filtered_dot(
         }
     }
 
-    dot.push_str("\n");
+    dot.push('\n');
 
     // Add tensor nodes (inputs/outputs/intermediates)
     for tensor_name in &used_tensors {
         let tensor_id = tensor_name
-            .replace('/', "_")
-            .replace('.', "_")
-            .replace('[', "_")
-            .replace(']', "_");
+            .replace(['/', '.', '[', ']'], "_");
 
         // Determine tensor style
         let (shape, color) = if let Some(&tid) = graph.tensors.get(*tensor_name) {
@@ -318,7 +312,7 @@ fn generate_filtered_dot(
         ));
     }
 
-    dot.push_str("\n");
+    dot.push('\n');
 
     // Add edges
     for node in &graph.nodes {
@@ -328,26 +322,17 @@ fn generate_filtered_dot(
 
         let node_id = node
             .name
-            .replace('/', "_")
-            .replace('.', "_")
-            .replace('[', "_")
-            .replace(']', "_");
+            .replace(['/', '.', '[', ']'], "_");
 
         for inp in &node.inputs {
             let inp_id = inp
-                .replace('/', "_")
-                .replace('.', "_")
-                .replace('[', "_")
-                .replace(']', "_");
+                .replace(['/', '.', '[', ']'], "_");
             dot.push_str(&format!("  {} -> {};\n", inp_id, node_id));
         }
 
         for out in &node.outputs {
             let out_id = out
-                .replace('/', "_")
-                .replace('.', "_")
-                .replace('[', "_")
-                .replace(']', "_");
+                .replace(['/', '.', '[', ']'], "_");
             dot.push_str(&format!("  {} -> {};\n", node_id, out_id));
         }
     }
@@ -366,7 +351,7 @@ fn escape_dot_string(s: &str) -> String {
 /// Inspect an ONNX model's structure.
 fn cmd_inspect(model_path: PathBuf, dynamic_dim_args: Vec<String>) -> Result<()> {
     // Load and parse the ONNX model (handles external data automatically)
-    let mut model = onyxia_onnx::load_and_parse_model(&model_path).with_context(|| {
+    let model = onyxia_onnx::load_and_parse_model(&model_path).with_context(|| {
         format!(
             "Failed to load and parse model from {}",
             model_path.display()
@@ -518,7 +503,7 @@ async fn cmd_run_model(
     println!("Loading model from {}...", model_path.display());
 
     // Load and parse ONNX model
-    let mut model = onyxia_onnx::load_and_parse_model(&model_path)
+    let model = onyxia_onnx::load_and_parse_model(&model_path)
         .with_context(|| format!("Failed to load model from {}", model_path.display()))?;
 
     // Set up dynamic dimensions - use max sequence length so buffers can handle variable inputs

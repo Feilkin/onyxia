@@ -148,7 +148,7 @@ impl<'a> PlanContext<'a> {
         let id = self.input_ids[n];
         self.graph
             .tensor(id)
-            .map_err(|e| CodegenError::OnnxError(e))
+            .map_err(CodegenError::OnnxError)
     }
 
     /// Get TensorInfo for the nth output tensor.
@@ -156,7 +156,7 @@ impl<'a> PlanContext<'a> {
         let id = self.output_ids[n];
         self.graph
             .tensor(id)
-            .map_err(|e| CodegenError::OnnxError(e))
+            .map_err(CodegenError::OnnxError)
     }
 
     /// Get static dimensions from a tensor shape.

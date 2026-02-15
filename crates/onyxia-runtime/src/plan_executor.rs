@@ -515,8 +515,7 @@ impl PlanExecutor {
                     immediates,
                     ..
                 } = step
-                {
-                    if *shader_index == binding.shader_index {
+                    && *shader_index == binding.shader_index {
                         // Ensure immediates buffer exists and is large enough
                         let immediates_buf = immediates.get_or_insert_with(Vec::new);
 
@@ -531,7 +530,6 @@ impl PlanExecutor {
                         immediates_buf[binding.immediate_offset..binding.immediate_offset + 4]
                             .copy_from_slice(&bytes);
                     }
-                }
             }
         }
 
@@ -597,7 +595,7 @@ impl PlanExecutor {
             // Extract shape
             let shape: Vec<usize> = match &info.shape {
                 onyxia_core::TensorShape::Static(dims) => {
-                    dims.iter().map(|&d| d as usize).collect()
+                    dims.iter().map(|&d| d).collect()
                 }
                 _ => {
                     return Err(RuntimeError::TensorError(

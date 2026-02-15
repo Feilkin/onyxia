@@ -169,7 +169,7 @@ impl Operator for GatherOp {
 
         // Configure workgroup size
         let workgroup_size: u32 = 256;
-        let num_workgroups = (num_elements as u32 + workgroup_size - 1) / workgroup_size;
+        let num_workgroups = (num_elements as u32).div_ceil(workgroup_size);
 
         // Prepare shader definitions
         let mut shader_defs = HashMap::new();
@@ -488,7 +488,7 @@ impl Operator for SliceOp {
 
         let output_size: usize = output_shape.iter().product();
         let workgroup_size: u32 = 256;
-        let num_workgroups = (output_size as u32 + workgroup_size - 1) / workgroup_size;
+        let num_workgroups = (output_size as u32).div_ceil(workgroup_size);
 
         let mut shader_defs = HashMap::new();
         shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());
@@ -645,7 +645,7 @@ impl Operator for ScatterNDOp {
         )?;
 
         // Step 1: Copy data to output (indices_last_dim = 0 signals copy mode)
-        let copy_workgroups = (data_size as u32 + workgroup_size - 1) / workgroup_size;
+        let copy_workgroups = (data_size as u32).div_ceil(workgroup_size);
 
         let mut copy_immediates = Vec::new();
         copy_immediates.extend_from_slice(&(data_size as u32).to_le_bytes());
@@ -682,7 +682,7 @@ impl Operator for ScatterNDOp {
         };
 
         // Step 2: Scatter updates (indices_last_dim != 0 signals scatter mode)
-        let scatter_workgroups = (num_updates as u32 + workgroup_size - 1) / workgroup_size;
+        let scatter_workgroups = (num_updates as u32).div_ceil(workgroup_size);
 
         let mut scatter_immediates = Vec::new();
         scatter_immediates.extend_from_slice(&(num_updates as u32).to_le_bytes());
@@ -892,7 +892,7 @@ impl Operator for RangeOp {
         };
 
         let workgroup_size: u32 = 256;
-        let num_workgroups = (size as u32 + workgroup_size - 1) / workgroup_size;
+        let num_workgroups = (size as u32).div_ceil(workgroup_size);
 
         let mut shader_defs = HashMap::new();
         shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());
@@ -1058,7 +1058,7 @@ impl Operator for TriluOp {
         };
 
         let workgroup_size: u32 = 256;
-        let num_workgroups = (total_size as u32 + workgroup_size - 1) / workgroup_size;
+        let num_workgroups = (total_size as u32).div_ceil(workgroup_size);
 
         let mut shader_defs = HashMap::new();
         shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());

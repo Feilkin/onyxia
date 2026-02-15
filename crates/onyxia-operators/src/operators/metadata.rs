@@ -115,7 +115,7 @@ impl Operator for ConstantOfShapeOp {
         immediates.extend_from_slice(&fill_value.to_le_bytes());
 
         // Calculate workgroup dispatch
-        let workgroups_x = (output_size + 255) / 256;
+        let workgroups_x = output_size.div_ceil(256);
 
         // Create dispatch step
         Ok(vec![Step::Dispatch {

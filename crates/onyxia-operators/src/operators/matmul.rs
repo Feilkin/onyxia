@@ -125,8 +125,8 @@ impl Operator for MatMulF32Op {
 
         // Calculate workgroup dimensions
         // Each workgroup computes a TILE_M × TILE_N tile of the output
-        let workgroups_x = (n as u32 + tile_n - 1) / tile_n;
-        let workgroups_y = (m as u32 + tile_m - 1) / tile_m;
+        let workgroups_x = (n as u32).div_ceil(tile_n);
+        let workgroups_y = (m as u32).div_ceil(tile_m);
 
         // Encode immediate data (must match ImmediateConstants struct in shader)
         let mut immediates_data = Vec::new();
@@ -247,8 +247,8 @@ impl Operator for MatMulNBitsOp {
         let workgroup_x: u32 = 16;
         let workgroup_y: u32 = 16;
 
-        let workgroups_x = (n as u32 + workgroup_x - 1) / workgroup_x;
-        let workgroups_y = (m as u32 + workgroup_y - 1) / workgroup_y;
+        let workgroups_x = (n as u32).div_ceil(workgroup_x);
+        let workgroups_y = (m as u32).div_ceil(workgroup_y);
 
         let mut shader_defs = HashMap::new();
         shader_defs.insert("WORKGROUP_X".to_string(), workgroup_x.to_string());

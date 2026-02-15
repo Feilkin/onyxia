@@ -34,7 +34,7 @@ impl Operator for GeluOp {
 
         // Configure workgroup size
         let workgroup_size: u32 = 256;
-        let num_workgroups = (num_elements as u32 + workgroup_size - 1) / workgroup_size;
+        let num_workgroups = (num_elements as u32).div_ceil(workgroup_size);
 
         // Prepare shader definitions
         let mut shader_defs = HashMap::new();
@@ -125,7 +125,7 @@ impl Operator for SoftmaxOp {
 
         // Configure workgroup size
         let workgroup_size: u32 = 256;
-        let num_workgroups = (outer_size as u32 + workgroup_size - 1) / workgroup_size;
+        let num_workgroups = (outer_size as u32).div_ceil(workgroup_size);
 
         // Prepare shader definitions
         let mut shader_defs = HashMap::new();
