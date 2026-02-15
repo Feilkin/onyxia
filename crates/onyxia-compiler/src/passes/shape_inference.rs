@@ -98,16 +98,9 @@ impl Pass for ShapeInferencePass {
         for node_id in topo_order {
             let node = graph.node(node_id)?.clone();
 
-            // Skip nodes that are fully folded (all outputs have constant values)
+            // Skip nodes that are fully folded (Value nodes)
             // Their shapes are already determined by the folded values
-            let all_outputs_folded = node.outputs().iter().all(|&tensor_id| {
-                graph
-                    .tensor(tensor_id)
-                    .map(|t| t.has_value())
-                    .unwrap_or(false)
-            });
-
-            if all_outputs_folded {
+            if node.is_value() {
                 continue;
             }
 

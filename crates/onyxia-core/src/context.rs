@@ -35,7 +35,7 @@ impl<'a> InferenceCtx<'a> {
     ///
     /// Returns an error if the input index is out of bounds or the input
     /// tensor is absent (ONNX optional input not provided).
-    pub fn input_shape(&self, index: usize) -> Result<&TensorShape> {
+    pub fn input_shape(&self, index: usize) -> Result<TensorShape> {
         let input = self
             .node
             .inputs()
@@ -53,14 +53,16 @@ impl<'a> InferenceCtx<'a> {
                     )));
                 }
 
-                Ok(&tensor.shape)
+                Ok(tensor.shape.clone())
             }
-            crate::ir::IrInput::ValueNode(_node_id) => {
-                // Value nodes not yet created (Task 032)
-                // Return error for now — this branch won't be hit until Task 032
-                Err(Error::ShapeInference(
-                    "ValueNode inputs not yet supported (Task 032)".to_string(),
-                ))
+            crate::ir::IrInput::ValueNode(node_id) => {
+                // Get shape from the value node's TensorValue
+                let value_node = self.graph.node(*node_id)?;
+                let value = value_node.as_value().ok_or_else(|| {
+                    Error::ShapeInference("Input references non-Value node".to_string())
+                })?;
+
+                Ok(TensorShape::Static(value.shape.clone()))
             }
         }
     }
@@ -68,27 +70,33 @@ impl<'a> InferenceCtx<'a> {
     /// Get static dimensions from an input tensor.
     ///
     /// Returns an error if the input is not fully static or is absent.
-    pub fn require_static(&self, index: usize) -> Result<&[usize]> {
+    pub fn require_static(&self, index: usize) -> Result<Vec<usize>> {
         let shape = self.input_shape(index)?;
         shape
             .as_static()
+            .map(|dims| dims.to_vec())
             .ok_or_else(|| Error::ShapeInference(format!("Input {} must have static shape", index)))
     }
 
     /// Get the constant-folded value of an input tensor, if available.
     ///
-    /// Returns `None` if the input has not been constant-folded, or if the
-    /// input index is out of bounds.
+    /// Returns `None` if the input has not been constant-folded and has no
+    /// initializer, or if the input index is out of bounds.
+    ///
+    /// This method parses initializers on-demand for data-dependent shape inference.
     pub fn input_value(&self, index: usize) -> Option<&TensorValue> {
         let input = self.node.inputs().get(index)?;
         match input {
-            crate::ir::IrInput::Tensor(tensor_id) => {
-                let tensor = self.graph.tensor(*tensor_id).ok()?;
-                tensor.value.as_ref()
-            }
-            crate::ir::IrInput::ValueNode(_node_id) => {
-                // Value nodes not yet supported (Task 032)
+            crate::ir::IrInput::Tensor(_tensor_id) => {
+                // Tensors no longer have values - only initializers
+                // For now, return None. Operators that need initializer values
+                // during shape inference should be preceded by constant folding
+                // that creates Value nodes.
                 None
+            }
+            crate::ir::IrInput::ValueNode(node_id) => {
+                let value_node = self.graph.node(*node_id).ok()?;
+                value_node.as_value()
             }
         }
     }
@@ -106,11 +114,12 @@ impl<'a> InferenceCtx<'a> {
                 let tensor = self.graph.tensor(*tensor_id)?;
                 Ok(tensor.dtype)
             }
-            crate::ir::IrInput::ValueNode(_node_id) => {
-                // Value nodes not yet supported (Task 032)
-                Err(Error::ShapeInference(
-                    "ValueNode inputs not yet supported (Task 032)".to_string(),
-                ))
+            crate::ir::IrInput::ValueNode(node_id) => {
+                let value_node = self.graph.node(*node_id)?;
+                let value = value_node.as_value().ok_or_else(|| {
+                    Error::ShapeInference("Input references non-Value node".to_string())
+                })?;
+                Ok(value.dtype)
             }
         }
     }
@@ -234,9 +243,45 @@ impl<'a> FoldCtx<'a> {
         }
     }
 
+    /// Get the constant value for an input, if available.
+    /// This works for both tensor initializers and value nodes.
+    fn get_input_value(&self, index: usize) -> Result<Option<TensorValue>> {
+        let input = self
+            .node
+            .inputs()
+            .get(index)
+            .ok_or_else(|| Error::ConstantFolding("Input not found".to_string()))?;
+
+        match input {
+            crate::ir::IrInput::Tensor(tensor_id) => {
+                let tensor = self.graph.tensor(*tensor_id)?;
+
+                // Parse initializer on-demand
+                if let Some(ref initializer) = tensor.initializer {
+                    let shape = match &tensor.shape {
+                        TensorShape::Static(dims) => dims.clone(),
+                        _ => return Ok(None), // Can't fold non-static shapes
+                    };
+
+                    let value = TensorValue::from_bytes(initializer, tensor.dtype, &shape)?;
+                    Ok(Some(value))
+                } else {
+                    Ok(None)
+                }
+            }
+            crate::ir::IrInput::ValueNode(node_id) => {
+                let value_node = self.graph.node(*node_id)?;
+                match value_node.as_value() {
+                    Some(value) => Ok(Some(value.clone())),
+                    None => Ok(None),
+                }
+            }
+        }
+    }
+
     /// Check if all inputs have constant-folded values.
     pub fn all_inputs_have_values(&self) -> bool {
-        (0..self.ctx.input_count()).all(|i| self.ctx.input_value(i).is_some())
+        (0..self.ctx.input_count()).all(|i| self.get_input_value(i).ok().and_then(|v| v).is_some())
     }
 
     /// Apply a binary operation to two f32 inputs and return the result.
@@ -247,19 +292,16 @@ impl<'a> FoldCtx<'a> {
     where
         F: Fn(f32, f32) -> f32,
     {
-        if !self.all_inputs_have_values() {
-            return Ok(vec![None]);
-        }
+        // Get input values (handles both Tensor and ValueNode)
+        let val_a = match self.get_input_value(0)? {
+            Some(v) => v,
+            None => return Ok(vec![None]),
+        };
 
-        let val_a = self
-            .ctx
-            .input_value(0)
-            .ok_or_else(|| Error::ConstantFolding("Input 0 has no value".to_string()))?;
-
-        let val_b = self
-            .ctx
-            .input_value(1)
-            .ok_or_else(|| Error::ConstantFolding("Input 1 has no value".to_string()))?;
+        let val_b = match self.get_input_value(1)? {
+            Some(v) => v,
+            None => return Ok(vec![None]),
+        };
 
         let a = val_a
             .as_f32()
@@ -291,14 +333,10 @@ impl<'a> FoldCtx<'a> {
     where
         F: Fn(f32) -> f32,
     {
-        if !self.all_inputs_have_values() {
-            return Ok(vec![None]);
-        }
-
-        let val = self
-            .ctx
-            .input_value(0)
-            .ok_or_else(|| Error::ConstantFolding("Input 0 has no value".to_string()))?;
+        let val = match self.get_input_value(0)? {
+            Some(v) => v,
+            None => return Ok(vec![None]),
+        };
 
         let input = val
             .as_f32()
@@ -367,9 +405,13 @@ impl<'a> PlanCtx<'a> {
         match input {
             crate::ir::IrInput::Tensor(tensor_id) => Ok(BufferRef::Tensor(*tensor_id)),
             crate::ir::IrInput::ValueNode(_node_id) => {
-                // Value nodes not yet supported (Task 032)
+                // ValueNode inputs during planning means the graph has constant
+                // inputs that weren't fully folded. This is valid (e.g., Add with
+                // one constant and one dynamic input), but requires materializing
+                // the constant value into a buffer.
+                // TODO: Implement ValueNode materialization in planning pass.
                 Err(Error::Planning(
-                    "ValueNode inputs not yet supported (Task 032)".to_string(),
+                    "ValueNode inputs during planning not yet implemented".to_string(),
                 ))
             }
         }
@@ -397,9 +439,11 @@ impl<'a> PlanCtx<'a> {
         match input {
             crate::ir::IrInput::Tensor(tensor_id) => self.graph.tensor(*tensor_id),
             crate::ir::IrInput::ValueNode(_node_id) => {
-                // Value nodes not yet supported (Task 032)
+                // ValueNode inputs during planning means the graph has constant
+                // inputs that weren't fully folded.
+                // TODO: Return synthetic TensorDef from ValueNode metadata.
                 Err(Error::Planning(
-                    "ValueNode inputs not yet supported (Task 032)".to_string(),
+                    "ValueNode inputs during planning not yet implemented".to_string(),
                 ))
             }
         }
@@ -644,13 +688,14 @@ impl<'a> PlanCtx<'a> {
     pub fn input_value(&self, index: usize) -> Option<&TensorValue> {
         let input = self.node.inputs().get(index)?;
         match input {
-            crate::ir::IrInput::Tensor(tensor_id) => {
-                let tensor = self.graph.tensor(*tensor_id).ok()?;
-                tensor.value.as_ref()
-            }
-            crate::ir::IrInput::ValueNode(_node_id) => {
-                // Value nodes not yet supported (Task 032)
+            crate::ir::IrInput::Tensor(_tensor_id) => {
+                // Tensors no longer have values - only initializers
+                // Values are only in Value nodes
                 None
+            }
+            crate::ir::IrInput::ValueNode(node_id) => {
+                let value_node = self.graph.node(*node_id).ok()?;
+                value_node.as_value()
             }
         }
     }
@@ -721,39 +766,20 @@ mod tests {
     fn test_fold_ctx_binary_fold() {
         let mut graph = IrGraph::new();
 
-        let input_a = graph.add_tensor({
-            let mut t = TensorDef::new(
-                "a".to_string(),
-                DataType::F32,
-                TensorShape::Static(vec![2]),
-                TensorKind::Input,
-            );
-            t.value = Some(TensorValue::new(
-                TensorData::F32(vec![1.0, 2.0]),
-                vec![2],
-                DataType::F32,
-            ));
-            t
-        });
+        // Create Value nodes for inputs
+        let value_a = TensorValue::new(TensorData::F32(vec![1.0, 2.0]), vec![2], DataType::F32);
+        let value_node_a = IrNode::new_value(value_a);
+        let value_node_a_id = graph.add_node(value_node_a);
 
-        let input_b = graph.add_tensor({
-            let mut t = TensorDef::new(
-                "b".to_string(),
-                DataType::F32,
-                TensorShape::Static(vec![2]),
-                TensorKind::Input,
-            );
-            t.value = Some(TensorValue::new(
-                TensorData::F32(vec![3.0, 4.0]),
-                vec![2],
-                DataType::F32,
-            ));
-            t
-        });
+        let value_b = TensorValue::new(TensorData::F32(vec![3.0, 4.0]), vec![2], DataType::F32);
+        let value_node_b = IrNode::new_value(value_b);
+        let value_node_b_id = graph.add_node(value_node_b);
 
-        let mut node = IrNode::new("Add".to_string());
-        node.add_tensor_input(input_a);
-        node.add_tensor_input(input_b);
+        let mut node = IrNode::new_operator("Add".to_string());
+        node.add_input(crate::ir::IrInput::ValueNode(value_node_a_id))
+            .unwrap();
+        node.add_input(crate::ir::IrInput::ValueNode(value_node_b_id))
+            .unwrap();
 
         let ctx = FoldCtx::new(&node, &graph);
 

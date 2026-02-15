@@ -205,40 +205,41 @@ mod tests {
 
     #[test]
     fn test_planning_skips_folded_nodes() {
+        use onyxia_core::ir::IrInput;
+
         let mut graph = IrGraph::new();
 
-        // Create a constant tensor with a value (folded)
-        let mut const_tensor = TensorDef::new(
-            "const".to_string(),
-            DataType::F32,
-            TensorShape::Static(vec![2]),
-            TensorKind::Weight,
-        );
-        const_tensor.value = Some(TensorValue::new(
+        // Create a constant as a Value node
+        let const_value = TensorValue::new(
             onyxia_core::TensorData::F32(vec![1.0, 2.0]),
             vec![2],
             onyxia_core::DataType::F32,
-        ));
-        let const_id = graph.add_tensor(const_tensor);
+        );
+        let const_value_node = IrNode::new_value(const_value);
+        let const_value_node_id = graph.add_node(const_value_node);
 
-        // Create output with a folded value
-        let mut output = TensorDef::new(
+        // Create output tensor
+        let output_id = graph.add_tensor(TensorDef::new(
             "output".to_string(),
             DataType::F32,
             TensorShape::Static(vec![2]),
             TensorKind::Intermediate,
-        );
-        output.value = Some(TensorValue::new(
+        ));
+
+        // Add operator node that was folded (replaced with Value node)
+        let folded_value = TensorValue::new(
             onyxia_core::TensorData::F32(vec![3.0, 4.0]),
             vec![2],
             onyxia_core::DataType::F32,
-        ));
-        let output_id = graph.add_tensor(output);
+        );
+        let folded_node = IrNode::new_value(folded_value);
+        let _folded_node_id = graph.add_node(folded_node);
 
-        // Add node (should be skipped since output is folded)
-        let mut node = IrNode::new("Mock".to_string());
-        node.add_tensor_input(const_id);
-        node.add_output(output_id);
+        // Add a regular operator node (should be planned)
+        let mut node = IrNode::new_operator("Mock".to_string());
+        node.add_input(IrInput::ValueNode(const_value_node_id))
+            .unwrap();
+        node.add_output(output_id).unwrap();
         graph.add_node(node);
 
         // Register mock operator

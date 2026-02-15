@@ -2,17 +2,17 @@
 //!
 //! Forward pass in topological order that evaluates operations at compile time when
 //! all inputs are known constants.
+//!
+//! Replaces operators with Value nodes containing the folded results.
 
-use onyxia_core::{
-    Error, FoldCtx, IrGraph, IrNode, OperatorRegistry, Pass, Result, Stage, TensorValue,
-};
+use onyxia_core::{Error, FoldCtx, IrGraph, IrNodeId, OperatorRegistry, Pass, Result, Stage};
 
 /// Pass that folds constant operations at compile time.
 ///
 /// Walks the graph in topological order. For each node:
-/// 1. Initializes `TensorDef.value` from initializers (weights, constants)
+/// 1. Parses initializers on-demand through FoldCtx
 /// 2. If all inputs have values, calls `operator.try_fold()` to evaluate at compile time
-/// 3. Stores folded results in output `TensorDef.value`
+/// 3. Replaces the operator node with a Value node containing the folded result
 ///
 /// This enables chains like Shape→Gather→Concat→Reshape to be fully resolved at
 /// compile time, eliminating unnecessary GPU operations.
@@ -24,50 +24,18 @@ impl ConstantFoldingPass {
         Self
     }
 
-    /// Initialize tensor values from initializers.
-    fn initialize_constants(&self, graph: &mut IrGraph) -> Result<bool> {
-        let mut changed = false;
-
-        // Iterate over all tensors
-        for i in 0..graph.tensor_count() {
-            let tensor_id = onyxia_core::IrTensorId::new(i);
-            let tensor = graph.tensor(tensor_id)?;
-
-            // Skip if already has a value or no initializer
-            if tensor.has_value() || !tensor.has_initializer() {
-                continue;
-            }
-
-            // Parse initializer bytes into TensorValue
-            let initializer = tensor.initializer.as_ref().unwrap();
-            let shape = match &tensor.shape {
-                onyxia_core::TensorShape::Static(dims) => dims.clone(),
-                _ => {
-                    // Can't fold tensors with non-static shapes
-                    continue;
-                }
-            };
-
-            let value = TensorValue::from_bytes(initializer, tensor.dtype, &shape)?;
-
-            // Store the value
-            graph.tensor_mut(tensor_id)?.value = Some(value);
-            changed = true;
-        }
-
-        Ok(changed)
-    }
-
     /// Attempt to fold a single node.
     fn fold_node(
         &self,
-        node: &IrNode,
+        node_id: IrNodeId,
         graph: &mut IrGraph,
         registry: &OperatorRegistry,
     ) -> Result<bool> {
-        // Skip Value nodes (they're already folded)
-        let op_type = match node.op_type() {
-            Some(op_type) => op_type,
+        let node = graph.node(node_id)?.clone();
+
+        // Skip Value nodes (already folded)
+        let (op_type, _, _, outputs) = match node.as_operator() {
+            Some(op) => op,
             None => return Ok(false),
         };
 
@@ -77,7 +45,7 @@ impl ConstantFoldingPass {
         })?;
 
         // Build fold context
-        let ctx = FoldCtx::new(node, graph);
+        let ctx = FoldCtx::new(&node, graph);
 
         // Call operator's constant folding
         let folded_outputs = operator.try_fold(&ctx).map_err(|e| {
@@ -92,8 +60,6 @@ impl ConstantFoldingPass {
             return Ok(false);
         }
 
-        let outputs = node.outputs();
-
         // Validate output count
         if folded_outputs.len() != outputs.len() {
             return Err(Error::ConstantFolding(format!(
@@ -104,17 +70,21 @@ impl ConstantFoldingPass {
             )));
         }
 
-        // Update output tensor values
-        let mut changed = false;
-        for (i, folded_value) in folded_outputs.into_iter().enumerate() {
-            if let Some(value) = folded_value {
-                let tensor_id = outputs[i];
-                graph.tensor_mut(tensor_id)?.value = Some(value);
-                changed = true;
+        // Replace node with Value node for each successfully folded output
+        // For now, we only handle single-output operators (most common case)
+        if outputs.len() == 1 {
+            if let Some(value) = folded_outputs.into_iter().next().unwrap() {
+                graph.replace_single_output_with_value(node_id, value)?;
+                return Ok(true);
             }
+        } else {
+            // Multi-output operators are more complex
+            // We'd need to create multiple value nodes or handle differently
+            // For now, skip (can be added later if needed)
+            // Note: Skipping constant folding for multi-output operator
         }
 
-        Ok(changed)
+        Ok(false)
     }
 }
 
@@ -130,16 +100,11 @@ impl Pass for ConstantFoldingPass {
     fn run(&self, graph: &mut IrGraph, registry: &OperatorRegistry) -> Result<bool> {
         let mut changed = false;
 
-        // First, initialize constants from initializers
-        let init_changed = self.initialize_constants(graph)?;
-        changed = changed || init_changed;
-
         // Process nodes in topological order
         let topo_order = graph.topological_order();
 
         for node_id in topo_order {
-            let node = graph.node(node_id)?.clone();
-            let node_changed = self.fold_node(&node, graph, registry)?;
+            let node_changed = self.fold_node(node_id, graph, registry)?;
             changed = changed || node_changed;
         }
 
@@ -156,7 +121,10 @@ impl Default for ConstantFoldingPass {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use onyxia_core::{DataType, IrGraph, IrNode, Operator, TensorDef, TensorKind, TensorShape};
+    use onyxia_core::ir::IrInput;
+    use onyxia_core::{
+        DataType, IrGraph, IrNode, Operator, TensorDef, TensorKind, TensorShape, TensorValue,
+    };
 
     // Mock operator that folds addition
     struct MockAddOperator;
@@ -218,43 +186,34 @@ mod tests {
         let pass = ConstantFoldingPass::new();
 
         let changed = pass.run(&mut graph, &registry).unwrap();
-        assert!(changed);
+        // Should not change (no operators to fold)
+        assert!(!changed);
 
-        let value = &graph.tensor(tensor_id).unwrap().value;
-        assert!(value.is_some());
-        assert_eq!(value.as_ref().unwrap().as_f32(), Some(&[1.0, 2.0][..]));
+        // Constant tensor still has initializer (not converted to Value node)
+        let tensor = graph.tensor(tensor_id).unwrap();
+        assert!(tensor.has_initializer());
     }
 
     #[test]
     fn test_fold_constant_addition() {
         let mut graph = IrGraph::new();
 
-        // Create two constant inputs
-        let mut a_tensor = TensorDef::new(
-            "a".to_string(),
-            DataType::F32,
-            TensorShape::Static(vec![2]),
-            TensorKind::Weight,
-        );
-        a_tensor.value = Some(TensorValue::new(
+        // Create two constant inputs as Value nodes
+        let a_value = TensorValue::new(
             onyxia_core::TensorData::F32(vec![1.0, 2.0]),
             vec![2],
             onyxia_core::DataType::F32,
-        ));
-        let a_id = graph.add_tensor(a_tensor);
-
-        let mut b_tensor = TensorDef::new(
-            "b".to_string(),
-            DataType::F32,
-            TensorShape::Static(vec![2]),
-            TensorKind::Weight,
         );
-        b_tensor.value = Some(TensorValue::new(
+        let a_value_node = IrNode::new_value(a_value);
+        let a_value_node_id = graph.add_node(a_value_node);
+
+        let b_value = TensorValue::new(
             onyxia_core::TensorData::F32(vec![3.0, 4.0]),
             vec![2],
             onyxia_core::DataType::F32,
-        ));
-        let b_id = graph.add_tensor(b_tensor);
+        );
+        let b_value_node = IrNode::new_value(b_value);
+        let b_value_node_id = graph.add_node(b_value_node);
 
         // Create output tensor
         let output = TensorDef::new(
@@ -265,12 +224,12 @@ mod tests {
         );
         let output_id = graph.add_tensor(output);
 
-        // Add node
-        let mut node = IrNode::new("MockAdd".to_string());
-        node.add_tensor_input(a_id);
-        node.add_tensor_input(b_id);
-        node.add_output(output_id);
-        graph.add_node(node);
+        // Add operator node with ValueNode inputs
+        let mut node = IrNode::new_operator("MockAdd".to_string());
+        node.add_input(IrInput::ValueNode(a_value_node_id)).unwrap();
+        node.add_input(IrInput::ValueNode(b_value_node_id)).unwrap();
+        node.add_output(output_id).unwrap();
+        let add_node_id = graph.add_node(node);
 
         // Register mock operator
         let mut registry = OperatorRegistry::new();
@@ -282,19 +241,23 @@ mod tests {
 
         assert!(changed);
 
-        let output_value = &graph.tensor(output_id).unwrap().value;
-        assert!(output_value.is_some());
-        assert_eq!(
-            output_value.as_ref().unwrap().as_f32(),
-            Some(&[4.0, 6.0][..])
+        // Verify Add node was replaced with Value node
+        let node = graph.node(add_node_id).unwrap();
+        assert!(
+            node.is_value(),
+            "Add node should be replaced with Value node"
         );
+
+        // Verify value is correct
+        let value = node.as_value().unwrap();
+        assert_eq!(value.as_f32(), Some(&[4.0, 6.0][..]));
     }
 
     #[test]
     fn test_no_fold_without_values() {
         let mut graph = IrGraph::new();
 
-        // Create inputs without values
+        // Create inputs without values (regular tensors)
         let a_id = graph.add_tensor(TensorDef::new(
             "a".to_string(),
             DataType::F32,
@@ -314,11 +277,11 @@ mod tests {
             TensorKind::Intermediate,
         ));
 
-        let mut node = IrNode::new("MockAdd".to_string());
-        node.add_tensor_input(a_id);
-        node.add_tensor_input(b_id);
-        node.add_output(output_id);
-        graph.add_node(node);
+        let mut node = IrNode::new_operator("MockAdd".to_string());
+        node.add_tensor_input(a_id).unwrap();
+        node.add_tensor_input(b_id).unwrap();
+        node.add_output(output_id).unwrap();
+        let add_node_id = graph.add_node(node);
 
         let mut registry = OperatorRegistry::new();
         registry.register("MockAdd", MockAddOperator);
@@ -328,6 +291,9 @@ mod tests {
 
         // Should not fold (inputs don't have values)
         assert!(!changed);
-        assert!(graph.tensor(output_id).unwrap().value.is_none());
+
+        // Node should still be an Operator, not replaced with Value node
+        let node = graph.node(add_node_id).unwrap();
+        assert!(node.is_operator());
     }
 }

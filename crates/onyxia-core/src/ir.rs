@@ -714,10 +714,8 @@ pub struct TensorDef {
     /// Tensor kind (input, output, intermediate, or constant).
     pub kind: TensorKind,
 
-    /// Constant-folded value (populated during constant folding pass).
-    pub value: Option<TensorValue>,
-
-    /// Initializer data for constants (raw bytes).
+    /// Initializer data for constants (raw bytes from ONNX).
+    /// Parsed on-demand during constant folding into Value nodes.
     pub initializer: Option<Vec<u8>>,
 }
 
@@ -729,14 +727,8 @@ impl TensorDef {
             dtype,
             shape,
             kind,
-            value: None,
             initializer: None,
         }
-    }
-
-    /// Check if this tensor has a constant value.
-    pub fn has_value(&self) -> bool {
-        self.value.is_some()
     }
 
     /// Check if this tensor has initializer data.
@@ -940,25 +932,21 @@ mod tests {
         let mut graph = IrGraph::new();
 
         // Create input tensor
-        let input = TensorDef {
-            name: "input".to_string(),
-            dtype: DataType::F32,
-            shape: TensorShape::Static(vec![2, 3]),
-            kind: TensorKind::Input,
-            value: None,
-            initializer: None,
-        };
+        let input = TensorDef::new(
+            "input".to_string(),
+            DataType::F32,
+            TensorShape::Static(vec![2, 3]),
+            TensorKind::Input,
+        );
         let input_id = graph.add_tensor(input);
 
         // Create output tensor
-        let output = TensorDef {
-            name: "output".to_string(),
-            dtype: DataType::F32,
-            shape: TensorShape::Static(vec![2, 3]),
-            kind: TensorKind::Intermediate,
-            value: None,
-            initializer: None,
-        };
+        let output = TensorDef::new(
+            "output".to_string(),
+            DataType::F32,
+            TensorShape::Static(vec![2, 3]),
+            TensorKind::Intermediate,
+        );
         let output_id = graph.add_tensor(output);
 
         // Create operator node

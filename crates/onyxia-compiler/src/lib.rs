@@ -45,10 +45,7 @@ pub mod symbolic_expr;
 
 pub use error::{CodegenError, Result};
 pub use operator::{Operator, OperatorRegistry, PlanContext};
-pub use passes::{
-    ConstantFoldingPass, InitializeConstantsPass, PlanningPass, ShapeInferencePass,
-    SymbolicResolutionPass,
-};
+pub use passes::{ConstantFoldingPass, PlanningPass, ShapeInferencePass, SymbolicResolutionPass};
 pub use plan::{
     BindingDesc, BufferRef, CompiledShader, ExecutionPlan, ModelMetadata, PlannedOp,
     ScratchBufferDesc, ShaderIndex, Step, TensorRegistry,
@@ -100,7 +97,6 @@ impl CompilerPipeline {
 
         // Register built-in passes
         pipeline.add_pass(SymbolicResolutionPass::new(dynamic_dimensions));
-        pipeline.add_pass(InitializeConstantsPass::new());
         pipeline.add_pass(ConstantFoldingPass::new());
         pipeline.add_pass(ShapeInferencePass::new());
         pipeline.add_pass(PlanningPass::new());
@@ -193,21 +189,14 @@ impl CompilerPipeline {
         for node_id in topo_order {
             let node = graph.node(node_id)?.clone();
 
-            // Skip fully folded nodes (all outputs have values)
-            let all_outputs_folded = node.outputs().iter().all(|&tensor_id| {
-                graph
-                    .tensor(tensor_id)
-                    .map(|t| t.has_value())
-                    .unwrap_or(false)
-            });
-
-            if all_outputs_folded {
+            // Skip Value nodes (already folded)
+            if node.is_value() {
                 continue;
             }
 
             let op_type = match node.op_type() {
                 Some(op_type) => op_type,
-                None => continue, // Skip Value nodes
+                None => continue, // Skip Value nodes (redundant check but kept for clarity)
             };
 
             // Look up operator
@@ -392,8 +381,8 @@ mod tests {
         let dynamic_dimensions = HashMap::new();
         let pipeline = CompilerPipeline::new(dynamic_dimensions);
 
-        // Verify passes were registered (5 built-in passes now: SymbolicResolution, InitializeConstants, ShapeInference, ConstantFolding, Planning)
-        assert_eq!(pipeline.passes.len(), 5);
+        // Verify passes were registered (4 built-in passes now: SymbolicResolution, ConstantFolding, ShapeInference, Planning)
+        assert_eq!(pipeline.passes.len(), 4);
     }
 
     #[test]
@@ -428,8 +417,8 @@ mod tests {
         // Add custom pass
         pipeline.add_pass(NoOpPass);
 
-        // Should now have 6 passes (5 built-in + 1 custom)
-        assert_eq!(pipeline.passes.len(), 6);
+        // Should now have 5 passes (4 built-in + 1 custom)
+        assert_eq!(pipeline.passes.len(), 5);
     }
 
     #[test]

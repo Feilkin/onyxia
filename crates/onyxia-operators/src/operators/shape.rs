@@ -378,27 +378,27 @@ impl Operator for TransposeOp {
 
         let result = match &input.data {
             TensorData::F32(vals) => TensorValue::new(
-                TensorData::F32(transpose_values(vals, input_shape, &perm)),
+                TensorData::F32(transpose_values(vals, &input_shape, &perm)),
                 output_shape.clone(),
                 DataType::F32,
             ),
             TensorData::I64(vals) => TensorValue::new(
-                TensorData::I64(transpose_values(vals, input_shape, &perm)),
+                TensorData::I64(transpose_values(vals, &input_shape, &perm)),
                 output_shape.clone(),
                 DataType::I64,
             ),
             TensorData::I32(vals) => TensorValue::new(
-                TensorData::I32(transpose_values(vals, input_shape, &perm)),
+                TensorData::I32(transpose_values(vals, &input_shape, &perm)),
                 output_shape.clone(),
                 DataType::I32,
             ),
             TensorData::Bool(vals) => TensorValue::new(
-                TensorData::Bool(transpose_values(vals, input_shape, &perm)),
+                TensorData::Bool(transpose_values(vals, &input_shape, &perm)),
                 output_shape.clone(),
                 DataType::Bool,
             ),
             TensorData::U8(vals) => TensorValue::new(
-                TensorData::U8(transpose_values(vals, input_shape, &perm)),
+                TensorData::U8(transpose_values(vals, &input_shape, &perm)),
                 output_shape.clone(),
                 DataType::U8,
             ),

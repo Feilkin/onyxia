@@ -78,7 +78,7 @@ impl Operator for GatherOp {
         // Output shape: data[:axis] + indices + data[axis+1:]
         let mut output_shape = Vec::new();
         output_shape.extend_from_slice(&data_shape[..normalized_axis]);
-        output_shape.extend_from_slice(indices_shape);
+        output_shape.extend_from_slice(&indices_shape);
         output_shape.extend_from_slice(&data_shape[normalized_axis + 1..]);
 
         Ok(vec![TensorShape::Static(output_shape)])

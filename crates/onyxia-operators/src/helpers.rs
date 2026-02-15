@@ -67,7 +67,7 @@ pub fn infer_elementwise_broadcast(ctx: &InferenceCtx) -> Result<Vec<TensorShape
     for i in 0..ctx.input_count() {
         let shape = ctx.input_shape(i)?;
         match shape {
-            TensorShape::Static(dims) => static_shapes.push(dims.as_slice()),
+            TensorShape::Static(dims) => static_shapes.push(dims),
             TensorShape::Symbolic(_) => {
                 // Symbolic shapes should have been resolved by now, but we'll handle them
                 return Err(Error::ShapeInference(
@@ -84,7 +84,9 @@ pub fn infer_elementwise_broadcast(ctx: &InferenceCtx) -> Result<Vec<TensorShape
         ));
     }
 
-    let result_dims = broadcast_shapes(&static_shapes)?;
+    // Convert Vec<Vec<usize>> to Vec<&[usize]> for broadcast_shapes
+    let shape_refs: Vec<&[usize]> = static_shapes.iter().map(|v| v.as_slice()).collect();
+    let result_dims = broadcast_shapes(&shape_refs)?;
     Ok(vec![TensorShape::Static(result_dims)])
 }
 
