@@ -5,6 +5,7 @@ pub mod inspect;
 pub mod llm;
 pub mod sampling;
 pub mod tokenizer;
+pub mod validate;
 
 /// Direction to trace around a node.
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]

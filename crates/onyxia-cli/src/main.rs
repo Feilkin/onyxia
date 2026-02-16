@@ -183,6 +183,24 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Validate model without full compilation
+    Validate {
+        /// Path to the ONNX model file
+        #[arg(value_name = "MODEL")]
+        model: PathBuf,
+
+        /// Dynamic dimension values (format: name=value, can be repeated)
+        #[arg(long = "dynamic-dim", value_parser = parse_dynamic_dim)]
+        dynamic_dims: Vec<(String, usize)>,
+
+        /// Show detailed progress
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// Stop validation at specific stage (resolution, folding, inference)
+        #[arg(long, value_parser = parse_stage)]
+        until: Option<onyxia_core::Stage>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -273,6 +291,14 @@ fn main() -> Result<()> {
             output,
         } => {
             cmd_trace_node(model, name, depth, direction, format, output)?;
+        }
+        Commands::Validate {
+            model,
+            dynamic_dims,
+            verbose,
+            until,
+        } => {
+            cmd_validate(model, dynamic_dims, verbose, until)?;
         }
     }
 
@@ -859,4 +885,36 @@ fn cmd_trace_node(
 
     // Trace the node
     onyxia_cli::inspect::trace_node(&model, &name, depth, direction, format, output.as_deref())
+}
+
+/// Validate a model without full compilation.
+fn cmd_validate(
+    model_path: PathBuf,
+    dynamic_dims: Vec<(String, usize)>,
+    verbose: bool,
+    until: Option<onyxia_core::Stage>,
+) -> Result<()> {
+    // Convert dynamic_dims to HashMap
+    let dynamic_dims_map: std::collections::HashMap<String, usize> =
+        dynamic_dims.into_iter().collect();
+
+    // Validate the model
+    onyxia_cli::validate::validate_model(&model_path, dynamic_dims_map, verbose, until)
+}
+
+/// Parse a stage name for clap value_parser.
+///
+/// Expects one of: resolution, folding, inference, optimization, planning
+fn parse_stage(arg: &str) -> Result<onyxia_core::Stage> {
+    match arg.to_lowercase().as_str() {
+        "resolution" => Ok(onyxia_core::Stage::Resolution),
+        "folding" => Ok(onyxia_core::Stage::Folding),
+        "inference" => Ok(onyxia_core::Stage::Inference),
+        "optimization" => Ok(onyxia_core::Stage::Optimization),
+        "planning" => Ok(onyxia_core::Stage::Planning),
+        _ => anyhow::bail!(
+            "Invalid stage '{}'. Expected one of: resolution, folding, inference, optimization, planning",
+            arg
+        ),
+    }
 }
