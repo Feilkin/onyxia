@@ -261,7 +261,7 @@ impl<'a> FoldCtx<'a> {
     /// Apply a binary operation to two f32 inputs and return the result.
     ///
     /// This is a convenience method for elementwise binary ops like Add, Mul.
-    /// Handles broadcasting automatically.
+    /// Returns `Ok(vec![None])` if inputs are not f32 (gracefully skips folding).
     pub fn binary_fold_f32<F>(&self, op: F) -> Result<Vec<Option<TensorValue>>>
     where
         F: Fn(f32, f32) -> f32,
@@ -276,13 +276,13 @@ impl<'a> FoldCtx<'a> {
             None => return Ok(vec![None]),
         };
 
-        let a = val_a
-            .as_f32()
-            .ok_or_else(|| Error::ConstantFolding("Input 0 is not f32".to_string()))?;
+        let Some(a) = val_a.as_f32() else {
+            return Ok(vec![None]); // Not f32 — skip folding
+        };
 
-        let b = val_b
-            .as_f32()
-            .ok_or_else(|| Error::ConstantFolding("Input 1 is not f32".to_string()))?;
+        let Some(b) = val_b.as_f32() else {
+            return Ok(vec![None]); // Not f32 — skip folding
+        };
 
         // Simple element-wise operation (no broadcasting for now)
         if a.len() != b.len() {
@@ -300,7 +300,89 @@ impl<'a> FoldCtx<'a> {
         Ok(vec![Some(result)])
     }
 
+    /// Apply a binary operation to two i64 inputs and return the result.
+    ///
+    /// Returns `Ok(vec![None])` if inputs are not i64 (gracefully skips folding).
+    pub fn binary_fold_i64<F>(&self, op: F) -> Result<Vec<Option<TensorValue>>>
+    where
+        F: Fn(i64, i64) -> i64,
+    {
+        let val_a = match self.get_input_value(0)? {
+            Some(v) => v,
+            None => return Ok(vec![None]),
+        };
+
+        let val_b = match self.get_input_value(1)? {
+            Some(v) => v,
+            None => return Ok(vec![None]),
+        };
+
+        let Some(a) = val_a.as_i64() else {
+            return Ok(vec![None]);
+        };
+
+        let Some(b) = val_b.as_i64() else {
+            return Ok(vec![None]);
+        };
+
+        if a.len() != b.len() {
+            return Ok(vec![None]);
+        }
+
+        let result_data: Vec<i64> = a.iter().zip(b.iter()).map(|(&x, &y)| op(x, y)).collect();
+
+        let result = TensorValue::new(
+            crate::types::TensorData::I64(result_data),
+            val_a.shape.clone(),
+            crate::types::DataType::I64,
+        );
+
+        Ok(vec![Some(result)])
+    }
+
+    /// Apply a binary operation to two i32 inputs and return the result.
+    ///
+    /// Returns `Ok(vec![None])` if inputs are not i32 (gracefully skips folding).
+    pub fn binary_fold_i32<F>(&self, op: F) -> Result<Vec<Option<TensorValue>>>
+    where
+        F: Fn(i32, i32) -> i32,
+    {
+        let val_a = match self.get_input_value(0)? {
+            Some(v) => v,
+            None => return Ok(vec![None]),
+        };
+
+        let val_b = match self.get_input_value(1)? {
+            Some(v) => v,
+            None => return Ok(vec![None]),
+        };
+
+        let Some(a) = val_a.as_i32() else {
+            return Ok(vec![None]);
+        };
+
+        let Some(b) = val_b.as_i32() else {
+            return Ok(vec![None]);
+        };
+
+        if a.len() != b.len() {
+            return Ok(vec![None]);
+        }
+
+        let result_data: Vec<i32> = a.iter().zip(b.iter()).map(|(&x, &y)| op(x, y)).collect();
+
+        let result = TensorValue::new(
+            crate::types::TensorData::I32(result_data),
+            val_a.shape.clone(),
+            crate::types::DataType::I32,
+        );
+
+        Ok(vec![Some(result)])
+    }
+
     /// Apply a unary operation to an f32 input and return the result.
+    ///
+    /// Returns `Ok(vec![None])` if input is not f32 (gracefully skips folding).
     pub fn unary_fold_f32<F>(&self, op: F) -> Result<Vec<Option<TensorValue>>>
     where
         F: Fn(f32) -> f32,
@@ -310,9 +392,9 @@ impl<'a> FoldCtx<'a> {
             None => return Ok(vec![None]),
         };
 
-        let input = val
-            .as_f32()
-            .ok_or_else(|| Error::ConstantFolding("Input 0 is not f32".to_string()))?;
+        let Some(input) = val.as_f32() else {
+            return Ok(vec![None]); // Not f32 — skip folding
+        };
 
         let result_data: Vec<f32> = input.iter().map(|&x| op(x)).collect();
 

@@ -89,6 +89,7 @@ impl Operator for ConstantOfShapeOp {
     fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {
         // Get output info
         let output_tensor = ctx.output_tensor(0)?;
+        let output_dtype = output_tensor.dtype;
         let output_shape = ctx.static_dims(&output_tensor.shape)?;
         let output_size: usize = output_shape.iter().product();
 
@@ -97,12 +98,17 @@ impl Operator for ConstantOfShapeOp {
             return Ok(vec![]);
         }
 
-        // Get the fill value from the 'value' attribute (default: 0.0)
-        // Note: In ONNX, this is a tensor attribute with raw bytes
-        // For simplicity, we parse common cases
-        let fill_value = ctx
-            .attr_tensor("value")
-            .unwrap_or(0.0f32.to_le_bytes().to_vec());
+        // Get the fill value from the 'value' attribute (default: zero).
+        //
+        // Per the ONNX spec, the 'value' attribute is a TensorProto whose dtype
+        // determines the output dtype and whose single element is the fill value.
+        // Since tensor attribute parsing is not yet implemented, we fall back to
+        // zero-fill using the output tensor's dtype (which the ONNX parser sets
+        // from the model's value_info).
+        let fill_bytes = ctx.attr_tensor("value").unwrap_or_else(|_| {
+            // Default: zero-fill with the correct byte width for the output dtype
+            vec![0u8; output_dtype.size()]
+        });
 
         // Load shader source
         let shader_source = include_str!("../../shaders/indexing/constantofshape.wgsl");
@@ -113,15 +119,28 @@ impl Operator for ConstantOfShapeOp {
 
         let shader_index = ctx.compile_shader("constantofshape", shader_source, &shader_defs)?;
 
-        // Prepare immediates (output_size, fill_value)
+        // The shader operates on array<f32> (4-byte slots). For dtypes wider
+        // than 4 bytes (e.g., I64 = 8 bytes), we need to fill more slots.
+        // For dtypes <= 4 bytes, one slot per element suffices.
+        let bytes_per_element = output_dtype.size();
+        let total_4byte_slots = (output_size * bytes_per_element).div_ceil(4);
+
+        // Build the fill value as a 4-byte immediate. For multi-byte dtypes,
+        // the shader will replicate this pattern across all slots. Since the
+        // common case is zero-fill and zero bytes are the same in all formats,
+        // this works correctly. For non-zero fill, we use the first 4 bytes
+        // of fill_bytes (which is the raw value).
+        let mut fill_value_4bytes = [0u8; 4];
+        let copy_len = fill_bytes.len().min(4);
+        fill_value_4bytes[..copy_len].copy_from_slice(&fill_bytes[..copy_len]);
+
+        // Prepare immediates (total_slots, fill_value as raw 4 bytes)
         let mut immediates = Vec::new();
-        immediates.extend_from_slice(&(output_size as u32).to_le_bytes());
-        // TODO: We are assuming the fill_value is a f32 here. We should check the data
-        // type and use a shader def to set the correct data type in the shader.
-        immediates.extend_from_slice(&fill_value);
+        immediates.extend_from_slice(&(total_4byte_slots as u32).to_le_bytes());
+        immediates.extend_from_slice(&fill_value_4bytes);
 
         // Calculate workgroup dispatch
-        let workgroups_x = output_size.div_ceil(256);
+        let workgroups_x = total_4byte_slots.div_ceil(256);
 
         // Create dispatch step
         Ok(vec![Step::Dispatch {

@@ -16,11 +16,17 @@ use std::collections::HashMap;
 ///
 /// The only differences are:
 /// - Shader source code (which WGSL function to call)
-/// - Fold function (which CPU operation to perform)
+/// - Fold functions (which CPU operations to perform, per type)
+///
+/// Per the ONNX spec:
+/// - Cos/Sin/Sqrt/Tanh: T → T where T ∈ {float16, float, double, bfloat16}
+/// - Neg: T → T where T ∈ {float, int8, int16, int32, int64, float16, double, bfloat16}
 pub struct UnaryElementwiseOp {
     name: &'static str,
     shader_source: &'static str,
-    fold_fn: fn(f32) -> f32,
+    fold_fn_f32: fn(f32) -> f32,
+    fold_fn_i64: Option<fn(i64) -> i64>,
+    fold_fn_i32: Option<fn(i32) -> i32>,
 }
 
 impl UnaryElementwiseOp {
@@ -29,7 +35,9 @@ impl UnaryElementwiseOp {
         Self {
             name: "Cos",
             shader_source: include_str!("../../shaders/elementwise/cos.wgsl"),
-            fold_fn: f32::cos,
+            fold_fn_f32: f32::cos,
+            fold_fn_i64: None,
+            fold_fn_i32: None,
         }
     }
 
@@ -38,7 +46,9 @@ impl UnaryElementwiseOp {
         Self {
             name: "Sin",
             shader_source: include_str!("../../shaders/elementwise/sin.wgsl"),
-            fold_fn: f32::sin,
+            fold_fn_f32: f32::sin,
+            fold_fn_i64: None,
+            fold_fn_i32: None,
         }
     }
 
@@ -47,7 +57,9 @@ impl UnaryElementwiseOp {
         Self {
             name: "Sqrt",
             shader_source: include_str!("../../shaders/elementwise/sqrt.wgsl"),
-            fold_fn: f32::sqrt,
+            fold_fn_f32: f32::sqrt,
+            fold_fn_i64: None,
+            fold_fn_i32: None,
         }
     }
 
@@ -56,7 +68,9 @@ impl UnaryElementwiseOp {
         Self {
             name: "Neg",
             shader_source: include_str!("../../shaders/elementwise/neg.wgsl"),
-            fold_fn: |x| -x,
+            fold_fn_f32: |x| -x,
+            fold_fn_i64: Some(|x| -x),
+            fold_fn_i32: Some(|x| -x),
         }
     }
 
@@ -65,7 +79,9 @@ impl UnaryElementwiseOp {
         Self {
             name: "Tanh",
             shader_source: include_str!("../../shaders/activation/tanh.wgsl"),
-            fold_fn: f32::tanh,
+            fold_fn_f32: f32::tanh,
+            fold_fn_i64: None,
+            fold_fn_i32: None,
         }
     }
 }
@@ -82,8 +98,43 @@ impl Operator for UnaryElementwiseOp {
     }
 
     fn try_fold(&self, ctx: &FoldCtx) -> Result<Vec<Option<onyxia_core::TensorValue>>> {
-        // Use the helper from FoldCtx to fold unary F32 operations
-        ctx.unary_fold_f32(self.fold_fn)
+        // Try f32 folding first
+        let result = ctx.unary_fold_f32(self.fold_fn_f32)?;
+        if result.first().is_some_and(|v| v.is_some()) {
+            return Ok(result);
+        }
+
+        // Try i64 folding (e.g. Neg supports integer types)
+        if let Some(fold_fn) = self.fold_fn_i64 {
+            let val = ctx.input_value(0);
+            if let Some(val) = val {
+                if let Some(input) = val.as_i64() {
+                    let result_data: Vec<i64> = input.iter().map(|&x| fold_fn(x)).collect();
+                    return Ok(vec![Some(onyxia_core::TensorValue::new(
+                        onyxia_core::TensorData::I64(result_data),
+                        val.shape.clone(),
+                        onyxia_core::DataType::I64,
+                    ))]);
+                }
+            }
+        }
+
+        // Try i32 folding
+        if let Some(fold_fn) = self.fold_fn_i32 {
+            let val = ctx.input_value(0);
+            if let Some(val) = val {
+                if let Some(input) = val.as_i32() {
+                    let result_data: Vec<i32> = input.iter().map(|&x| fold_fn(x)).collect();
+                    return Ok(vec![Some(onyxia_core::TensorValue::new(
+                        onyxia_core::TensorData::I32(result_data),
+                        val.shape.clone(),
+                        onyxia_core::DataType::I32,
+                    ))]);
+                }
+            }
+        }
+
+        Ok(vec![None])
     }
 
     fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {

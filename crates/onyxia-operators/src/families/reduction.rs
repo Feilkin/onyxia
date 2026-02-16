@@ -14,12 +14,14 @@ use std::collections::HashMap;
 ///
 /// The only differences are:
 /// - Shader source code (sum vs mean computation)
-/// - Fold function (sum vs mean)
+///
+/// Per the ONNX spec, ReduceSum/ReduceMean support T → T where
+/// T ∈ {uint32, uint64, int32, int64, float16, float, double, bfloat16}.
+/// The GPU shader currently only handles f32. Non-f32 reductions that
+/// survive constant folding will produce f32 shader output.
 pub struct ReductionOp {
     name: &'static str,
     shader_source: &'static str,
-    #[allow(dead_code)]
-    fold_fn: fn(&[f32]) -> f32,
 }
 
 impl ReductionOp {
@@ -28,7 +30,6 @@ impl ReductionOp {
         Self {
             name: "ReduceSum",
             shader_source: include_str!("../../shaders/reduction/reducesum.wgsl"),
-            fold_fn: |values| values.iter().sum(),
         }
     }
 
@@ -37,10 +38,6 @@ impl ReductionOp {
         Self {
             name: "ReduceMean",
             shader_source: include_str!("../../shaders/reduction/reducemean.wgsl"),
-            fold_fn: |values| {
-                let sum: f32 = values.iter().sum();
-                sum / values.len() as f32
-            },
         }
     }
 }

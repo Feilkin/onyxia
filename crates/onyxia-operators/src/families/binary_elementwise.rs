@@ -18,11 +18,17 @@ use crate::helpers::infer_elementwise_broadcast;
 ///
 /// The only differences are:
 /// - Shader source code (which WGSL function to call)
-/// - Fold function (which CPU operation to perform)
+/// - Fold functions (which CPU operations to perform, per type)
+///
+/// Per the ONNX spec, Add/Sub/Mul/Div/Max support T → T where
+/// T ∈ {uint8..uint64, int8..int64, float16, float, double, bfloat16}.
+/// Pow has (T, T1) → T with a wider exponent constraint.
 pub struct BinaryElementwiseOp {
     name: &'static str,
     shader_source: &'static str,
-    fold_fn: fn(f32, f32) -> f32,
+    fold_fn_f32: fn(f32, f32) -> f32,
+    fold_fn_i64: Option<fn(i64, i64) -> i64>,
+    fold_fn_i32: Option<fn(i32, i32) -> i32>,
 }
 
 impl BinaryElementwiseOp {
@@ -31,7 +37,9 @@ impl BinaryElementwiseOp {
         Self {
             name: "Add",
             shader_source: include_str!("../../shaders/elementwise/add.wgsl"),
-            fold_fn: |a, b| a + b,
+            fold_fn_f32: |a, b| a + b,
+            fold_fn_i64: Some(|a, b| a + b),
+            fold_fn_i32: Some(|a, b| a + b),
         }
     }
 
@@ -40,7 +48,9 @@ impl BinaryElementwiseOp {
         Self {
             name: "Sub",
             shader_source: include_str!("../../shaders/elementwise/sub.wgsl"),
-            fold_fn: |a, b| a - b,
+            fold_fn_f32: |a, b| a - b,
+            fold_fn_i64: Some(|a, b| a - b),
+            fold_fn_i32: Some(|a, b| a - b),
         }
     }
 
@@ -49,7 +59,9 @@ impl BinaryElementwiseOp {
         Self {
             name: "Mul",
             shader_source: include_str!("../../shaders/elementwise/mul.wgsl"),
-            fold_fn: |a, b| a * b,
+            fold_fn_f32: |a, b| a * b,
+            fold_fn_i64: Some(|a, b| a * b),
+            fold_fn_i32: Some(|a, b| a * b),
         }
     }
 
@@ -58,7 +70,9 @@ impl BinaryElementwiseOp {
         Self {
             name: "Div",
             shader_source: include_str!("../../shaders/elementwise/div.wgsl"),
-            fold_fn: |a, b| a / b,
+            fold_fn_f32: |a, b| a / b,
+            fold_fn_i64: Some(|a, b| if b != 0 { a / b } else { 0 }),
+            fold_fn_i32: Some(|a, b| if b != 0 { a / b } else { 0 }),
         }
     }
 
@@ -67,7 +81,9 @@ impl BinaryElementwiseOp {
         Self {
             name: "Pow",
             shader_source: include_str!("../../shaders/elementwise/pow.wgsl"),
-            fold_fn: |a, b| a.powf(b),
+            fold_fn_f32: |a, b| a.powf(b),
+            fold_fn_i64: Some(|a, b| (a as f64).powi(b as i32) as i64),
+            fold_fn_i32: Some(|a, b| (a as f64).powi(b) as i32),
         }
     }
 
@@ -76,7 +92,9 @@ impl BinaryElementwiseOp {
         Self {
             name: "Max",
             shader_source: include_str!("../../shaders/elementwise/max.wgsl"),
-            fold_fn: |a, b| a.max(b),
+            fold_fn_f32: |a, b| a.max(b),
+            fold_fn_i64: Some(|a, b| a.max(b)),
+            fold_fn_i32: Some(|a, b| a.max(b)),
         }
     }
 }
@@ -92,8 +110,29 @@ impl Operator for BinaryElementwiseOp {
     }
 
     fn try_fold(&self, ctx: &FoldCtx) -> Result<Vec<Option<onyxia_core::TensorValue>>> {
-        // Use the helper from FoldCtx to fold binary F32 operations
-        ctx.binary_fold_f32(self.fold_fn)
+        // Try f32 folding first
+        let result = ctx.binary_fold_f32(self.fold_fn_f32)?;
+        if result.first().is_some_and(|v| v.is_some()) {
+            return Ok(result);
+        }
+
+        // Try i64 folding
+        if let Some(fold_fn) = self.fold_fn_i64 {
+            let result = ctx.binary_fold_i64(fold_fn)?;
+            if result.first().is_some_and(|v| v.is_some()) {
+                return Ok(result);
+            }
+        }
+
+        // Try i32 folding
+        if let Some(fold_fn) = self.fold_fn_i32 {
+            let result = ctx.binary_fold_i32(fold_fn)?;
+            if result.first().is_some_and(|v| v.is_some()) {
+                return Ok(result);
+            }
+        }
+
+        Ok(vec![None])
     }
 
     fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {

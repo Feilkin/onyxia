@@ -872,6 +872,7 @@ impl Operator for RangeOp {
 
         // Get output shape and size
         let output_tensor = ctx.output_tensor(0)?;
+        let output_dtype = output_tensor.dtype;
         let output_shape = ctx.static_dims(&output_tensor.shape)?;
 
         if output_shape.len() != 1 {
@@ -896,18 +897,66 @@ impl Operator for RangeOp {
             .input_value(2)
             .ok_or_else(|| onyxia_core::Error::Planning("Range delta not constant".into()))?;
 
-        // Extract scalar values (currently only supporting F32)
+        // Handle I64 output by generating values on CPU and writing directly,
+        // since the GPU shader only supports f32.
+        if output_dtype == DataType::I64 {
+            let (start, delta) = match (&start_val.data, &delta_val.data) {
+                (TensorData::I64(s), TensorData::I64(d)) if s.len() == 1 && d.len() == 1 => {
+                    (s[0], d[0])
+                }
+                _ => {
+                    return Err(onyxia_core::Error::Planning(
+                        "Range I64: start and delta must be I64 scalars".to_string(),
+                    ));
+                }
+            };
+
+            let mut data = Vec::with_capacity(size * 8);
+            for i in 0..size {
+                data.extend_from_slice(&(start + i as i64 * delta).to_le_bytes());
+            }
+
+            return Ok(vec![Step::WriteBuffer {
+                dst: ctx.output(0)?,
+                data,
+            }]);
+        }
+
+        // Handle I32 output similarly
+        if output_dtype == DataType::I32 {
+            let (start, delta) = match (&start_val.data, &delta_val.data) {
+                (TensorData::I32(s), TensorData::I32(d)) if s.len() == 1 && d.len() == 1 => {
+                    (s[0], d[0])
+                }
+                (TensorData::I64(s), TensorData::I64(d)) if s.len() == 1 && d.len() == 1 => {
+                    (s[0] as i32, d[0] as i32)
+                }
+                _ => {
+                    return Err(onyxia_core::Error::Planning(
+                        "Range I32: start and delta must be integer scalars".to_string(),
+                    ));
+                }
+            };
+
+            let mut data = Vec::with_capacity(size * 4);
+            for i in 0..size {
+                data.extend_from_slice(&(start + i as i32 * delta).to_le_bytes());
+            }
+
+            return Ok(vec![Step::WriteBuffer {
+                dst: ctx.output(0)?,
+                data,
+            }]);
+        }
+
+        // F32 path: use GPU shader
         let (start, delta) = match (&start_val.data, &delta_val.data) {
             (TensorData::F32(s), TensorData::F32(d)) if s.len() == 1 && d.len() == 1 => {
                 (s[0], d[0])
             }
-            (TensorData::I64(s), TensorData::I64(d)) if s.len() == 1 && d.len() == 1 => {
-                // Convert I64 to F32 for the shader
-                (s[0] as f32, d[0] as f32)
-            }
             _ => {
                 return Err(onyxia_core::Error::Planning(
-                    "Range only supports F32 and I64 scalar inputs".to_string(),
+                    "Range F32: start and delta must be F32 scalars".to_string(),
                 ));
             }
         };
