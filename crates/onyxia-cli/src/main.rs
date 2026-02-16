@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use onyxia_cli::{TraceDirection, TraceFormat};
 use onyxia_onnx::TensorShape;
 use std::path::PathBuf;
 
@@ -156,6 +157,32 @@ enum Commands {
         #[arg(long)]
         full: bool,
     },
+    /// Trace data flow around a specific node
+    TraceNode {
+        /// Path to the ONNX model file
+        #[arg(value_name = "MODEL")]
+        model: PathBuf,
+
+        /// Node name to trace
+        #[arg(long)]
+        name: String,
+
+        /// Number of hops to trace (0 = just the node)
+        #[arg(long, default_value = "1")]
+        depth: usize,
+
+        /// Direction to trace: both, upstream, downstream
+        #[arg(long, default_value = "both")]
+        direction: TraceDirection,
+
+        /// Output format: text, dot
+        #[arg(long, default_value = "text")]
+        format: TraceFormat,
+
+        /// Output file (for dot format)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -236,6 +263,16 @@ fn main() -> Result<()> {
             full,
         } => {
             cmd_inspect_tensor(model, names, list_constants, full)?;
+        }
+        Commands::TraceNode {
+            model,
+            name,
+            depth,
+            direction,
+            format,
+            output,
+        } => {
+            cmd_trace_node(model, name, depth, direction, format, output)?;
         }
     }
 
@@ -801,4 +838,25 @@ fn cmd_inspect_tensor(
 
     // Inspect the tensors
     onyxia_cli::inspect::inspect_tensor(&model, &names, list_constants, full)
+}
+
+/// Trace data flow around a specific node.
+fn cmd_trace_node(
+    model_path: PathBuf,
+    name: String,
+    depth: usize,
+    direction: TraceDirection,
+    format: TraceFormat,
+    output: Option<PathBuf>,
+) -> Result<()> {
+    // Load and parse the ONNX model
+    let model = onyxia_onnx::load_and_parse_model(&model_path).with_context(|| {
+        format!(
+            "Failed to load and parse model from {}",
+            model_path.display()
+        )
+    })?;
+
+    // Trace the node
+    onyxia_cli::inspect::trace_node(&model, &name, depth, direction, format, output.as_deref())
 }

@@ -1,11 +1,13 @@
 //! Node inspection utilities.
 
+use crate::{TraceDirection, TraceFormat};
 use anyhow::{Context, Result};
 use onyxia_compiler::CompilerPipeline;
 use onyxia_core::{DataType, EdgeData, IrGraph, IrNodeId, TensorShape, TensorValue};
 use onyxia_onnx::Graph;
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::Path;
 
 /// Display detailed information about one or more nodes.
 pub fn inspect_nodes(
@@ -537,4 +539,313 @@ fn list_constant_tensors(graph: &IrGraph) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Trace data flow around a specific node.
+pub fn trace_node(
+    model: &Graph,
+    node_name: &str,
+    depth: usize,
+    direction: TraceDirection,
+    format: TraceFormat,
+    output: Option<&Path>,
+) -> Result<()> {
+    let ir_graph = IrGraph::from_onnx(model)?;
+
+    let node_id = ir_graph
+        .find_node_by_name(node_name)
+        .with_context(|| format!("Node '{}' not found", node_name))?;
+
+    // Collect subgraph
+    let subgraph = collect_subgraph(&ir_graph, node_id, depth, direction)?;
+
+    // Display or write
+    match format {
+        TraceFormat::Text => {
+            display_trace_text(&ir_graph, node_id, &subgraph, depth)?;
+        }
+        TraceFormat::Dot => {
+            let dot = generate_trace_dot(&ir_graph, node_id, &subgraph)?;
+            if let Some(path) = output {
+                std::fs::write(path, &dot)?;
+                println!("Wrote trace to {}", path.display());
+            } else {
+                println!("{}", dot);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+struct Subgraph {
+    upstream: Vec<Vec<IrNodeId>>, // upstream[depth] = nodes at that distance
+    downstream: Vec<Vec<IrNodeId>>, // downstream[depth] = nodes at that distance
+}
+
+fn collect_subgraph(
+    graph: &IrGraph,
+    start: IrNodeId,
+    max_depth: usize,
+    direction: TraceDirection,
+) -> Result<Subgraph> {
+    let mut upstream = vec![Vec::new(); max_depth + 1];
+    let mut downstream = vec![Vec::new(); max_depth + 1];
+
+    match direction {
+        TraceDirection::Both => {
+            collect_upstream(graph, start, max_depth, &mut upstream)?;
+            collect_downstream(graph, start, max_depth, &mut downstream)?;
+        }
+        TraceDirection::Upstream => {
+            collect_upstream(graph, start, max_depth, &mut upstream)?;
+        }
+        TraceDirection::Downstream => {
+            collect_downstream(graph, start, max_depth, &mut downstream)?;
+        }
+    }
+
+    Ok(Subgraph {
+        upstream,
+        downstream,
+    })
+}
+
+fn collect_upstream(
+    graph: &IrGraph,
+    start: IrNodeId,
+    max_depth: usize,
+    upstream: &mut [Vec<IrNodeId>],
+) -> Result<()> {
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::new();
+    queue.push_back((start, 0));
+
+    while let Some((node_id, depth)) = queue.pop_front() {
+        if depth > max_depth || visited.contains(&node_id) {
+            continue;
+        }
+        visited.insert(node_id);
+
+        if depth > 0 {
+            upstream[depth].push(node_id);
+        }
+
+        // Get input producers
+        let node = graph.node(node_id)?;
+        for &input_id in &node.inputs {
+            if let Some(producer_id) = graph.tensor_producer(input_id) {
+                queue.push_back((producer_id, depth + 1));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn collect_downstream(
+    graph: &IrGraph,
+    start: IrNodeId,
+    max_depth: usize,
+    downstream: &mut [Vec<IrNodeId>],
+) -> Result<()> {
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::new();
+    queue.push_back((start, 0));
+
+    while let Some((node_id, depth)) = queue.pop_front() {
+        if depth > max_depth || visited.contains(&node_id) {
+            continue;
+        }
+        visited.insert(node_id);
+
+        if depth > 0 {
+            downstream[depth].push(node_id);
+        }
+
+        // Get output consumers
+        let node = graph.node(node_id)?;
+        for &tensor_id in &node.outputs {
+            let consumers = graph.tensor_consumers(tensor_id);
+            for consumer_id in consumers {
+                queue.push_back((consumer_id, depth + 1));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn display_trace_text(
+    graph: &IrGraph,
+    center: IrNodeId,
+    subgraph: &Subgraph,
+    max_depth: usize,
+) -> Result<()> {
+    let center_name = graph.node_name(center)?;
+    let center_node = graph.node(center)?;
+    let op_type = &center_node.op_type;
+
+    println!("Tracing node: {} ({})", center_name, op_type);
+    println!();
+
+    // Display upstream
+    if !subgraph.upstream.iter().all(|v| v.is_empty()) {
+        println!("Upstream (depth {}):", max_depth);
+        for depth in (1..=max_depth).rev() {
+            if !subgraph.upstream[depth].is_empty() {
+                println!("  Level {}:", depth);
+                for &node_id in &subgraph.upstream[depth] {
+                    display_node_summary(graph, node_id, "    ")?;
+                }
+            }
+        }
+        println!();
+    }
+
+    // Display center
+    println!("Current:");
+    display_node_detail(graph, center)?;
+    println!();
+
+    // Display downstream
+    if !subgraph.downstream.iter().all(|v| v.is_empty()) {
+        println!("Downstream (depth {}):", max_depth);
+        for depth in 1..=max_depth {
+            if !subgraph.downstream[depth].is_empty() {
+                println!("  Level {}:", depth);
+                for &node_id in &subgraph.downstream[depth] {
+                    display_node_summary(graph, node_id, "    ")?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn display_node_summary(graph: &IrGraph, node_id: IrNodeId, indent: &str) -> Result<()> {
+    let name = graph.node_name(node_id)?;
+    let node = graph.node(node_id)?;
+    println!("{}{} ({})", indent, name, node.op_type);
+    Ok(())
+}
+
+fn display_node_detail(graph: &IrGraph, node_id: IrNodeId) -> Result<()> {
+    let name = graph.node_name(node_id)?;
+    let node = graph.node(node_id)?;
+
+    println!("  {} ({})", name, node.op_type);
+
+    for (i, &input_id) in node.inputs.iter().enumerate() {
+        let tensor = graph.tensor(input_id)?;
+        println!("    Input {}: {} {:?}", i, tensor.name, tensor.shape);
+    }
+
+    for (i, &tensor_id) in node.outputs.iter().enumerate() {
+        let tensor = graph.tensor(tensor_id)?;
+        println!("    Output {}: {} {:?}", i, tensor.name, tensor.shape);
+    }
+
+    Ok(())
+}
+
+fn generate_trace_dot(graph: &IrGraph, center: IrNodeId, subgraph: &Subgraph) -> Result<String> {
+    let mut dot = String::from("digraph trace {\n");
+    dot.push_str("  rankdir=TB;\n");
+    dot.push_str("  node [shape=box, style=rounded];\n\n");
+
+    // Collect all nodes in the subgraph
+    let mut all_nodes = HashSet::new();
+    all_nodes.insert(center);
+
+    for level in &subgraph.upstream {
+        for &node_id in level {
+            all_nodes.insert(node_id);
+        }
+    }
+
+    for level in &subgraph.downstream {
+        for &node_id in level {
+            all_nodes.insert(node_id);
+        }
+    }
+
+    // Track which tensors are used
+    let mut used_tensors = HashSet::new();
+
+    // Add nodes
+    for &node_id in &all_nodes {
+        let node = graph.node(node_id)?;
+        let name = graph.node_name(node_id)?;
+        let node_dot_id = format!("n{}", node_id.index());
+
+        // Highlight center node
+        let style = if node_id == center {
+            ", style=\"filled\", fillcolor=\"lightblue\""
+        } else {
+            ""
+        };
+
+        dot.push_str(&format!(
+            "  {} [label=\"{}\\n({})\"{}];\n",
+            node_dot_id,
+            escape_dot_string(name),
+            escape_dot_string(&node.op_type),
+            style
+        ));
+
+        // Track tensors
+        for &inp in &node.inputs {
+            used_tensors.insert(inp);
+        }
+        for &out in &node.outputs {
+            used_tensors.insert(out);
+        }
+    }
+
+    dot.push('\n');
+
+    // Add tensor nodes
+    for &tensor_id in &used_tensors {
+        let tensor = graph.tensor(tensor_id)?;
+        let tensor_dot_id = format!("t{}", tensor_id.index());
+
+        let shape_str = format!("{:?}", tensor.shape);
+
+        dot.push_str(&format!(
+            "  {} [label=\"{}\\n{}\", shape=ellipse, style=filled, fillcolor=lightyellow];\n",
+            tensor_dot_id,
+            escape_dot_string(&tensor.name),
+            escape_dot_string(&shape_str)
+        ));
+    }
+
+    dot.push('\n');
+
+    // Add edges
+    for &node_id in &all_nodes {
+        let node = graph.node(node_id)?;
+        let node_dot_id = format!("n{}", node_id.index());
+
+        for &inp in &node.inputs {
+            let tensor_dot_id = format!("t{}", inp.index());
+            dot.push_str(&format!("  {} -> {};\n", tensor_dot_id, node_dot_id));
+        }
+
+        for &out in &node.outputs {
+            let tensor_dot_id = format!("t{}", out.index());
+            dot.push_str(&format!("  {} -> {};\n", node_dot_id, tensor_dot_id));
+        }
+    }
+
+    dot.push_str("}\n");
+    Ok(dot)
+}
+
+/// Escape special characters for DOT format.
+fn escape_dot_string(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('\"', "\\\"")
+        .replace('\n', "\\n")
 }
