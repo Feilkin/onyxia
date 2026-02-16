@@ -14,7 +14,9 @@ pub mod type_conversion;
 
 // Re-export all operators
 pub use activation::{GeluOp, SoftmaxOp};
-pub use attention::{GemmaRotaryEmbeddingOp, GroupQueryAttentionOp, RotaryEmbeddingOp};
+pub use attention::{
+    GemmaRotaryEmbeddingOp, GroupQueryAttentionOp, MicrosoftRotaryEmbeddingOp, RotaryEmbeddingOp,
+};
 pub use conditional::WhereOp;
 pub use indexing::{GatherOp, RangeOp, ScatterNDOp, SliceOp, TriluOp};
 pub use matmul::{MatMulF32Op, MatMulNBitsOp};

@@ -72,14 +72,35 @@ impl Operator for RotaryEmbeddingOp {
                 let seq = input_shape[1];
                 let hidden = input_shape[2];
 
-                // num_heads is required for 3D input
-                if num_heads_attr <= 0 {
-                    return Err(onyxia_core::Error::Planning(
-                        "RotaryEmbedding with 3D input requires num_heads attribute".to_string(),
-                    ));
-                }
+                let heads = if num_heads_attr > 0 {
+                    // num_heads provided as attribute
+                    num_heads_attr as usize
+                } else {
+                    // Infer num_heads from cos_cache shape
+                    // cos_cache is input 1 with shape [max_seq, head_dim/2]
+                    let cos_cache_tensor = ctx.input_tensor(1)?;
+                    let cos_cache_shape = ctx.static_dims(&cos_cache_tensor.shape)?;
 
-                let heads = num_heads_attr as usize;
+                    if cos_cache_shape.len() != 2 {
+                        return Err(onyxia_core::Error::Planning(format!(
+                            "RotaryEmbedding: cos_cache should be 2D, got {:?}",
+                            cos_cache_shape
+                        )));
+                    }
+
+                    // Infer head_dim from cos_cache: head_dim = cos_cache.shape[1] * 2
+                    let head_dim_inferred = cos_cache_shape[1] * 2;
+
+                    if hidden % head_dim_inferred != 0 {
+                        return Err(onyxia_core::Error::Planning(format!(
+                            "RotaryEmbedding: hidden_size ({}) must be divisible by inferred head_dim ({})",
+                            hidden, head_dim_inferred
+                        )));
+                    }
+
+                    hidden / head_dim_inferred
+                };
+
                 if hidden % heads != 0 {
                     return Err(onyxia_core::Error::Planning(format!(
                         "RotaryEmbedding: hidden_size ({}) must be divisible by num_heads ({})",
@@ -142,6 +163,8 @@ impl Operator for RotaryEmbeddingOp {
         immediates_data.extend_from_slice(&(num_heads as u32).to_le_bytes());
         immediates_data.extend_from_slice(&(head_dim as u32).to_le_bytes());
         immediates_data.extend_from_slice(&interleaved.to_le_bytes());
+        immediates_data.extend_from_slice(&(head_dim as u32).to_le_bytes()); // rotation_dim = head_dim (full rotation)
+        immediates_data.extend_from_slice(&1.0f32.to_le_bytes()); // scale = 1.0
 
         // Build binding list: input, cos_cache, sin_cache, [position_ids], output
         let mut bindings = vec![
@@ -177,6 +200,234 @@ impl Operator for RotaryEmbeddingOp {
             workgroups: [num_workgroups, 1, 1],
             immediates: Some(immediates_data),
         }])
+    }
+}
+
+/// Microsoft Rotary Embedding operator (com.microsoft domain).
+///
+/// Similar to ai.onnx.RotaryEmbedding but with additional attributes and
+/// required position_ids input.
+pub struct MicrosoftRotaryEmbeddingOp;
+
+impl Operator for MicrosoftRotaryEmbeddingOp {
+    fn name(&self) -> &str {
+        "com.microsoft.RotaryEmbedding"
+    }
+
+    fn infer_output_shapes(&self, ctx: &InferenceCtx) -> Result<Vec<TensorShape>> {
+        if ctx.input_count() < 4 {
+            return Err(onyxia_core::Error::ShapeInference(
+                "com.microsoft.RotaryEmbedding requires 4 inputs".to_string(),
+            ));
+        }
+        // Output shape = input shape
+        Ok(vec![ctx.input_shape(0)?.clone()])
+    }
+
+    fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {
+        // com.microsoft.RotaryEmbedding inputs:
+        // 0: input - 3D [batch, seq, hidden] or 4D [batch, num_heads, seq, head_size]
+        // 1: position_ids - 1D [1] or 2D [batch, seq] (required, I64)
+        // 2: cos_cache - 2D [max_seq, head_size/2] or [max_seq, rotary_embedding_dim/2]
+        // 3: sin_cache - 2D [max_seq, head_size/2] or [max_seq, rotary_embedding_dim/2]
+
+        if ctx.input_count() < 4 {
+            return Err(onyxia_core::Error::Planning(format!(
+                "com.microsoft.RotaryEmbedding requires 4 inputs, got {}",
+                ctx.input_count()
+            )));
+        }
+
+        // Get input shape and determine format (3D or 4D)
+        let input_tensor = ctx.input_tensor(0)?;
+        let input_shape = ctx.static_dims(&input_tensor.shape)?;
+        let input_dtype = input_tensor.dtype; // Copy dtype before mutable borrows
+
+        // Read attributes
+        let num_heads_attr = ctx.attr_i64("num_heads").unwrap_or(0);
+        let interleaved: u32 = ctx.attr_i64("interleaved").unwrap_or(0) as u32;
+        let rotary_embedding_dim = ctx.attr_i64("rotary_embedding_dim").unwrap_or(0);
+        let scale: f32 = ctx.attr_f32("scale").unwrap_or(1.0);
+        let _is_packed_batching = ctx.attr_i64("is_packed_batching").unwrap_or(0);
+
+        let (batch_size, seq_len, num_heads, head_dim) = match input_shape.len() {
+            // 4D format: [batch_size, num_heads, sequence_length, head_size]
+            4 => {
+                let batch = input_shape[0];
+                let heads = input_shape[1];
+                let seq = input_shape[2];
+                let head_size = input_shape[3];
+
+                if num_heads_attr > 0 && heads != num_heads_attr as usize {
+                    return Err(onyxia_core::Error::Planning(format!(
+                        "com.microsoft.RotaryEmbedding: num_heads attribute ({}) doesn't match input shape ({})",
+                        num_heads_attr, heads
+                    )));
+                }
+
+                (batch, seq, heads, head_size)
+            }
+            // 3D format: [batch_size, sequence_length, hidden_size]
+            3 => {
+                let batch = input_shape[0];
+                let seq = input_shape[1];
+                let hidden = input_shape[2];
+
+                let heads = if num_heads_attr > 0 {
+                    // num_heads provided as attribute
+                    num_heads_attr as usize
+                } else {
+                    // Infer num_heads from cos_cache shape
+                    // cos_cache is input 2 with shape [max_seq, head_dim/2] or [max_seq, rotary_embedding_dim/2]
+                    let cos_cache_tensor = ctx.input_tensor(2)?;
+                    let cos_cache_shape = ctx.static_dims(&cos_cache_tensor.shape)?;
+
+                    if cos_cache_shape.len() != 2 {
+                        return Err(onyxia_core::Error::Planning(format!(
+                            "com.microsoft.RotaryEmbedding: cos_cache should be 2D, got {:?}",
+                            cos_cache_shape
+                        )));
+                    }
+
+                    // If rotary_embedding_dim is specified, use it; otherwise infer from cos_cache
+                    let effective_dim = if rotary_embedding_dim > 0 {
+                        rotary_embedding_dim as usize
+                    } else {
+                        // Infer from cos_cache: dim = cos_cache.shape[1] * 2
+                        cos_cache_shape[1] * 2
+                    };
+
+                    if hidden % effective_dim != 0 {
+                        return Err(onyxia_core::Error::Planning(format!(
+                            "com.microsoft.RotaryEmbedding: hidden_size ({}) must be divisible by effective_dim ({})",
+                            hidden, effective_dim
+                        )));
+                    }
+
+                    hidden / effective_dim
+                };
+
+                if hidden % heads != 0 {
+                    return Err(onyxia_core::Error::Planning(format!(
+                        "com.microsoft.RotaryEmbedding: hidden_size ({}) must be divisible by num_heads ({})",
+                        hidden, heads
+                    )));
+                }
+
+                let head_size = hidden / heads;
+                (batch, seq, heads, head_size)
+            }
+            _ => {
+                return Err(onyxia_core::Error::Planning(format!(
+                    "com.microsoft.RotaryEmbedding expects 3D or 4D input, got {:?}",
+                    input_shape
+                )));
+            }
+        };
+
+        // Determine effective rotation dimension
+        let rotation_dim = if rotary_embedding_dim > 0 {
+            rotary_embedding_dim as usize
+        } else {
+            head_dim
+        };
+
+        if rotation_dim % 2 != 0 {
+            return Err(onyxia_core::Error::Planning(format!(
+                "com.microsoft.RotaryEmbedding requires even rotation dimension, got {}",
+                rotation_dim
+            )));
+        }
+
+        let is_3d_input = input_shape.len() == 3;
+
+        // Calculate total number of pairs to rotate
+        let total_pairs = batch_size * seq_len * num_heads * (rotation_dim / 2);
+
+        let workgroup_size: u32 = 256;
+        let num_workgroups = (total_pairs as u32).div_ceil(workgroup_size);
+
+        let mut shader_defs = HashMap::new();
+        shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());
+        shader_defs.insert("HAS_POSITION_IDS".to_string(), "1".to_string());
+        if is_3d_input {
+            shader_defs.insert("INPUT_3D".to_string(), "1".to_string());
+        }
+        if rotation_dim < head_dim {
+            shader_defs.insert("PARTIAL_ROTATION".to_string(), "1".to_string());
+        }
+
+        let shader_index = ctx.compile_shader(
+            "microsoft_rotary_embedding",
+            include_str!("../../shaders/attention/rotary_embedding.wgsl"),
+            &shader_defs,
+        )?;
+
+        // Encode immediate constants
+        let mut immediates_data = Vec::new();
+        immediates_data.extend_from_slice(&(batch_size as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&(seq_len as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&(num_heads as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&(head_dim as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&interleaved.to_le_bytes());
+        immediates_data.extend_from_slice(&(rotation_dim as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&scale.to_le_bytes());
+
+        let mut steps = Vec::new();
+
+        // If partial rotation, first copy input to output
+        if rotation_dim < head_dim {
+            let element_count: usize = input_shape.iter().product();
+            let dtype_bytes = match input_dtype {
+                onyxia_core::DataType::F32
+                | onyxia_core::DataType::I32
+                | onyxia_core::DataType::U32
+                | onyxia_core::DataType::Bool => 4,
+                onyxia_core::DataType::F16 => 2,
+                onyxia_core::DataType::I64 => 8,
+                onyxia_core::DataType::U8
+                | onyxia_core::DataType::Q4
+                | onyxia_core::DataType::Q8 => 1,
+            };
+            let bytes = element_count * dtype_bytes;
+            steps.push(Step::CopyBuffer {
+                src: ctx.input(0)?,
+                src_offset: 0,
+                dst: ctx.output(0)?,
+                dst_offset: 0,
+                size: bytes as u64,
+            });
+        }
+
+        steps.push(Step::Dispatch {
+            shader_index,
+            bindings: vec![
+                BindingDesc {
+                    buffer: ctx.input(0)?, // input
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.input(1)?, // position_ids (I64, required)
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.input(2)?, // cos_cache
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.input(3)?, // sin_cache
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.output(0)?, // output
+                    read_only: false,
+                },
+            ],
+            workgroups: [num_workgroups, 1, 1],
+            immediates: Some(immediates_data),
+        });
+
+        Ok(steps)
     }
 }
 
