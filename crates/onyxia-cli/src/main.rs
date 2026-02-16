@@ -112,6 +112,32 @@ enum Commands {
         #[arg(long)]
         full_values: bool,
     },
+    /// List nodes in the model, optionally filtered
+    ListNodes {
+        /// Path to the ONNX model file
+        #[arg(value_name = "MODEL")]
+        model: PathBuf,
+
+        /// Filter by operator type(s)
+        #[arg(long = "op-type")]
+        op_types: Vec<String>,
+
+        /// Filter by name pattern (regex)
+        #[arg(long)]
+        name_pattern: Option<String>,
+
+        /// Show input/output shapes
+        #[arg(long)]
+        show_shapes: bool,
+
+        /// Show summary statistics instead of listing
+        #[arg(long)]
+        summary: bool,
+
+        /// Dynamic dimension values (format: name=value, can be repeated)
+        #[arg(long = "dynamic-dim", value_parser = parse_dynamic_dim)]
+        dynamic_dims: Vec<(String, usize)>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -167,6 +193,23 @@ fn main() -> Result<()> {
             full_values,
         } => {
             cmd_inspect_node(model, names, dynamic_dims, full_values)?;
+        }
+        Commands::ListNodes {
+            model,
+            op_types,
+            name_pattern,
+            show_shapes,
+            summary,
+            dynamic_dims,
+        } => {
+            cmd_list_nodes(
+                model,
+                op_types,
+                name_pattern,
+                show_shapes,
+                summary,
+                dynamic_dims,
+            )?;
         }
     }
 
@@ -631,6 +674,38 @@ fn cmd_inspect_node(
     onyxia_cli::inspect::inspect_nodes(&model, &node_names, dynamic_dims, full_values)
 }
 
+/// List nodes in an ONNX model with optional filtering.
+fn cmd_list_nodes(
+    model_path: PathBuf,
+    op_types: Vec<String>,
+    name_pattern: Option<String>,
+    show_shapes: bool,
+    summary: bool,
+    dynamic_dims: Vec<(String, usize)>,
+) -> Result<()> {
+    // Load and parse the ONNX model
+    let model = onyxia_onnx::load_and_parse_model(&model_path).with_context(|| {
+        format!(
+            "Failed to load and parse model from {}",
+            model_path.display()
+        )
+    })?;
+
+    // Convert dynamic_dims to HashMap
+    let dynamic_dims_map: std::collections::HashMap<String, usize> =
+        dynamic_dims.into_iter().collect();
+
+    // List nodes
+    onyxia_cli::inspect::list_nodes(
+        &model,
+        &op_types,
+        name_pattern.as_deref(),
+        show_shapes,
+        summary,
+        dynamic_dims_map,
+    )
+}
+
 /// Parse dynamic dimension arguments from command line.
 ///
 /// Expects format: "name=value" (e.g., "sequence_length=32")
@@ -658,4 +733,27 @@ fn parse_dynamic_dims(args: &[String]) -> Result<std::collections::HashMap<Strin
     }
 
     Ok(dynamic_dims)
+}
+
+/// Parse a single dynamic dimension argument for clap value_parser.
+///
+/// Expects format: "name=value" (e.g., "sequence_length=32")
+fn parse_dynamic_dim(arg: &str) -> Result<(String, usize)> {
+    let parts: Vec<&str> = arg.split('=').collect();
+    if parts.len() != 2 {
+        anyhow::bail!(
+            "Invalid dynamic dimension format '{}'. Expected format: name=value",
+            arg
+        );
+    }
+
+    let name = parts[0].to_string();
+    let value: usize = parts[1].parse().with_context(|| {
+        format!(
+            "Invalid value '{}' for dynamic dimension '{}'",
+            parts[1], name
+        )
+    })?;
+
+    Ok((name, value))
 }

@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use onyxia_compiler::CompilerPipeline;
 use onyxia_core::{DataType, EdgeData, IrGraph, IrNodeId, TensorShape, TensorValue};
 use onyxia_onnx::Graph;
+use regex::Regex;
 use std::collections::HashMap;
 
 /// Display detailed information about one or more nodes.
@@ -271,4 +272,150 @@ fn parse_initializer(dtype: DataType, shape: &TensorShape, data: &[u8]) -> Resul
         shape: dims,
         dtype,
     })
+}
+
+/// List nodes in the model with optional filtering.
+pub fn list_nodes(
+    model: &Graph,
+    op_types: &[String],
+    name_pattern: Option<&str>,
+    show_shapes: bool,
+    summary: bool,
+    dynamic_dims: HashMap<String, usize>,
+) -> Result<()> {
+    // Convert to IR
+    let mut ir_graph = IrGraph::from_onnx(model)?;
+
+    if show_shapes {
+        // Run resolution to get actual shapes
+        let registry = onyxia_operators::core_operator_registry();
+        let mut pipeline = CompilerPipeline::new(dynamic_dims);
+        pipeline.run_until_stage(&mut ir_graph, &registry, onyxia_core::Stage::Resolution)?;
+    }
+
+    if summary {
+        display_summary(&ir_graph)?;
+    } else {
+        display_filtered_nodes(&ir_graph, op_types, name_pattern, show_shapes)?;
+    }
+
+    Ok(())
+}
+
+fn display_summary(graph: &IrGraph) -> Result<()> {
+    use std::collections::BTreeMap;
+
+    let mut op_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut total = 0;
+
+    for (_, node) in graph.nodes() {
+        *op_counts.entry(node.op_type.clone()).or_insert(0) += 1;
+        total += 1;
+    }
+
+    println!("Model Summary:");
+    println!("  Total nodes: {}", total);
+    println!();
+
+    // Sort by count descending
+    let mut sorted: Vec<_> = op_counts.iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(a.1));
+
+    println!("  Top operators:");
+    let top = sorted.iter().take(15);
+    for (op_type, count) in top {
+        println!("    {:<15} {}", format!("{}:", op_type), count);
+    }
+
+    if sorted.len() > 15 {
+        let remaining: usize = sorted.iter().skip(15).map(|(_, c)| **c).sum();
+        let remaining_types = sorted.len() - 15;
+        println!();
+        println!(
+            "  Other operators: {} types ({} total nodes)",
+            remaining_types, remaining
+        );
+    }
+
+    Ok(())
+}
+
+fn display_filtered_nodes(
+    graph: &IrGraph,
+    op_types: &[String],
+    name_pattern: Option<&str>,
+    show_shapes: bool,
+) -> Result<()> {
+    let pattern = name_pattern
+        .map(|p| Regex::new(p))
+        .transpose()
+        .context("Invalid regex pattern")?;
+
+    let mut matching_nodes = Vec::new();
+
+    for (node_id, node) in graph.nodes() {
+        // Filter by op_type
+        if !op_types.is_empty() && !op_types.contains(&node.op_type) {
+            continue;
+        }
+
+        // Filter by name pattern
+        if let Some(ref regex) = pattern
+            && !regex.is_match(&node.name)
+        {
+            continue;
+        }
+
+        matching_nodes.push(node_id);
+    }
+
+    if op_types.is_empty() && name_pattern.is_none() {
+        println!("Found {} nodes:", matching_nodes.len());
+    } else {
+        println!("Found {} matching nodes:", matching_nodes.len());
+    }
+
+    if show_shapes {
+        println!();
+        for node_id in matching_nodes {
+            display_node_with_shapes(graph, node_id)?;
+            println!();
+        }
+    } else {
+        for node_id in matching_nodes {
+            let node = graph.node(node_id)?;
+            println!("  {}", node.name);
+        }
+    }
+
+    Ok(())
+}
+
+fn display_node_with_shapes(graph: &IrGraph, node_id: IrNodeId) -> Result<()> {
+    let node = graph.node(node_id)?;
+
+    println!("{}", node.name);
+
+    for (i, &edge_id) in node.inputs.iter().enumerate() {
+        let edge = graph.edge(edge_id)?;
+        let shape_desc = format!("{:?}", edge.shape);
+
+        // Check if it's a constant
+        let constant_note = if edge.is_constant() {
+            " (constant)"
+        } else if edge.has_initializer() {
+            " (initializer)"
+        } else {
+            ""
+        };
+
+        println!("  Input {}: {}{}", i, shape_desc, constant_note);
+    }
+
+    for (i, &edge_id) in node.outputs.iter().enumerate() {
+        let edge = graph.edge(edge_id)?;
+        println!("  Output {}: {:?}", i, edge.shape);
+    }
+
+    Ok(())
 }

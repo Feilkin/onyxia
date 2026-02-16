@@ -111,6 +111,41 @@ impl CompilerPipeline {
         self
     }
 
+    /// Run passes up to and including the specified stage.
+    ///
+    /// This is useful for inspection tools that need intermediate results
+    /// without running the full compilation pipeline.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph` - The IR graph to process
+    /// * `registry` - The operator registry for looking up operator implementations
+    /// * `target_stage` - The stage to run up to (inclusive)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any pass fails.
+    pub fn run_until_stage(
+        &mut self,
+        graph: &mut IrGraph,
+        registry: &onyxia_core::OperatorRegistry,
+        target_stage: onyxia_core::Stage,
+    ) -> onyxia_core::Result<()> {
+        self.passes.sort_by_key(|p| p.stage());
+
+        for pass in &self.passes {
+            if pass.stage() > target_stage {
+                break;
+            }
+
+            let _span =
+                tracing::debug_span!("pass", name = pass.name(), stage = ?pass.stage()).entered();
+            pass.run(graph, registry)?;
+        }
+
+        Ok(())
+    }
+
     /// Run the full pipeline: IrGraph::from_onnx() → stages → CompiledModel.
     ///
     /// # Process

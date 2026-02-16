@@ -1180,6 +1180,7 @@ dependencies = [
  "onyxia-runtime",
  "pollster",
  "rand 0.10.0",
+ "regex",
  "tokenizers",
 ]
 
