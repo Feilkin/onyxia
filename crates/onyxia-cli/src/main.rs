@@ -94,6 +94,24 @@ enum Commands {
         #[arg(long)]
         no_stream: bool,
     },
+    /// Inspect a specific node in the model
+    InspectNode {
+        /// Path to the ONNX model file
+        #[arg(value_name = "MODEL")]
+        model: PathBuf,
+
+        /// Node name(s) to inspect
+        #[arg(long = "name", required = true)]
+        names: Vec<String>,
+
+        /// Dynamic dimension values (format: name=value, can be repeated)
+        #[arg(short = 'd', long = "dynamic-dim")]
+        dynamic_dims: Vec<String>,
+
+        /// Show full tensor values (may be large)
+        #[arg(long)]
+        full_values: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -141,6 +159,14 @@ fn main() -> Result<()> {
                 num_layers,
                 !no_stream,
             ))?;
+        }
+        Commands::InspectNode {
+            model,
+            names,
+            dynamic_dims,
+            full_values,
+        } => {
+            cmd_inspect_node(model, names, dynamic_dims, full_values)?;
         }
     }
 
@@ -581,4 +607,55 @@ async fn cmd_run_model(
     print_stats(&stats);
 
     Ok(())
+}
+
+/// Inspect specific nodes in an ONNX model.
+fn cmd_inspect_node(
+    model_path: PathBuf,
+    node_names: Vec<String>,
+    dynamic_dim_args: Vec<String>,
+    full_values: bool,
+) -> Result<()> {
+    // Load and parse the ONNX model
+    let model = onyxia_onnx::load_and_parse_model(&model_path).with_context(|| {
+        format!(
+            "Failed to load and parse model from {}",
+            model_path.display()
+        )
+    })?;
+
+    // Parse dynamic dimensions
+    let dynamic_dims = parse_dynamic_dims(&dynamic_dim_args)?;
+
+    // Inspect the nodes
+    onyxia_cli::inspect::inspect_nodes(&model, &node_names, dynamic_dims, full_values)
+}
+
+/// Parse dynamic dimension arguments from command line.
+///
+/// Expects format: "name=value" (e.g., "sequence_length=32")
+fn parse_dynamic_dims(args: &[String]) -> Result<std::collections::HashMap<String, usize>> {
+    let mut dynamic_dims = std::collections::HashMap::new();
+
+    for arg in args {
+        let parts: Vec<&str> = arg.split('=').collect();
+        if parts.len() != 2 {
+            anyhow::bail!(
+                "Invalid dynamic dimension format '{}'. Expected format: name=value",
+                arg
+            );
+        }
+
+        let name = parts[0].to_string();
+        let value: usize = parts[1].parse().with_context(|| {
+            format!(
+                "Invalid value '{}' for dynamic dimension '{}'",
+                parts[1], name
+            )
+        })?;
+
+        dynamic_dims.insert(name, value);
+    }
+
+    Ok(dynamic_dims)
 }

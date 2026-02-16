@@ -324,6 +324,33 @@ impl IrGraph {
     pub fn tensor_count(&self) -> usize {
         self.edges.len()
     }
+
+    /// Find a node by its name.
+    ///
+    /// Searches through all nodes in the graph and returns the first node
+    /// with a matching name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no node with the given name exists.
+    pub fn find_node_by_name(&self, name: &str) -> Result<IrNodeId> {
+        for (node_id, node) in self.nodes() {
+            if node.name == name {
+                return Ok(node_id);
+            }
+        }
+
+        Err(Error::InvalidGraph(format!("Node '{}' not found", name)))
+    }
+
+    /// Get a node's name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the node does not exist.
+    pub fn node_name(&self, node_id: IrNodeId) -> Result<&str> {
+        Ok(&self.node(node_id)?.name)
+    }
 }
 
 impl Default for IrGraph {
@@ -340,6 +367,9 @@ impl Default for IrGraph {
 /// entirely; the constant value lives on the output `IrEdge`.
 #[derive(Debug, Clone)]
 pub struct IrNode {
+    /// Node name (from ONNX, may be empty).
+    pub name: String,
+
     /// ONNX operator type (e.g., "Add", "MatMul").
     pub op_type: String,
 
@@ -360,6 +390,7 @@ impl IrNode {
     /// Create a new operator node.
     pub fn new(op_type: String) -> Self {
         Self {
+            name: String::new(),
             op_type,
             attributes: HashMap::new(),
             inputs: Vec::new(),

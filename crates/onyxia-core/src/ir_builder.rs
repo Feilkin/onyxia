@@ -65,6 +65,9 @@ impl IrGraph {
 
             let mut ir_node = IrNode::new(op_type);
 
+            // Preserve the node name from ONNX
+            ir_node.name = onnx_node.name.clone();
+
             // Convert input tensor names to IDs
             for input_name in &onnx_node.inputs {
                 // ONNX uses empty strings for optional absent inputs
