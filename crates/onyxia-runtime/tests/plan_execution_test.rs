@@ -414,3 +414,79 @@ async fn test_gemma_initializers_load() {
         }
     }
 }
+
+/// Test that runtime rejects execution when required inputs are missing.
+#[pollster::test]
+#[ignore = "requires GPU"]
+async fn test_missing_inputs_validation() {
+    let mut graph = Graph::new();
+
+    // Add tensors
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: OnnxTensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: OnnxTensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::F32,
+        shape: OnnxTensorShape::Static(vec![4]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Add nodes
+    graph.add_node(Node {
+        name: "add_node".to_string(),
+        op_type: "Add".to_string(),
+        inputs: vec!["a".to_string(), "b".to_string()],
+        outputs: vec!["c".to_string()],
+        attributes: HashMap::new(),
+        domain: String::new(),
+    });
+
+    // Mark inputs and outputs
+    graph.inputs.push("a".to_string());
+    graph.inputs.push("b".to_string());
+    graph.outputs.push("c".to_string());
+
+    // Compile
+    let registry = core_operator_registry();
+    let plan = compile(&graph, &registry, &HashMap::new()).expect("Compilation should succeed");
+
+    // Initialize runtime
+    let runtime = Runtime::new()
+        .await
+        .expect("Runtime initialization should succeed");
+
+    let mut executor = runtime.load_model(plan).await.expect("Should load plan");
+
+    // Try to run with only one input (missing "b")
+    let a = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[4]);
+
+    let result = executor.run(&[("a", a)]);
+
+    // Should get an error about missing input "b"
+    assert!(
+        result.is_err(),
+        "Should reject execution with missing inputs"
+    );
+
+    let err_msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        err_msg.contains("Missing required inputs") && err_msg.contains("b"),
+        "Error should mention missing input 'b', got: {}",
+        err_msg
+    );
+
+    println!("✓ Missing inputs validation test passed!");
+}

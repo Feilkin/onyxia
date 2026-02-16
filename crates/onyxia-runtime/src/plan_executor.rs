@@ -566,6 +566,26 @@ impl PlanExecutor {
         inputs: &[(&str, Tensor)],
         output_names: &[&str],
     ) -> Result<HashMap<String, Tensor>> {
+        // Validate that all required inputs are provided
+        let provided_inputs: std::collections::HashSet<&str> =
+            inputs.iter().map(|(name, _)| *name).collect();
+
+        let mut missing_inputs = Vec::new();
+        for input_id in &self.plan.inputs {
+            if let Some(info) = self.plan.tensors.get(*input_id) {
+                if !provided_inputs.contains(info.name.as_str()) {
+                    missing_inputs.push(info.name.clone());
+                }
+            }
+        }
+
+        if !missing_inputs.is_empty() {
+            return Err(RuntimeError::ExecutionError(format!(
+                "Missing required inputs: {}",
+                missing_inputs.join(", ")
+            )));
+        }
+
         // Upload inputs to GPU
         for (name, tensor) in inputs {
             let (tensor_id, _) = self.plan.tensors.find_by_name(name).ok_or_else(|| {
