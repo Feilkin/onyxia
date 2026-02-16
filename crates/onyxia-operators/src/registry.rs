@@ -27,7 +27,7 @@ use crate::operators::{
 pub fn core_operator_registry() -> OperatorRegistry {
     let mut registry = OperatorRegistry::new();
 
-    // Binary elementwise operators (6)
+    // Binary elementwise operators
     registry.register("Add", BinaryElementwiseOp::add());
     registry.register("Sub", BinaryElementwiseOp::sub());
     registry.register("Mul", BinaryElementwiseOp::mul());
@@ -35,64 +35,64 @@ pub fn core_operator_registry() -> OperatorRegistry {
     registry.register("Pow", BinaryElementwiseOp::pow());
     registry.register("Max", BinaryElementwiseOp::max());
 
-    // Unary elementwise operators (5)
+    // Unary elementwise operators
     registry.register("Cos", UnaryElementwiseOp::cos());
     registry.register("Sin", UnaryElementwiseOp::sin());
     registry.register("Sqrt", UnaryElementwiseOp::sqrt());
     registry.register("Neg", UnaryElementwiseOp::neg());
     registry.register("Tanh", UnaryElementwiseOp::tanh());
 
-    // Comparison operators (2)
+    // Comparison operators
     registry.register("Equal", ComparisonOp::equal());
     registry.register("Greater", ComparisonOp::greater());
 
-    // Reduction operators (2)
+    // Reduction operators
     registry.register("ReduceSum", ReductionOp::reduce_sum());
     registry.register("ReduceMean", ReductionOp::reduce_mean());
 
-    // Activation operators (2)
+    // Activation operators
     registry.register("Gelu", GeluOp);
     registry.register("Softmax", SoftmaxOp);
 
-    // Normalization operators (1)
+    // Normalization operators
     registry.register("SimplifiedLayerNormalization", RmsNormOp);
 
-    // Matrix multiplication operators (2)
+    // Matrix multiplication operators
     registry.register("MatMul", MatMulF32Op);
-    registry.register("MatMulNBits", MatMulNBitsOp);
 
-    // Metadata operators (3)
+    // Metadata operators
     registry.register("Constant", ConstantOp);
     registry.register("ConstantOfShape", ConstantOfShapeOp);
     registry.register("Shape", ShapeOp);
 
-    // Shape manipulation operators (5)
+    // Shape manipulation operators
     registry.register("Reshape", ReshapeOp);
     registry.register("Unsqueeze", UnsqueezeOp);
     registry.register("Transpose", TransposeOp);
     registry.register("Concat", ConcatOp);
     registry.register("Expand", ExpandOp);
 
-    // Indexing operators (5)
+    // Indexing operators
     registry.register("Gather", GatherOp);
     registry.register("Slice", SliceOp);
     registry.register("ScatterND", ScatterNDOp);
     registry.register("Range", RangeOp);
     registry.register("Trilu", TriluOp);
 
-    // Type conversion operators (1)
+    // Type conversion operators
     registry.register("Cast", CastOp);
 
-    // Conditional operators (1)
+    // Conditional operators
     registry.register("Where", WhereOp);
 
-    // Attention operators (2)
+    // Attention operators
     registry.register("RotaryEmbedding", RotaryEmbeddingOp);
-    registry.register("com.microsoft.GroupQueryAttention", GroupQueryAttentionOp);
 
-    // Microsoft custom operators (2)
+    // com.microsoft operators
     registry.register("com.microsoft.RotaryEmbedding", MicrosoftRotaryEmbeddingOp);
     registry.register("com.microsoft.GemmaRotaryEmbedding", GemmaRotaryEmbeddingOp);
+    registry.register("com.microsoft.GroupQueryAttention", GroupQueryAttentionOp);
+    registry.register("com.microsoft.MatMulNBits", MatMulNBitsOp);
 
     registry
 }

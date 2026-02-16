@@ -129,6 +129,7 @@ fn make_matmul_nbits_graph() -> Graph {
     // Create MatMulNBits node
     let mut node = Node::new("MatMulNBits");
     node.name = "matmul_nbits_node".to_string();
+    node.domain = "com.microsoft".to_string();
     node.inputs = vec!["A".to_string(), "B".to_string(), "scales".to_string()];
     node.outputs = vec!["C".to_string()];
 
