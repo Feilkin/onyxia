@@ -296,6 +296,7 @@ async fn test_gqa_e2e_no_cache() {
     // Create GroupQueryAttention node
     let mut node = Node::new("GroupQueryAttention");
     node.name = "gqa_node".to_string();
+    node.domain = "com.microsoft".to_string();
     node.inputs = vec![
         "query".to_string(),
         "key".to_string(),
@@ -569,6 +570,7 @@ async fn test_gqa_e2e_with_cache() {
     // Create GroupQueryAttention node
     let mut node = Node::new("GroupQueryAttention");
     node.name = "gqa_node".to_string();
+    node.domain = "com.microsoft".to_string();
     node.inputs = vec![
         "query".to_string(),
         "key".to_string(),
