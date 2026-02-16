@@ -606,7 +606,7 @@ impl PlanExecutor {
 
             // Extract shape
             let shape: Vec<usize> = match &info.shape {
-                onyxia_core::TensorShape::Static(dims) => dims.iter().map(|&d| d).collect(),
+                onyxia_core::TensorShape::Static(dims) => dims.iter().copied().collect(),
                 _ => {
                     return Err(RuntimeError::TensorError(
                         "Output tensor has non-static shape".to_string(),

@@ -148,10 +148,7 @@ mod tests {
         let edge = IrEdge::with_initializer(
             "w".to_string(),
             DataType::F32,
-            TensorShape::Symbolic(vec![
-                SymbolicDim::Fixed(2),
-                SymbolicDim::Fixed(3),
-            ]),
+            TensorShape::Symbolic(vec![SymbolicDim::Fixed(2), SymbolicDim::Fixed(3)]),
             vec![0u8; 24], // 6 f32s
         );
         graph.add_edge(edge);

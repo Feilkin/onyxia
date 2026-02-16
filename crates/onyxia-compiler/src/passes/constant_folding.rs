@@ -65,11 +65,11 @@ impl ConstantFoldingPass {
         }
 
         // Fold single-output operators (most common case)
-        if outputs.len() == 1 {
-            if let Some(value) = folded_outputs.into_iter().next().unwrap() {
-                graph.fold_node_to_constant(node_id, value)?;
-                return Ok(true);
-            }
+        if outputs.len() == 1
+            && let Some(value) = folded_outputs.into_iter().next().unwrap()
+        {
+            graph.fold_node_to_constant(node_id, value)?;
+            return Ok(true);
         }
         // Multi-output folding not yet implemented
 

@@ -433,10 +433,7 @@ impl TensorValue {
             TensorData::I32(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
             TensorData::I64(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
             TensorData::U8(v) => v.clone(),
-            TensorData::Bool(v) => v
-                .iter()
-                .flat_map(|&b| (b as u32).to_le_bytes())
-                .collect(),
+            TensorData::Bool(v) => v.iter().flat_map(|&b| (b as u32).to_le_bytes()).collect(),
         }
     }
 }
@@ -470,8 +467,7 @@ mod tests {
         assert_eq!(restored.as_f32(), original.as_f32());
 
         // I32 roundtrip
-        let original =
-            TensorValue::new(TensorData::I32(vec![10, -20, 30]), vec![3], DataType::I32);
+        let original = TensorValue::new(TensorData::I32(vec![10, -20, 30]), vec![3], DataType::I32);
         let bytes = original.to_bytes();
         let restored = TensorValue::from_bytes(&bytes, DataType::I32, &[3]).unwrap();
         assert_eq!(restored.as_i32(), original.as_i32());

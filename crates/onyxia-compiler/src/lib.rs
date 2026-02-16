@@ -41,7 +41,10 @@ pub mod scheduler;
 pub mod symbolic_expr;
 
 pub use error::{CodegenError, Result};
-pub use passes::{ConstantFoldingPass, InitializeConstantsPass, PlanningPass, ShapeInferencePass, SymbolicResolutionPass};
+pub use passes::{
+    ConstantFoldingPass, InitializeConstantsPass, PlanningPass, ShapeInferencePass,
+    SymbolicResolutionPass,
+};
 
 // Re-export commonly used types from onyxia-core
 pub use onyxia_core::{CompiledModel, IrGraph, Pass, Stage};
