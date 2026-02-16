@@ -16,7 +16,6 @@
 struct ImmediateConstants {
     batch_size: u32,
     seq_len: u32,
-    past_seq_len: u32,
     max_seq_len: u32,
     kv_num_heads: u32,
     head_dim: u32,
@@ -25,6 +24,7 @@ struct ImmediateConstants {
 @group(0) @binding(0) var<storage, read> past_kv: array<f32>;
 @group(0) @binding(1) var<storage, read> current_kv: array<f32>;
 @group(0) @binding(2) var<storage, read_write> present_kv: array<f32>;
+@group(0) @binding(3) var<storage, read> seqlens_k: array<i32>;
 var<immediate> constants: ImmediateConstants;
 
 @compute @workgroup_size(#{WORKGROUP_SIZE})
@@ -40,13 +40,18 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let kv_head = (idx / (constants.head_dim * constants.max_seq_len)) % constants.kv_num_heads;
     let batch = idx / (constants.head_dim * constants.max_seq_len * constants.kv_num_heads);
     
-    if seq_pos < constants.past_seq_len {
+    // Compute past_seq_len from seqlens_k: seqlens_k[batch] = total_seq_len - 1
+    // past_seq_len = total_seq_len - seq_len = (seqlens_k[batch] + 1) - seq_len
+    let total_seq_for_batch = u32(seqlens_k[batch]) + 1u;
+    let past_seq_len = total_seq_for_batch - constants.seq_len;
+    
+    if seq_pos < past_seq_len {
         // Copy from past_kv: [batch, kv_num_heads, max_seq_len, head_dim]
         // (past_seq_len positions already contain valid data)
         present_kv[idx] = past_kv[idx];
-    } else if seq_pos < constants.past_seq_len + constants.seq_len {
+    } else if seq_pos < past_seq_len + constants.seq_len {
         // Write new data from current_kv: [batch, seq_len, kv_num_heads * head_dim]
-        let current_seq_pos = seq_pos - constants.past_seq_len;
+        let current_seq_pos = seq_pos - past_seq_len;
         let current_idx = batch * (constants.seq_len * constants.kv_num_heads * constants.head_dim)
                         + current_seq_pos * (constants.kv_num_heads * constants.head_dim)
                         + kv_head * constants.head_dim

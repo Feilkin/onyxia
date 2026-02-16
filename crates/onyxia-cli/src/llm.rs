@@ -124,6 +124,12 @@ impl LlmSession {
             )
             .collect();
 
+        // Update dimensions for this sequence length
+        let mut dims = std::collections::HashMap::new();
+        dims.insert("sequence_length".to_string(), prompt_len);
+        dims.insert("total_sequence_length".to_string(), self.max_seq_len);
+        self.executor.update_dimensions(&dims)?;
+
         let outputs = self
             .executor
             .run_with_outputs(&inputs, &output_names)
@@ -219,6 +225,12 @@ impl LlmSession {
             )
             .collect();
 
+        // Update dimensions for decode (seq_len=1)
+        let mut dims = std::collections::HashMap::new();
+        dims.insert("sequence_length".to_string(), 1);
+        dims.insert("total_sequence_length".to_string(), self.max_seq_len);
+        self.executor.update_dimensions(&dims)?;
+
         let outputs = self
             .executor
             .run_with_outputs(&inputs, &output_names)
@@ -288,6 +300,8 @@ impl LlmSession {
 /// Create input tensors for prefill phase.
 fn create_prefill_inputs(input_ids: &[i64], _past_seq_len: usize) -> Vec<(&'static str, Tensor)> {
     let prompt_len = input_ids.len();
+    // total_sequence_length = prompt_len (no past tokens during prefill)
+    let total_seq_len = prompt_len;
 
     vec![
         (
@@ -301,6 +315,16 @@ fn create_prefill_inputs(input_ids: &[i64], _past_seq_len: usize) -> Vec<(&'stat
         (
             "position_ids",
             Tensor::from_vec((0..prompt_len as i64).collect::<Vec<_>>(), &[1, prompt_len]),
+        ),
+        (
+            // seqlens_k: (total_sequence_lengths - 1) per batch element
+            "seqlens_k",
+            Tensor::from_vec(vec![(total_seq_len as i32) - 1], &[1]),
+        ),
+        (
+            // total_sequence_length: scalar = max total seq len of the batch
+            "total_sequence_length",
+            Tensor::from_vec(vec![total_seq_len as i32], &[1]),
         ),
     ]
 }
@@ -320,6 +344,16 @@ fn create_decode_inputs(token_id: i64, past_seq_len: usize) -> Vec<(&'static str
         (
             "position_ids",
             Tensor::from_vec(vec![past_seq_len as i64], &[1, 1]),
+        ),
+        (
+            // seqlens_k: (total_sequence_lengths - 1) per batch element
+            "seqlens_k",
+            Tensor::from_vec(vec![(total_seq_len as i32) - 1], &[1]),
+        ),
+        (
+            // total_sequence_length: scalar = max total seq len of the batch
+            "total_sequence_length",
+            Tensor::from_vec(vec![total_seq_len as i32], &[1]),
         ),
     ]
 }

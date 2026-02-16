@@ -673,12 +673,11 @@ impl Operator for GroupQueryAttentionOp {
             &HashMap::from([("WORKGROUP_SIZE".to_string(), workgroup_size.to_string())]),
         )?;
 
-        let past_seq_len = 0; // TODO: Read from seqlens_k at runtime
-
+        // Immediates: batch_size, seq_len, max_seq_len, kv_num_heads, head_dim
+        // (past_seq_len is now read from seqlens_k buffer at runtime)
         let mut update_key_immediates = Vec::new();
         update_key_immediates.extend_from_slice(&(batch_size as u32).to_le_bytes());
         update_key_immediates.extend_from_slice(&(seq_len as u32).to_le_bytes());
-        update_key_immediates.extend_from_slice(&(past_seq_len as u32).to_le_bytes());
         update_key_immediates.extend_from_slice(&(max_seq_len as u32).to_le_bytes());
         update_key_immediates.extend_from_slice(&(kv_num_heads as u32).to_le_bytes());
         update_key_immediates.extend_from_slice(&(head_dim as u32).to_le_bytes());
@@ -698,6 +697,10 @@ impl Operator for GroupQueryAttentionOp {
                     buffer: ctx.output(1)?, // present_key
                     read_only: false,
                 },
+                BindingDesc {
+                    buffer: ctx.input(5)?, // seqlens_k
+                    read_only: true,
+                },
             ],
             workgroups: [(update_key_elements as u32).div_ceil(workgroup_size), 1, 1],
             immediates: Some(update_key_immediates),
@@ -707,10 +710,10 @@ impl Operator for GroupQueryAttentionOp {
         let update_value_elements = batch_size * (kv_num_heads as usize) * max_seq_len * head_dim;
         let update_value_shader = update_key_shader; // Reuse same shader
 
+        // Immediates: batch_size, seq_len, max_seq_len, kv_num_heads, head_dim
         let mut update_value_immediates = Vec::new();
         update_value_immediates.extend_from_slice(&(batch_size as u32).to_le_bytes());
         update_value_immediates.extend_from_slice(&(seq_len as u32).to_le_bytes());
-        update_value_immediates.extend_from_slice(&(past_seq_len as u32).to_le_bytes());
         update_value_immediates.extend_from_slice(&(max_seq_len as u32).to_le_bytes());
         update_value_immediates.extend_from_slice(&(kv_num_heads as u32).to_le_bytes());
         update_value_immediates.extend_from_slice(&(head_dim as u32).to_le_bytes());
@@ -730,6 +733,10 @@ impl Operator for GroupQueryAttentionOp {
                     buffer: ctx.output(2)?, // present_value
                     read_only: false,
                 },
+                BindingDesc {
+                    buffer: ctx.input(5)?, // seqlens_k
+                    read_only: true,
+                },
             ],
             workgroups: [
                 (update_value_elements as u32).div_ceil(workgroup_size),
@@ -743,7 +750,7 @@ impl Operator for GroupQueryAttentionOp {
 
         // Step 3: Compute attention scores (Q @ K^T * scale)
         let scores_elements = batch_size * (num_heads as usize) * seq_len * total_seq_len;
-        let scores_size = (scores_elements * std::mem::size_of::<f32>()) as u64;
+        let scores_size = (scores_elements * std::mem::size_of::<f32>()).max(4) as u64;
 
         // Allocate scratch buffer for attention scores
         let scores_buffer = ctx.alloc_scratch(scores_size, "gqa_scores".to_string());
@@ -792,20 +799,27 @@ impl Operator for GroupQueryAttentionOp {
             &HashMap::from([("WORKGROUP_SIZE".to_string(), workgroup_size.to_string())]),
         )?;
 
+        // Immediates: batch_size, seq_len, total_seq_len, num_heads, local_window_size
+        // (past_seq_len is now read from seqlens_k buffer at runtime)
         let mut softmax_immediates = Vec::new();
         softmax_immediates.extend_from_slice(&(batch_size as u32).to_le_bytes());
         softmax_immediates.extend_from_slice(&(seq_len as u32).to_le_bytes());
-        softmax_immediates.extend_from_slice(&(past_seq_len as u32).to_le_bytes());
         softmax_immediates.extend_from_slice(&(total_seq_len as u32).to_le_bytes());
         softmax_immediates.extend_from_slice(&(num_heads as u32).to_le_bytes());
         softmax_immediates.extend_from_slice(&(local_window_size as i32).to_le_bytes());
 
         let softmax_step = Step::Dispatch {
             shader_index: softmax_shader,
-            bindings: vec![BindingDesc {
-                buffer: scores_buffer,
-                read_only: false,
-            }],
+            bindings: vec![
+                BindingDesc {
+                    buffer: scores_buffer,
+                    read_only: false,
+                },
+                BindingDesc {
+                    buffer: ctx.input(5)?, // seqlens_k
+                    read_only: true,
+                },
+            ],
             workgroups: [(softmax_rows as u32).div_ceil(workgroup_size), 1, 1],
             immediates: Some(softmax_immediates),
         };
