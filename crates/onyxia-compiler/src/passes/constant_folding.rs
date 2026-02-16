@@ -44,6 +44,10 @@ impl ConstantFoldingPass {
         // Build fold context
         let ctx = FoldCtx::new(&node, graph);
 
+        if !ctx.all_inputs_have_values() {
+            return Ok(false);
+        }
+
         // Call operator's constant folding
         let folded_outputs = operator.try_fold(&ctx).map_err(|e| {
             Error::ConstantFolding(format!("Failed to fold node (op_type: {}): {}", op_type, e))
