@@ -9,8 +9,9 @@ use std::collections::HashMap;
 /// Constant tensor operator.
 ///
 /// Constant nodes produce a tensor with fixed data that is known at plan time.
-/// The data is already in the tensor's initializer, which the runtime uploads
-/// during buffer allocation. Therefore, this operator emits zero GPU steps.
+/// The constant data is serialized into `TensorMetadata::initial_data` during
+/// compilation, and the runtime uploads it to the GPU buffer during
+/// `allocate_tensor_buffers()`. Therefore, this operator emits zero GPU steps.
 pub struct ConstantOp;
 
 impl Operator for ConstantOp {
@@ -35,8 +36,8 @@ impl Operator for ConstantOp {
     }
 
     fn plan(&self, _ctx: &mut PlanCtx) -> Result<Vec<Step>> {
-        // No-op: constant data is in TensorInfo.initializer,
-        // which the runtime uploads during buffer allocation.
+        // No-op: constant data is carried to the runtime via
+        // TensorMetadata::initial_data and uploaded during buffer allocation.
         Ok(vec![])
     }
 }

@@ -231,10 +231,17 @@ pub struct TensorMetadata {
 
     /// Size in bytes.
     pub size_bytes: usize,
+
+    /// Initial data to upload when allocating the GPU buffer.
+    ///
+    /// Present for weight/initializer tensors whose data is known at compile
+    /// time. The runtime writes these bytes into the GPU buffer immediately
+    /// after allocation. `None` for runtime inputs and intermediate tensors.
+    pub initial_data: Option<Vec<u8>>,
 }
 
 impl TensorMetadata {
-    /// Create new tensor metadata.
+    /// Create new tensor metadata with no initial data.
     pub fn new(name: String, dtype: DataType, shape: TensorShape) -> Self {
         let size_bytes = if let Some(dims) = shape.as_static() {
             let numel: usize = dims.iter().product();
@@ -248,7 +255,24 @@ impl TensorMetadata {
             dtype,
             shape,
             size_bytes,
+            initial_data: None,
         }
+    }
+
+    /// Create tensor metadata with initial data for GPU upload.
+    ///
+    /// Used for weight and constant tensors whose values are known at compile
+    /// time. The runtime will call `queue.write_buffer()` with these bytes
+    /// during buffer allocation.
+    pub fn with_initial_data(
+        name: String,
+        dtype: DataType,
+        shape: TensorShape,
+        data: Vec<u8>,
+    ) -> Self {
+        let mut meta = Self::new(name, dtype, shape);
+        meta.initial_data = Some(data);
+        meta
     }
 }
 

@@ -217,14 +217,37 @@ impl CompilerPipeline {
             });
         }
 
-        // Build tensor registry
+        // Build tensor registry, preserving weight data for GPU upload
         let mut tensor_registry = TensorRegistry::new();
+        let input_set: std::collections::HashSet<_> = graph.inputs.iter().copied().collect();
+
         for i in 0..graph.tensor_count() {
             let tensor_id = onyxia_core::IrTensorId::new(i);
             let tensor = graph.tensor(tensor_id)?;
 
-            let metadata =
-                TensorMetadata::new(tensor.name.clone(), tensor.dtype, tensor.shape.clone());
+            // Carry weight/constant data through to the runtime so it can
+            // be uploaded to the GPU buffer during allocation. Skip graph
+            // inputs — those arrive at inference time from the user.
+            let initial_data = if input_set.contains(&tensor_id) {
+                None
+            } else {
+                match &tensor.data {
+                    onyxia_core::EdgeData::Constant(value) => Some(value.to_bytes()),
+                    onyxia_core::EdgeData::Initializer(bytes) => Some(bytes.clone()),
+                    onyxia_core::EdgeData::Runtime => None,
+                }
+            };
+
+            let metadata = if let Some(data) = initial_data {
+                TensorMetadata::with_initial_data(
+                    tensor.name.clone(),
+                    tensor.dtype,
+                    tensor.shape.clone(),
+                    data,
+                )
+            } else {
+                TensorMetadata::new(tensor.name.clone(), tensor.dtype, tensor.shape.clone())
+            };
             tensor_registry.add(metadata);
         }
 

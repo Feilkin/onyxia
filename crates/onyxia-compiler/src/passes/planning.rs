@@ -5,7 +5,7 @@
 
 use onyxia_core::plan::TensorMetadata;
 use onyxia_core::{
-    CompiledModel, CompiledShader, Error, IrGraph, IrNode, IrTensorId, ModelMetadata,
+    CompiledModel, CompiledShader, EdgeData, Error, IrGraph, IrNode, IrTensorId, ModelMetadata,
     OperatorRegistry, Pass, PlanCtx, PlannedOp, Result, Stage, TensorRegistry,
 };
 use std::collections::HashMap;
@@ -78,15 +78,39 @@ impl PlanningPass {
     }
 
     /// Build the tensor registry from the graph.
+    ///
+    /// Preserves weight/constant data as `initial_data` on `TensorMetadata`
+    /// so the runtime can upload it to GPU buffers during allocation.
     fn build_tensor_registry(&self, graph: &IrGraph) -> Result<TensorRegistry> {
         let mut registry = TensorRegistry::new();
+        let input_set: std::collections::HashSet<_> = graph.inputs.iter().copied().collect();
 
         for i in 0..graph.tensor_count() {
             let tensor_id = IrTensorId::new(i);
             let tensor = graph.tensor(tensor_id)?;
 
-            let metadata =
-                TensorMetadata::new(tensor.name.clone(), tensor.dtype, tensor.shape.clone());
+            // Carry weight/constant data through to the runtime.
+            // Skip graph inputs — those arrive from the user at inference time.
+            let initial_data = if input_set.contains(&tensor_id) {
+                None
+            } else {
+                match &tensor.data {
+                    EdgeData::Constant(value) => Some(value.to_bytes()),
+                    EdgeData::Initializer(bytes) => Some(bytes.clone()),
+                    EdgeData::Runtime => None,
+                }
+            };
+
+            let metadata = if let Some(data) = initial_data {
+                TensorMetadata::with_initial_data(
+                    tensor.name.clone(),
+                    tensor.dtype,
+                    tensor.shape.clone(),
+                    data,
+                )
+            } else {
+                TensorMetadata::new(tensor.name.clone(), tensor.dtype, tensor.shape.clone())
+            };
             registry.add(metadata);
         }
 

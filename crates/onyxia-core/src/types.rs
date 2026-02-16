@@ -419,6 +419,26 @@ impl TensorValue {
 
         Ok(TensorValue::new(data, shape.to_vec(), dtype))
     }
+
+    /// Serialize this tensor value to raw little-endian bytes.
+    ///
+    /// This is the inverse of [`from_bytes`](Self::from_bytes). The output is
+    /// suitable for direct upload to a GPU buffer via `queue.write_buffer()`.
+    ///
+    /// Bool values are serialized as `u32` (4 bytes each) to match GPU
+    /// alignment requirements (same convention as `from_bytes`).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        match &self.data {
+            TensorData::F32(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            TensorData::I32(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            TensorData::I64(v) => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+            TensorData::U8(v) => v.clone(),
+            TensorData::Bool(v) => v
+                .iter()
+                .flat_map(|&b| (b as u32).to_le_bytes())
+                .collect(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -435,6 +455,47 @@ mod tests {
         let f32_val = i32_val.cast(DataType::F32).unwrap();
         assert_eq!(f32_val.as_f32(), Some(&[1.0, 2.0, 3.0][..]));
         assert_eq!(f32_val.shape, vec![3]);
+    }
+
+    #[test]
+    fn test_tensor_value_to_bytes_roundtrip() {
+        // F32 roundtrip
+        let original = TensorValue::new(
+            TensorData::F32(vec![1.0, 2.5, -3.0]),
+            vec![3],
+            DataType::F32,
+        );
+        let bytes = original.to_bytes();
+        let restored = TensorValue::from_bytes(&bytes, DataType::F32, &[3]).unwrap();
+        assert_eq!(restored.as_f32(), original.as_f32());
+
+        // I32 roundtrip
+        let original =
+            TensorValue::new(TensorData::I32(vec![10, -20, 30]), vec![3], DataType::I32);
+        let bytes = original.to_bytes();
+        let restored = TensorValue::from_bytes(&bytes, DataType::I32, &[3]).unwrap();
+        assert_eq!(restored.as_i32(), original.as_i32());
+
+        // I64 roundtrip
+        let original = TensorValue::new(TensorData::I64(vec![100, -200]), vec![2], DataType::I64);
+        let bytes = original.to_bytes();
+        let restored = TensorValue::from_bytes(&bytes, DataType::I64, &[2]).unwrap();
+        assert_eq!(restored.as_i64(), original.as_i64());
+
+        // U8 roundtrip
+        let original = TensorValue::new(TensorData::U8(vec![1, 2, 255]), vec![3], DataType::U8);
+        let bytes = original.to_bytes();
+        assert_eq!(bytes, vec![1, 2, 255]);
+
+        // Bool roundtrip
+        let original = TensorValue::new(
+            TensorData::Bool(vec![true, false, true]),
+            vec![3],
+            DataType::Bool,
+        );
+        let bytes = original.to_bytes();
+        let restored = TensorValue::from_bytes(&bytes, DataType::Bool, &[3]).unwrap();
+        assert_eq!(restored.as_bool(), original.as_bool());
     }
 
     #[test]

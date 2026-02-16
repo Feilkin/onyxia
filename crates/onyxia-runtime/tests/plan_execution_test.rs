@@ -169,17 +169,18 @@ async fn test_initializer_upload() {
     let mut tensors = TensorRegistry::new();
 
     // Add a tensor with known initializer data: [1.0, 2.0, 3.0, 4.0]
-    let _initializer_data: Vec<u8> = vec![
+    let initializer_data: Vec<u8> = vec![
         0, 0, 128, 63, // 1.0f32 in little-endian
         0, 0, 0, 64, // 2.0f32
         0, 0, 64, 64, // 3.0f32
         0, 0, 128, 64, // 4.0f32
     ];
 
-    tensors.add(TensorMetadata::new(
+    tensors.add(TensorMetadata::with_initial_data(
         "weights".to_string(),
         DataType::F32,
         TensorShape::Static(vec![4]),
+        initializer_data,
     ));
 
     // Create empty plan (no operations, just the initializer tensor)

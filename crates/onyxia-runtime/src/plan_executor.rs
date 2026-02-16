@@ -269,6 +269,10 @@ impl PlanExecutor {
     }
 
     /// Allocate GPU buffers for all model tensors.
+    ///
+    /// If a tensor has `initial_data` (weight / constant known at compile
+    /// time), the data is uploaded to the GPU buffer immediately after
+    /// allocation via `queue.write_buffer()`.
     fn allocate_tensor_buffers(&mut self) -> Result<()> {
         for (id, info) in self.plan.tensors.all().iter().enumerate() {
             // All shapes are static at this point (resolved at plan time)
@@ -301,6 +305,11 @@ impl PlanExecutor {
                     | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             });
+
+            // Upload initial data (weights / constants) to the GPU buffer
+            if let Some(data) = &info.initial_data {
+                self.queue.write_buffer(&buffer, 0, data);
+            }
 
             self.tensor_buffers.insert(id, buffer);
         }
