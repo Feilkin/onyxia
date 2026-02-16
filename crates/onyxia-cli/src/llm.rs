@@ -14,9 +14,9 @@ pub struct LlmConfig {
 
 /// High-level LLM inference session with KV cache management.
 ///
-/// Wraps a `PlanExecutor` and manages KV cache aliasing, sequence length
-/// tracking, and the prefill/decode workflow. All LLM-specific logic lives
-/// here, keeping the runtime generic.
+/// Wraps a `PlanExecutor` and manages KV cache via explicit CPU-side storage.
+/// After each forward pass, present.* outputs are downloaded and stored,
+/// then uploaded as past_key_values.* inputs on the next call.
 pub struct LlmSession {
     executor: PlanExecutor,
     /// Current past sequence length (grows each decode step).
@@ -25,20 +25,52 @@ pub struct LlmSession {
     max_seq_len: usize,
     /// KV cache tensor name pairs: (present_output_name, past_input_name).
     kv_pairs: Vec<(String, String)>,
+    /// Stored KV cache tensors (downloaded from present.* after each forward pass).
+    /// Keyed by past_key_values.*.* name.
+    kv_cache: std::collections::HashMap<String, Tensor>,
 }
 
 impl LlmSession {
     /// Create from a loaded PlanExecutor + model config.
     ///
-    /// Discovers KV cache pairs by scanning tensor names in the execution plan.
+    /// Discovers KV cache pairs by scanning tensor names in the execution plan
+    /// and initializes them with zeros.
     pub fn new(executor: PlanExecutor, config: &LlmConfig) -> Self {
         let kv_pairs = discover_kv_pairs(&executor);
+
+        // Initialize KV cache with zeros
+        let mut kv_cache = std::collections::HashMap::new();
+        let plan = executor.plan();
+
+        for (_present_name, past_name) in &kv_pairs {
+            if let Some((_, tensor_info)) = plan.tensors.find_by_name(past_name) {
+                // Extract static shape
+                if let onyxia_core::TensorShape::Static(dims) = &tensor_info.shape {
+                    let size: usize = dims.iter().product();
+
+                    // Create zero-filled tensor matching the dtype
+                    let tensor = match tensor_info.dtype {
+                        onyxia_core::DataType::F32 => Tensor::from_vec(vec![0.0f32; size], dims),
+                        onyxia_core::DataType::F16 => {
+                            // F16 zeros as u16 values (0x0000 = 0.0 in half precision)
+                            Tensor::from_vec(vec![0u16; size], dims)
+                        }
+                        _ => {
+                            panic!("Unsupported KV cache dtype: {:?}", tensor_info.dtype);
+                        }
+                    };
+
+                    kv_cache.insert(past_name.clone(), tensor);
+                }
+            }
+        }
 
         Self {
             executor,
             past_seq_len: 0,
             max_seq_len: config.max_seq_len,
             kv_pairs,
+            kv_cache,
         }
     }
 
@@ -63,13 +95,38 @@ impl LlmSession {
             );
         }
 
-        // Create input tensors (non-borrowing)
-        let inputs = create_prefill_inputs(input_ids, 0);
+        // Create input tensors including KV caches
+        let base_inputs = create_prefill_inputs(input_ids, 0);
 
-        // Run only downloading the logits output
+        // Collect KV cache tensors (need owned strings for lifetime)
+        let kv_input_data: Vec<(String, Tensor)> = self
+            .kv_pairs
+            .iter()
+            .filter_map(|(_present_name, past_name)| {
+                self.kv_cache
+                    .get(past_name)
+                    .map(|t| (past_name.clone(), t.clone()))
+            })
+            .collect();
+
+        // Combine into one input slice
+        let mut inputs: Vec<(&str, Tensor)> = base_inputs;
+        for (name, tensor) in &kv_input_data {
+            inputs.push((name.as_str(), tensor.clone()));
+        }
+
+        // Run and download both logits and present.* outputs
+        let output_names: Vec<&str> = std::iter::once("logits")
+            .chain(
+                self.kv_pairs
+                    .iter()
+                    .map(|(present_name, _)| present_name.as_str()),
+            )
+            .collect();
+
         let outputs = self
             .executor
-            .run_with_outputs(&inputs, &["logits"])
+            .run_with_outputs(&inputs, &output_names)
             .with_context(|| {
                 format!(
                     "Prefill execution failed (prompt_len={}, inputs={:?})",
@@ -81,10 +138,12 @@ impl LlmSession {
                 )
             })?;
 
-        // Copy present.* → past_key_values.* for next decode step
-        self.executor
-            .copy_tensors(&self.kv_pairs)
-            .context("Failed to copy KV cache after prefill")?;
+        // Download and store present.* outputs as KV cache for next step
+        for (present_name, past_name) in &self.kv_pairs {
+            if let Some(tensor) = outputs.get(present_name) {
+                self.kv_cache.insert(past_name.clone(), tensor.clone());
+            }
+        }
 
         // Update sequence length
         self.past_seq_len = prompt_len;
@@ -131,13 +190,38 @@ impl LlmSession {
             );
         }
 
-        // Create input tensors (non-borrowing)
-        let inputs = create_decode_inputs(token_id, self.past_seq_len);
+        // Create input tensors including KV caches
+        let base_inputs = create_decode_inputs(token_id, self.past_seq_len);
 
-        // Run only downloading the logits output
+        // Collect KV cache tensors (need owned strings for lifetime)
+        let kv_input_data: Vec<(String, Tensor)> = self
+            .kv_pairs
+            .iter()
+            .filter_map(|(_present_name, past_name)| {
+                self.kv_cache
+                    .get(past_name)
+                    .map(|t| (past_name.clone(), t.clone()))
+            })
+            .collect();
+
+        // Combine into one input slice
+        let mut inputs: Vec<(&str, Tensor)> = base_inputs;
+        for (name, tensor) in &kv_input_data {
+            inputs.push((name.as_str(), tensor.clone()));
+        }
+
+        // Run and download both logits and present.* outputs
+        let output_names: Vec<&str> = std::iter::once("logits")
+            .chain(
+                self.kv_pairs
+                    .iter()
+                    .map(|(present_name, _)| present_name.as_str()),
+            )
+            .collect();
+
         let outputs = self
             .executor
-            .run_with_outputs(&inputs, &["logits"])
+            .run_with_outputs(&inputs, &output_names)
             .with_context(|| {
                 format!(
                     "Decode execution failed (token={}, past_seq_len={}, inputs={:?})",
@@ -150,10 +234,12 @@ impl LlmSession {
                 )
             })?;
 
-        // Copy present.* → past_key_values.* for next decode step
-        self.executor
-            .copy_tensors(&self.kv_pairs)
-            .context("Failed to copy KV cache after decode")?;
+        // Download and store present.* outputs as KV cache for next step
+        for (present_name, past_name) in &self.kv_pairs {
+            if let Some(tensor) = outputs.get(present_name) {
+                self.kv_cache.insert(past_name.clone(), tensor.clone());
+            }
+        }
 
         // Update sequence length
         self.past_seq_len += 1;
