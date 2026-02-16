@@ -6,7 +6,7 @@ use onyxia_onnx::load_and_parse_model;
 use std::collections::HashMap;
 
 #[test]
-#[ignore = "requires GPU"]
+#[ignore = "requires GPU and Gemma 3 270m ONNX model"]
 fn test_compile_gemma_model() {
     // Initialize tracing subscriber with timing
     let _ = tracing_subscriber::fmt()
@@ -46,7 +46,7 @@ fn test_compile_gemma_model() {
     };
 
     // Create operator registry with default operators
-    let registry = OperatorRegistry::new();
+    let registry = onyxia_operators::core_operator_registry();
 
     // Provide dynamic dimensions for the model
     // Note: Model contains expressions like "sequence_length * num_attention_heads"

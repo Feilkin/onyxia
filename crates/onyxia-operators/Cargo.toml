@@ -12,6 +12,6 @@ thiserror = "2.0.18"
 tracing = "0.1.44"
 
 [dev-dependencies]
-onyxia-compiler = { path = "../onyxia-compiler" }
-onyxia-runtime = { path = "../onyxia-runtime" }
+onyxia-compiler.workspace = true
+onyxia-runtime.workspace = true
 pollster = "0.4.0"

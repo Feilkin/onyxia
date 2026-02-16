@@ -1193,6 +1193,7 @@ dependencies = [
  "naga_oil",
  "onyxia-core",
  "onyxia-onnx",
+ "onyxia-operators",
  "petgraph",
  "thiserror",
  "tracing",

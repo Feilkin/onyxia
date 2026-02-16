@@ -9,8 +9,8 @@ license.workspace = true
 bytemuck = "1.25.0"
 futures = "0.3.31"
 naga = "28"
-onyxia-core = { version = "0.1.0", path = "../onyxia-core" }
-onyxia-onnx = { version = "0.1.0", path = "../onyxia-onnx" }
+onyxia-core.workspace = true
+onyxia-onnx.workspace = true
 pollster = { version = "0.4.0", features = ["macro"] }
 thiserror = "2.0.18"
 wgpu = { version = "28", features = ["naga-ir"] }
