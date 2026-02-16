@@ -351,6 +351,24 @@ impl IrGraph {
     pub fn node_name(&self, node_id: IrNodeId) -> Result<&str> {
         Ok(&self.node(node_id)?.name)
     }
+
+    /// Find a tensor by its name.
+    ///
+    /// Searches through all edges in the graph and returns the first edge
+    /// with a matching name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no tensor with the given name exists.
+    pub fn find_tensor_by_name(&self, name: &str) -> Result<IrEdgeId> {
+        for (i, edge) in self.edges.iter().enumerate() {
+            if edge.name == name {
+                return Ok(IrEdgeId::new(i));
+            }
+        }
+
+        Err(Error::InvalidGraph(format!("Tensor '{}' not found", name)))
+    }
 }
 
 impl Default for IrGraph {

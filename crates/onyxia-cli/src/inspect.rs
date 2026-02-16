@@ -419,3 +419,122 @@ fn display_node_with_shapes(graph: &IrGraph, node_id: IrNodeId) -> Result<()> {
 
     Ok(())
 }
+
+/// Inspect tensor(s) by name.
+pub fn inspect_tensor(
+    model: &Graph,
+    names: &[String],
+    list_constants: bool,
+    full_values: bool,
+) -> Result<()> {
+    let ir_graph = IrGraph::from_onnx(model)?;
+
+    if list_constants {
+        list_constant_tensors(&ir_graph)?;
+    } else {
+        for name in names {
+            display_tensor(&ir_graph, name, full_values)?;
+            println!();
+        }
+    }
+
+    Ok(())
+}
+
+fn display_tensor(graph: &IrGraph, name: &str, full_values: bool) -> Result<()> {
+    let tensor_id = graph
+        .find_tensor_by_name(name)
+        .with_context(|| format!("Tensor '{}' not found", name))?;
+
+    let tensor = graph.tensor(tensor_id)?;
+
+    println!("Tensor: {}", tensor.name);
+    println!("  Type: {:?}", tensor.dtype);
+    println!("  Shape: {:?}", tensor.shape);
+
+    // Determine tensor kind
+    let kind = match &tensor.data {
+        onyxia_core::EdgeData::Runtime => "Runtime tensor",
+        onyxia_core::EdgeData::Initializer(_) => "Constant initializer",
+        onyxia_core::EdgeData::Constant(_) => "Folded constant",
+    };
+    println!("  Kind: {}", kind);
+
+    // Show value if it's a constant or initializer
+    match &tensor.data {
+        onyxia_core::EdgeData::Initializer(init_data) => {
+            let total_bytes = init_data.len();
+            let total_mb = total_bytes as f64 / (1024.0 * 1024.0);
+
+            if total_mb > 1.0 {
+                println!("  Size: {:.2} MB", total_mb);
+            }
+
+            println!();
+
+            // Parse and display value
+            if let Ok(value) = parse_initializer(tensor.dtype, &tensor.shape, init_data) {
+                display_tensor_value(&value, full_values);
+            } else {
+                println!("  Value: (unable to parse)");
+            }
+        }
+        onyxia_core::EdgeData::Constant(value) => {
+            println!();
+            display_tensor_value(value, full_values);
+        }
+        onyxia_core::EdgeData::Runtime => {
+            // No value to show for runtime tensors
+        }
+    }
+
+    // Show consumers
+    let consumers = graph.tensor_consumers(tensor_id);
+    if !consumers.is_empty() {
+        println!();
+        println!("  Consumers:");
+        for consumer_id in consumers {
+            let consumer_name = graph.node_name(consumer_id)?;
+            let node = graph.node(consumer_id)?;
+
+            // Find which input index this tensor is
+            for (i, &input_id) in node.inputs.iter().enumerate() {
+                if input_id == tensor_id {
+                    println!("    {} (input {})", consumer_name, i);
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn list_constant_tensors(graph: &IrGraph) -> Result<()> {
+    let mut constants = Vec::new();
+
+    // Iterate through all edges
+    for i in 0..graph.edge_count() {
+        let tensor_id = onyxia_core::IrEdgeId::new(i);
+        let tensor = graph.tensor(tensor_id)?;
+
+        // Check if it's an initializer or constant
+        match &tensor.data {
+            onyxia_core::EdgeData::Initializer(_) | onyxia_core::EdgeData::Constant(_) => {
+                constants.push((tensor.name.clone(), tensor.dtype, tensor.shape.clone()));
+            }
+            onyxia_core::EdgeData::Runtime => {
+                // Skip runtime tensors
+            }
+        }
+    }
+
+    println!("Found {} constant tensors:", constants.len());
+    println!();
+
+    for (name, dtype, shape) in constants {
+        println!("  {} : {:?} {:?}", name, dtype, shape);
+    }
+
+    Ok(())
+}

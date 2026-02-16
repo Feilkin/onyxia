@@ -138,6 +138,24 @@ enum Commands {
         #[arg(long = "dynamic-dim", value_parser = parse_dynamic_dim)]
         dynamic_dims: Vec<(String, usize)>,
     },
+    /// Inspect tensor(s) by name
+    InspectTensor {
+        /// Path to the ONNX model file
+        #[arg(value_name = "MODEL")]
+        model: PathBuf,
+
+        /// Tensor name(s) to inspect
+        #[arg(long = "name")]
+        names: Vec<String>,
+
+        /// List all constant tensors
+        #[arg(long)]
+        list_constants: bool,
+
+        /// Show full tensor values
+        #[arg(long)]
+        full: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -210,6 +228,14 @@ fn main() -> Result<()> {
                 summary,
                 dynamic_dims,
             )?;
+        }
+        Commands::InspectTensor {
+            model,
+            names,
+            list_constants,
+            full,
+        } => {
+            cmd_inspect_tensor(model, names, list_constants, full)?;
         }
     }
 
@@ -756,4 +782,23 @@ fn parse_dynamic_dim(arg: &str) -> Result<(String, usize)> {
     })?;
 
     Ok((name, value))
+}
+
+/// Inspect tensor(s) in an ONNX model.
+fn cmd_inspect_tensor(
+    model_path: PathBuf,
+    names: Vec<String>,
+    list_constants: bool,
+    full: bool,
+) -> Result<()> {
+    // Load and parse the ONNX model
+    let model = onyxia_onnx::load_and_parse_model(&model_path).with_context(|| {
+        format!(
+            "Failed to load and parse model from {}",
+            model_path.display()
+        )
+    })?;
+
+    // Inspect the tensors
+    onyxia_cli::inspect::inspect_tensor(&model, &names, list_constants, full)
 }
