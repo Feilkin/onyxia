@@ -59,7 +59,7 @@ fn make_gather_graph() -> Graph {
 
 /// End-to-end test: Gather operation with small embedding table.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_gather_e2e() {
     let graph = make_gather_graph();
     graph.validate().expect("Graph validation should succeed");
@@ -122,7 +122,7 @@ async fn test_gather_e2e() {
 /// - Token indices [2, 3] (batch × seq)
 /// - Output embeddings [2, 3, 4] (batch × seq × hidden_dim)
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_gather_embedding_e2e() {
     let mut graph = Graph::new();
 
@@ -243,7 +243,7 @@ fn i64_bytes(values: &[i64]) -> Vec<u8> {
 
 /// End-to-end test: Slice operation with basic single-axis slicing.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_slice_basic_e2e() {
     let mut graph = Graph::new();
 
@@ -339,7 +339,7 @@ async fn test_slice_basic_e2e() {
 
 /// End-to-end test: Slice operation with multi-axis slicing.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_slice_multiaxis_e2e() {
     let mut graph = Graph::new();
 
@@ -447,7 +447,7 @@ async fn test_slice_multiaxis_e2e() {
 
 /// End-to-end test: Slice with negative indices.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_slice_negative_indices_e2e() {
     let mut graph = Graph::new();
 
@@ -543,7 +543,7 @@ async fn test_slice_negative_indices_e2e() {
 
 /// End-to-end test: Slice with steps > 1 (strided slicing).
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_slice_strided_e2e() {
     let mut graph = Graph::new();
 
@@ -663,7 +663,7 @@ async fn test_slice_strided_e2e() {
 
 /// End-to-end test: Slice with negative steps (reverse slicing).
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_slice_reverse_e2e() {
     let mut graph = Graph::new();
 
@@ -825,7 +825,7 @@ fn make_trilu_graph(upper: i64) -> Graph {
 
 /// End-to-end test: Trilu operation - upper triangle.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_trilu_upper_triangle_e2e() {
     let graph = make_trilu_graph(1);
     graph.validate().expect("Graph validation should succeed");
@@ -893,7 +893,7 @@ async fn test_trilu_upper_triangle_e2e() {
 
 /// End-to-end test: Trilu operation - lower triangle.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_trilu_lower_triangle_e2e() {
     let graph = make_trilu_graph(0);
     graph.validate().expect("Graph validation should succeed");
@@ -1003,7 +1003,7 @@ fn make_trilu_batched_graph(upper: i64) -> Graph {
 
 /// End-to-end test: Trilu operation with batched input (3D tensor).
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_trilu_batched_e2e() {
     let graph = make_trilu_batched_graph(1);
     graph.validate().expect("Graph validation should succeed");
@@ -1120,7 +1120,7 @@ fn make_trilu_nonsquare_graph(upper: i64) -> Graph {
 
 /// End-to-end test: Trilu operation with non-square matrix.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_trilu_nonsquare_e2e() {
     let graph = make_trilu_nonsquare_graph(1);
     graph.validate().expect("Graph validation should succeed");
@@ -1259,7 +1259,7 @@ fn make_scatternd_graph(reduction: &str) -> Graph {
 
 /// End-to-end test: ScatterND operation with reduction="none".
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_scatternd_none_e2e() {
     let graph = make_scatternd_graph("none");
     graph.validate().expect("Graph validation should succeed");
@@ -1333,7 +1333,7 @@ async fn test_scatternd_none_e2e() {
 
 /// End-to-end test: ScatterND operation with reduction="add".
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_scatternd_add_e2e() {
     let graph = make_scatternd_graph("add");
     graph.validate().expect("Graph validation should succeed");
@@ -1473,7 +1473,7 @@ fn make_scatternd_1d_graph() -> Graph {
 
 /// End-to-end test: ScatterND operation with 1D data.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_scatternd_1d_e2e() {
     let graph = make_scatternd_1d_graph();
     graph.validate().expect("Graph validation should succeed");

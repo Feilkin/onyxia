@@ -894,7 +894,7 @@ mod tests {
         use onyxia_onnx::{DataType, TensorInfo, TensorKind};
 
         #[pollster::test]
-        #[ignore] // Requires GPU
+        #[ignore(reason="requires GPU")]
         async fn test_plan_executor_empty_plan() {
             let runtime = crate::Runtime::new().await.unwrap();
 
@@ -920,7 +920,7 @@ mod tests {
         }
 
         #[pollster::test]
-        #[ignore] // Requires GPU
+        #[ignore(reason="requires GPU")]
         async fn test_copy_tensors() {
             let runtime = crate::Runtime::new().await.unwrap();
 
@@ -1016,7 +1016,7 @@ mod tests {
         }
 
         #[pollster::test]
-        #[ignore] // Requires GPU
+        #[ignore(reason="requires GPU")]
         async fn test_update_dimensions() {
             use onyxia_core::symbolic_expr::{SymbolicExpr, parse_expr};
 
@@ -1128,7 +1128,7 @@ mod tests {
         }
 
         #[pollster::test]
-        #[ignore] // Requires GPU
+        #[ignore(reason="requires GPU")]
         async fn test_update_dimensions_expression() {
             use onyxia_core::symbolic_expr::parse_expr;
 
@@ -1218,7 +1218,7 @@ mod tests {
         }
 
         #[pollster::test]
-        #[ignore] // Requires GPU
+        #[ignore(reason="requires GPU")]
         async fn test_run_with_outputs_subset() {
             let runtime = crate::Runtime::new().await.unwrap();
 

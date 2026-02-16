@@ -54,7 +54,7 @@ fn make_reducesum_graph() -> Graph {
 
 /// End-to-end test: Sum reduction on GPU.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_reducesum_e2e() {
     let graph = make_reducesum_graph();
     graph.validate().expect("Graph validation should succeed");
@@ -140,7 +140,7 @@ fn make_reducemean_graph() -> Graph {
 
 /// End-to-end test: Mean reduction on GPU.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_reducemean_e2e() {
     let graph = make_reducemean_graph();
     graph.validate().expect("Graph validation should succeed");
@@ -227,7 +227,7 @@ fn make_reducemean_2d_graph() -> Graph {
 
 /// End-to-end test: Mean reduction along axis 1 on 2D tensor.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_reducemean_2d_e2e() {
     let graph = make_reducemean_2d_graph();
     graph.validate().expect("Graph validation should succeed");

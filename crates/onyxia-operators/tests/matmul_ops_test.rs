@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 /// End-to-end test: Matrix multiplication on GPU and verify correct output.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_matmul_e2e() {
     let mut graph = Graph::new();
 
@@ -178,7 +178,7 @@ fn pack_q4_values(values: &[u8]) -> Vec<u32> {
 
 /// End-to-end test: MatMulNBits with Q4 quantization on GPU.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_matmul_q4_e2e() {
     let graph = make_matmul_nbits_graph();
     graph.validate().expect("Graph validation should succeed");

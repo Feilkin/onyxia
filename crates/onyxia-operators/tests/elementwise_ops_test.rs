@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 /// End-to-end test: Add two vectors on GPU and verify correct output.
 #[pollster::test]
-#[ignore] // Requires GPU - ignore in CI or environments without GPU
+#[ignore = "requires GPU"]
 async fn test_add_e2e() {
     // Build graph
     let graph = make_binary_elementwise_graph("Add", "add_node", DataType::F32, &[4]);
@@ -67,7 +67,7 @@ async fn test_add_e2e() {
 
 /// End-to-end test: Subtract two vectors on GPU and verify correct output.
 #[pollster::test]
-#[ignore] // Requires GPU - ignore in CI or environments without GPU
+#[ignore = "requires GPU"]
 async fn test_sub_e2e() {
     // Build graph
     let graph = make_binary_elementwise_graph("Sub", "sub_node", DataType::F32, &[4]);
@@ -113,7 +113,7 @@ async fn test_sub_e2e() {
 
 /// End-to-end test: Multiply two vectors on GPU and verify correct output.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_mul_e2e() {
     // Build graph
     let graph = make_binary_elementwise_graph("Mul", "mul_node", DataType::F32, &[4]);
@@ -154,7 +154,7 @@ async fn test_mul_e2e() {
 
 /// End-to-end test: Divide two vectors on GPU and verify correct output.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_div_e2e() {
     // Build graph
     let graph = make_binary_elementwise_graph("Div", "div_node", DataType::F32, &[4]);
@@ -199,7 +199,7 @@ async fn test_div_e2e() {
 
 /// End-to-end test: Division by one (identity operation).
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_div_by_one_e2e() {
     // Build graph
     let graph = make_binary_elementwise_graph("Div", "div_by_one_node", DataType::F32, &[4]);
@@ -244,7 +244,7 @@ async fn test_div_by_one_e2e() {
 
 /// End-to-end test: Division with broadcasting (tensor / scalar).
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_div_broadcast_scalar_e2e() {
     // Create graph with broadcast: [4] / [1] -> [4]
     let mut graph = onyxia_onnx::Graph::new();
@@ -334,7 +334,7 @@ async fn test_div_broadcast_scalar_e2e() {
 
 /// End-to-end test: Division by zero produces infinity.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_div_by_zero_e2e() {
     // Build graph
     let graph = make_binary_elementwise_graph("Div", "div_by_zero_node", DataType::F32, &[4]);
@@ -390,7 +390,7 @@ async fn test_div_by_zero_e2e() {
 
 /// End-to-end test: Equal comparison on GPU and verify correct output.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_equal_e2e() {
     // Build graph with Bool output type for Equal operator
     let mut graph = onyxia_onnx::Graph::new();
@@ -481,7 +481,7 @@ async fn test_equal_e2e() {
 
 /// End-to-end test: Equal with broadcasting (scalar vs tensor).
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_equal_broadcast_e2e() {
     // Build graph with broadcasting: scalar == vector
     let mut graph = onyxia_onnx::Graph::new();
@@ -567,7 +567,7 @@ async fn test_equal_broadcast_e2e() {
 
 /// End-to-end test: Greater comparison on GPU and verify correct output.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_greater_e2e() {
     // Build graph with Bool output type for Greater operator
     let mut graph = onyxia_onnx::Graph::new();
@@ -661,7 +661,7 @@ async fn test_greater_e2e() {
 
 /// End-to-end test: Greater with broadcasting (scalar vs tensor).
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_greater_broadcast_e2e() {
     // Build graph with broadcasting: scalar > vector
     let mut graph = onyxia_onnx::Graph::new();
@@ -748,7 +748,7 @@ async fn test_greater_broadcast_e2e() {
 
 /// End-to-end test: Where operator for conditional element selection.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_where_basic_e2e() {
     // Build graph for Where operator: output = condition ? x : y
     let mut graph = onyxia_onnx::Graph::new();
@@ -851,7 +851,7 @@ async fn test_where_basic_e2e() {
 
 /// End-to-end test: Where operator with all-true condition.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_where_all_true_e2e() {
     let mut graph = onyxia_onnx::Graph::new();
 
@@ -942,7 +942,7 @@ async fn test_where_all_true_e2e() {
 
 /// End-to-end test: Where operator with all-false condition.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_where_all_false_e2e() {
     let mut graph = onyxia_onnx::Graph::new();
 
@@ -1033,7 +1033,7 @@ async fn test_where_all_false_e2e() {
 
 /// End-to-end test: Where operator with scalar condition broadcast.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_where_scalar_condition_e2e() {
     let mut graph = onyxia_onnx::Graph::new();
 
@@ -1125,7 +1125,7 @@ async fn test_where_scalar_condition_e2e() {
 
 /// End-to-end test: Pow operation with basic powers.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_pow_basic_e2e() {
     // Build graph
     let graph = make_binary_elementwise_graph("Pow", "pow_node", DataType::F32, &[4]);
@@ -1176,7 +1176,7 @@ async fn test_pow_basic_e2e() {
 
 /// End-to-end test: Pow with exponent of zero (x^0 = 1).
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_pow_zero_exponent_e2e() {
     let graph = make_binary_elementwise_graph("Pow", "pow_node", DataType::F32, &[4]);
     graph.validate().expect("Graph validation should succeed");
@@ -1222,7 +1222,7 @@ async fn test_pow_zero_exponent_e2e() {
 
 /// End-to-end test: Pow with exponent of one (x^1 = x).
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_pow_one_exponent_e2e() {
     let graph = make_binary_elementwise_graph("Pow", "pow_node", DataType::F32, &[4]);
     graph.validate().expect("Graph validation should succeed");
@@ -1270,7 +1270,7 @@ async fn test_pow_one_exponent_e2e() {
 
 /// End-to-end test: Pow with fractional exponents (square root).
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_pow_fractional_exponent_e2e() {
     let graph = make_binary_elementwise_graph("Pow", "pow_node", DataType::F32, &[4]);
     graph.validate().expect("Graph validation should succeed");
@@ -1319,7 +1319,7 @@ async fn test_pow_fractional_exponent_e2e() {
 
 /// End-to-end test: Pow with scalar broadcasting.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_pow_broadcast_scalar_e2e() {
     // Create graph with broadcasting: [1] ^ [4]
     let mut graph = onyxia_onnx::Graph::new();
@@ -1409,7 +1409,7 @@ async fn test_pow_broadcast_scalar_e2e() {
 
 /// End-to-end test: Max of two vectors on GPU and verify correct output.
 #[pollster::test]
-#[ignore] // Requires GPU - ignore in CI or environments without GPU
+#[ignore = "requires GPU"]
 async fn test_max_basic_e2e() {
     // Build graph
     let graph = make_binary_elementwise_graph("Max", "max_node", DataType::F32, &[4]);
@@ -1463,7 +1463,7 @@ async fn test_max_basic_e2e() {
 
 /// End-to-end test: Max with broadcasting (scalar broadcasted to tensor).
 #[pollster::test]
-#[ignore] // Requires GPU - ignore in CI or environments without GPU
+#[ignore = "requires GPU"]
 async fn test_max_broadcast_e2e() {
     // Build graph with different shapes
     let mut graph = Graph::new();
@@ -1546,7 +1546,7 @@ async fn test_max_broadcast_e2e() {
 
 /// End-to-end test: Max with negative values and edge cases.
 #[pollster::test]
-#[ignore] // Requires GPU - ignore in CI or environments without GPU
+#[ignore = "requires GPU"]
 async fn test_max_negative_e2e() {
     // Build graph
     let graph = make_binary_elementwise_graph("Max", "max_negative", DataType::F32, &[4]);
@@ -1591,7 +1591,7 @@ async fn test_max_negative_e2e() {
 
 /// End-to-end test: Max with three inputs (tests chaining).
 #[pollster::test]
-#[ignore] // Requires GPU - ignore in CI or environments without GPU
+#[ignore = "requires GPU"]
 async fn test_max_three_inputs_e2e() {
     // Build graph with three inputs
     let mut graph = Graph::new();

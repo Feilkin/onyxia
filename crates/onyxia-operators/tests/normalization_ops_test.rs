@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 /// End-to-end test: RMS Normalization on GPU and verify correct output.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_rmsnorm_e2e() {
     let mut graph = Graph::new();
 

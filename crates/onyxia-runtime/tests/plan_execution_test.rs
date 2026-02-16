@@ -23,7 +23,7 @@ use std::collections::HashMap;
 
 /// Test that empty plan can be loaded without crashing.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_empty_plan() {
     use onyxia_core::{CompiledModel, ModelMetadata, TensorRegistry};
 
@@ -63,7 +63,7 @@ async fn test_empty_plan() {
 /// Graph: d = (a + b) + c
 /// This tests that multiple operations execute in sequence correctly.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_multiple_operations() {
     let mut graph = Graph::new();
 
@@ -161,7 +161,7 @@ async fn test_multiple_operations() {
 /// This test creates a minimal plan with an initializer tensor and verifies
 /// that plan loading succeeds (initializers are uploaded during plan loading).
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_initializer_upload() {
     use onyxia_core::{CompiledModel, ModelMetadata, TensorRegistry};
 
@@ -220,7 +220,7 @@ async fn test_initializer_upload() {
 /// Graph: output = input + bias
 /// Where bias is a constant tensor uploaded as initializer data.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_add_with_bias_e2e() {
     let mut graph = Graph::new();
 
@@ -313,7 +313,7 @@ async fn test_add_with_bias_e2e() {
 /// This is a stress test to verify that large-scale initializer upload works correctly.
 /// The Gemma Q4 model has approximately 450 weight tensors totaling ~250MB of data.
 #[pollster::test]
-#[ignore] // Requires GPU and Gemma model files
+#[ignore = "requires GPU"]
 async fn test_gemma_initializers_load() {
     use std::path::PathBuf;
 

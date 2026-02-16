@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 /// End-to-end test: Reshape a tensor and verify data is preserved.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_reshape_e2e() {
     let mut graph = Graph::new();
 
@@ -130,7 +130,7 @@ fn make_transpose_graph() -> Graph {
 
 /// End-to-end test: Transpose a 2D matrix on GPU.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_transpose_2d_e2e() {
     let graph = make_transpose_graph();
     graph.validate().expect("Graph validation should succeed");
@@ -228,7 +228,7 @@ fn make_concat_graph() -> Graph {
 
 /// End-to-end test: Concatenate two vectors on GPU.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_concat_e2e() {
     let graph = make_concat_graph();
     graph.validate().expect("Graph validation should succeed");
@@ -327,7 +327,7 @@ fn make_expand_graph(
 
 /// End-to-end test: Expand single dimension [3, 1] to [3, 5].
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_expand_single_dimension_e2e() {
     // Test: expand [3, 1] to [3, 5]
     // Input: [[1], [2], [3]]
@@ -377,7 +377,7 @@ async fn test_expand_single_dimension_e2e() {
 
 /// End-to-end test: Expand with new leading dimensions [3, 4] to [2, 3, 4].
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_expand_new_dimensions_e2e() {
     // Test: expand [3, 4] to [2, 3, 4]
     // Input: [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]
@@ -433,7 +433,7 @@ async fn test_expand_new_dimensions_e2e() {
 
 /// End-to-end test: Expand multiple dimensions [1, 3, 1] to [2, 3, 5].
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_expand_multiple_dimensions_e2e() {
     // Test: expand [1, 3, 1] to [2, 3, 5]
     // Input: [[[1], [2], [3]]]
@@ -492,7 +492,7 @@ async fn test_expand_multiple_dimensions_e2e() {
 
 /// End-to-end test: Expand identity (no change) [3, 4] to [3, 4].
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_expand_identity_e2e() {
     // Test: expand [3, 4] to [3, 4] (identity, no change)
     let graph = make_expand_graph(vec![3, 4], vec![3, 4], vec![3, 4]);
@@ -594,7 +594,7 @@ fn make_constantofshape_graph(
 
 /// End-to-end test: ConstantOfShape with default value (0.0).
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_constantofshape_default_value_e2e() {
     let graph = make_constantofshape_graph(vec![2, 3], vec![2, 3], None);
     graph.validate().expect("Graph validation should succeed");
@@ -630,7 +630,7 @@ async fn test_constantofshape_default_value_e2e() {
 
 /// End-to-end test: ConstantOfShape with custom value (1.0).
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_constantofshape_custom_value_e2e() {
     let graph = make_constantofshape_graph(vec![3, 4], vec![3, 4], Some(1.0));
     graph.validate().expect("Graph validation should succeed");
@@ -666,7 +666,7 @@ async fn test_constantofshape_custom_value_e2e() {
 
 /// End-to-end test: ConstantOfShape with 1D output.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_constantofshape_1d_e2e() {
     let graph = make_constantofshape_graph(vec![5], vec![5], Some(2.5));
     graph.validate().expect("Graph validation should succeed");
@@ -702,7 +702,7 @@ async fn test_constantofshape_1d_e2e() {
 
 /// End-to-end test: ConstantOfShape with 3D output.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_constantofshape_3d_e2e() {
     let graph = make_constantofshape_graph(vec![2, 3, 4], vec![2, 3, 4], Some(-1.0));
     graph.validate().expect("Graph validation should succeed");
@@ -738,7 +738,7 @@ async fn test_constantofshape_3d_e2e() {
 
 /// End-to-end test: ConstantOfShape with scalar output (empty shape).
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_constantofshape_scalar_e2e() {
     let graph = make_constantofshape_graph(vec![], vec![], Some(42.0));
     graph.validate().expect("Graph validation should succeed");
@@ -904,7 +904,7 @@ fn make_range_graph_f32(start: f32, limit: f32, delta: f32) -> Graph {
 
 /// End-to-end test: Range with integer step=1.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_range_integer_step_1_e2e() {
     let graph = make_range_graph_i64(0, 5, 1);
     graph.validate().expect("Graph validation should succeed");
@@ -940,7 +940,7 @@ async fn test_range_integer_step_1_e2e() {
 
 /// End-to-end test: Range with integer step=2.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_range_integer_step_2_e2e() {
     let graph = make_range_graph_i64(2, 10, 2);
     graph.validate().expect("Graph validation should succeed");
@@ -976,7 +976,7 @@ async fn test_range_integer_step_2_e2e() {
 
 /// End-to-end test: Range with negative step (descending).
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_range_negative_step_e2e() {
     let graph = make_range_graph_i64(10, 0, -2);
     graph.validate().expect("Graph validation should succeed");
@@ -1012,7 +1012,7 @@ async fn test_range_negative_step_e2e() {
 
 /// End-to-end test: Range with floating point values.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_range_float_e2e() {
     let graph = make_range_graph_f32(0.0, 2.5, 0.5);
     graph.validate().expect("Graph validation should succeed");
@@ -1057,7 +1057,7 @@ async fn test_range_float_e2e() {
 
 /// End-to-end test: Range with empty output (start == limit).
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_range_empty_e2e() {
     let graph = make_range_graph_i64(5, 5, 1);
     graph.validate().expect("Graph validation should succeed");

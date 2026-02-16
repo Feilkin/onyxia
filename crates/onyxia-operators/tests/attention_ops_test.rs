@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 /// End-to-end test: RotaryEmbedding on GPU with known cos/sin values.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_rotary_embedding_e2e() {
     // Build graph for RotaryEmbedding test
     // Input shape: [batch=1, num_heads=1, seq_len=2, head_dim=4]
@@ -190,7 +190,7 @@ async fn test_rotary_embedding_e2e() {
 
 /// End-to-end test: GroupQueryAttention with no cache (prefill mode).
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_gqa_e2e_no_cache() {
     // Build graph for GQA with no cache (prefill mode)
     // Query: [batch=1, seq_len=2, num_heads=2, head_dim=4] → [1, 2, 8]
@@ -463,7 +463,7 @@ async fn test_gqa_e2e_no_cache() {
 
 /// End-to-end test: GroupQueryAttention with KV cache.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_gqa_e2e_with_cache() {
     // Build graph for GQA with cache
     let mut graph = Graph::new();

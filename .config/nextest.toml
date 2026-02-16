@@ -10,5 +10,5 @@ gpu-tests = { max-threads = 1 }
 [profile.default]
 # Assign GPU-intensive tests to the serial group
 [[profile.default.overrides]]
-filter = 'test(~generation) + test(~gemma) + test(~llm)'
+filter = 'test(~generation) + test(~gemma) + test(~llm) + test(~e2e)'
 test-group = 'gpu-tests'

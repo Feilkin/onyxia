@@ -29,7 +29,7 @@ fn workspace_root() -> PathBuf {
 /// - Generation produces valid text (not empty or garbage)
 /// - Statistics are reasonable
 #[test]
-#[ignore] // Requires GPU and model file
+#[ignore = "requires GPU"]
 fn test_generate_gemma() {
     // Get model and tokenizer paths
     let workspace = workspace_root();
@@ -170,7 +170,7 @@ async fn test_generate_gemma_impl(
 
 /// Test that different sampling configurations produce different outputs.
 #[test]
-#[ignore] // Requires GPU and model file
+#[ignore = "requires GPU"]
 fn test_sampling_variance() {
     let workspace = workspace_root();
     let model_path = workspace
@@ -283,7 +283,7 @@ async fn test_sampling_variance_impl(
 
 /// Test that generation with the same seed produces deterministic output.
 #[test]
-#[ignore] // Requires GPU and model file
+#[ignore = "requires GPU"]
 fn test_deterministic_generation() {
     let workspace = workspace_root();
     let model_path = workspace

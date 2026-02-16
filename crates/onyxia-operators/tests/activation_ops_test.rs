@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 /// End-to-end test: GELU activation on GPU and verify correct output.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_gelu_e2e() {
     // Build graph
     let graph = make_unary_graph("Gelu", "gelu_node", DataType::F32, &[6], &[6]);
@@ -68,7 +68,7 @@ async fn test_gelu_e2e() {
 
 /// End-to-end test: Cos activation on GPU and verify correct output.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_cos_e2e() {
     // Build graph
     let graph = make_unary_graph("Cos", "cos_node", DataType::F32, &[6], &[6]);
@@ -130,7 +130,7 @@ async fn test_cos_e2e() {
 
 /// End-to-end test: Sin activation on GPU and verify correct output.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_sin_e2e() {
     // Build graph
     let graph = make_unary_graph("Sin", "sin_node", DataType::F32, &[6], &[6]);
@@ -192,7 +192,7 @@ async fn test_sin_e2e() {
 
 /// End-to-end test: Tanh activation on GPU and verify correct output.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_tanh_e2e() {
     // Build graph
     let graph = make_unary_graph("Tanh", "tanh_node", DataType::F32, &[8], &[8]);
@@ -280,7 +280,7 @@ async fn test_tanh_e2e() {
 
 /// End-to-end test: Sqrt (square root) on GPU and verify correct output.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_sqrt_e2e() {
     // Build graph
     let graph = make_unary_graph("Sqrt", "sqrt_node", DataType::F32, &[10], &[10]);
@@ -380,7 +380,7 @@ async fn test_sqrt_e2e() {
 
 /// End-to-end test: Sqrt with multidimensional tensors.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_sqrt_multidim_e2e() {
     // Build graph with 3D tensor
     let graph = make_unary_graph("Sqrt", "sqrt_node", DataType::F32, &[2, 2, 3], &[2, 2, 3]);
@@ -436,7 +436,7 @@ async fn test_sqrt_multidim_e2e() {
 
 /// End-to-end test: Neg (negation) on GPU and verify correct output.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_neg_e2e() {
     // Build graph
     let graph = make_unary_graph("Neg", "neg_node", DataType::F32, &[10], &[10]);
@@ -495,7 +495,7 @@ async fn test_neg_e2e() {
 
 /// End-to-end test: Neg with multidimensional tensor.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_neg_multidim_e2e() {
     // Build graph for 2x3x2 tensor
     let graph = make_unary_graph("Neg", "neg_node", DataType::F32, &[2, 3, 2], &[2, 3, 2]);
@@ -551,7 +551,7 @@ async fn test_neg_multidim_e2e() {
 
 /// End-to-end test: Neg with special values (infinity, NaN).
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_neg_special_values_e2e() {
     // Build graph
     let graph = make_unary_graph("Neg", "neg_node", DataType::F32, &[5], &[5]);

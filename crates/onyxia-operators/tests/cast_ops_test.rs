@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 /// End-to-end test: Cast I64 to F32 and verify correct conversion.
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore="requires GPU"]
 async fn test_cast_i64_to_f32_e2e() {
     let mut graph = Graph::new();
 

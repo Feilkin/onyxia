@@ -107,7 +107,7 @@ fn create_minimal_llm_plan(num_layers: usize, vocab_size: usize) -> CompiledMode
 }
 
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_llm_session_creation() {
     let runtime = Runtime::new().await.expect("Failed to create runtime");
 
@@ -133,7 +133,7 @@ async fn test_llm_session_creation() {
 }
 
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_llm_session_sequence_length_tracking() {
     let runtime = Runtime::new().await.expect("Failed to create runtime");
 
@@ -164,7 +164,7 @@ async fn test_llm_session_sequence_length_tracking() {
 }
 
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_llm_session_reset() {
     let runtime = Runtime::new().await.expect("Failed to create runtime");
 
@@ -205,7 +205,7 @@ async fn test_llm_session_reset() {
 }
 
 #[pollster::test]
-#[ignore] // Requires GPU
+#[ignore = "requires GPU"]
 async fn test_llm_session_kv_pairs_discovery() {
     let runtime = Runtime::new().await.expect("Failed to create runtime");
 

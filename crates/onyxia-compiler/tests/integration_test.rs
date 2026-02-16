@@ -5,12 +5,8 @@ use onyxia_core::OperatorRegistry;
 use onyxia_onnx::load_and_parse_model;
 use std::collections::HashMap;
 
-// TODO(Task 024/025): Re-enable once operators are migrated to onyxia_core::Operator trait.
-// Currently the operators in src/operators/* implement the legacy Operator trait from
-// src/operator.rs, not the new onyxia_core::Operator trait, so they can't be registered
-// in the new OperatorRegistry that the pipeline expects.
 #[test]
-#[ignore = "operators not yet migrated to onyxia-core traits"]
+#[ignore = "requires GPU"]
 fn test_compile_gemma_model() {
     // Initialize tracing subscriber with timing
     let _ = tracing_subscriber::fmt()
@@ -23,7 +19,7 @@ fn test_compile_gemma_model() {
         .try_init();
 
     // Load the quantized Gemma model
-    let model_path = "../../models/gemma-3-270m-it-ONNX/onnx/model_q4.onnx";
+    let model_path = "../../models/gemma-3-270m-it-ONNX/onnx/model.onnx";
 
     // Skip if model file doesn't exist (e.g., in CI)
     if !std::path::Path::new(model_path).exists() {
