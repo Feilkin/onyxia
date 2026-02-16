@@ -13,23 +13,15 @@ use std::collections::HashMap;
 #[ignore] // Requires GPU
 async fn test_rotary_embedding_e2e() {
     // Build graph for RotaryEmbedding test
-    // Input shape: [batch=1, seq_len=2, num_heads=1, head_dim=4]
+    // Input shape: [batch=1, num_heads=1, seq_len=2, head_dim=4]
+    // Per ONNX spec: 4D input is [batch_size, num_heads, sequence_length, head_size]
     let mut graph = Graph::new();
 
-    // Input tensor: [1, 2, 1, 4]
+    // Input tensor: [1, 1, 2, 4]
     graph.add_tensor(TensorInfo {
         name: "input".to_string(),
         dtype: DataType::F32,
-        shape: TensorShape::Static(vec![1, 2, 1, 4]),
-        kind: TensorKind::Input,
-        initializer: None,
-    });
-
-    // Position IDs: [1, 2] (I64)
-    graph.add_tensor(TensorInfo {
-        name: "position_ids".to_string(),
-        dtype: DataType::I64,
-        shape: TensorShape::Static(vec![1, 2]),
+        shape: TensorShape::Static(vec![1, 1, 2, 4]),
         kind: TensorKind::Input,
         initializer: None,
     });
@@ -52,23 +44,32 @@ async fn test_rotary_embedding_e2e() {
         initializer: None,
     });
 
-    // Output tensor: [1, 2, 1, 4]
+    // Position IDs: [1, 2] (I64) - optional, provided for this test
+    graph.add_tensor(TensorInfo {
+        name: "position_ids".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![1, 2]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Output tensor: [1, 1, 2, 4]
     graph.add_tensor(TensorInfo {
         name: "output".to_string(),
         dtype: DataType::F32,
-        shape: TensorShape::Static(vec![1, 2, 1, 4]),
+        shape: TensorShape::Static(vec![1, 1, 2, 4]),
         kind: TensorKind::Output,
         initializer: None,
     });
 
-    // Create RotaryEmbedding node
+    // Create RotaryEmbedding node with correct input order per ONNX spec
     let mut node = Node::new("RotaryEmbedding");
     node.name = "rope_node".to_string();
     node.inputs = vec![
         "input".to_string(),
-        "position_ids".to_string(),
         "cos_cache".to_string(),
         "sin_cache".to_string(),
+        "position_ids".to_string(),
     ];
     node.outputs = vec!["output".to_string()];
     node.attributes
@@ -79,9 +80,9 @@ async fn test_rotary_embedding_e2e() {
     graph.add_node(node);
     graph.inputs = vec![
         "input".to_string(),
-        "position_ids".to_string(),
         "cos_cache".to_string(),
         "sin_cache".to_string(),
+        "position_ids".to_string(),
     ];
     graph.outputs = vec!["output".to_string()];
 
@@ -105,7 +106,8 @@ async fn test_rotary_embedding_e2e() {
         .expect("Plan loading should succeed");
 
     // Test data:
-    // Input: [1, 2, 1, 4] -> two sequence positions, each with 4 values
+    // Input: [1, 1, 2, 4] -> 1 batch, 1 head, 2 positions, 4 values per position
+    // Shape is [batch, num_heads, seq_len, head_dim] per ONNX spec
     // Split-half layout: [x0, x1, y0, y1] where (x0,y0) and (x1,y1) are pairs
     let input_data = vec![
         1.0f32, 2.0, 3.0, 4.0, // seq=0: [x0=1, x1=2 | y0=3, y1=4]
@@ -135,7 +137,7 @@ async fn test_rotary_embedding_e2e() {
         0.0, 0.0, // pos=3 (unused)
     ];
 
-    let input = Tensor::from_vec(input_data, &[1, 2, 1, 4]);
+    let input = Tensor::from_vec(input_data, &[1, 1, 2, 4]);
     let position_ids = Tensor::from_vec(position_ids_data, &[1, 2]);
     let cos_cache = Tensor::from_vec(cos_cache_data, &[4, 2]);
     let sin_cache = Tensor::from_vec(sin_cache_data, &[4, 2]);
@@ -143,9 +145,9 @@ async fn test_rotary_embedding_e2e() {
     let outputs = executor
         .run(&[
             ("input", input),
-            ("position_ids", position_ids),
             ("cos_cache", cos_cache),
             ("sin_cache", sin_cache),
+            ("position_ids", position_ids),
         ])
         .expect("Execution should succeed");
 
@@ -181,7 +183,7 @@ async fn test_rotary_embedding_e2e() {
     }
 
     println!("✓ End-to-end RotaryEmbedding test passed!");
-    println!("  Input shape: [1, 2, 1, 4]");
+    println!("  Input shape: [1, 1, 2, 4]");
     println!("  Position IDs: [0, 1]");
     println!("  Output: {:?}", output);
 }

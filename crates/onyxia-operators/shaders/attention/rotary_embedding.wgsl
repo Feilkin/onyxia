@@ -8,12 +8,24 @@
 //   x_rotated[2i+1] = x[2i+1] * cos(θ_i) + x[2i]   * sin(θ_i)
 //
 // The cos and sin values are precomputed and provided as cache tensors.
+//
+// ONNX spec supports:
+// - Input X: 3D [batch, seq, hidden] or 4D [batch, num_heads, seq, head_size]
+// - cos_cache/sin_cache: 2D [max_seq, head_dim/2] when position_ids provided
+//                        3D [batch, seq, head_dim/2] when position_ids not provided
+// - position_ids (optional): 2D [batch, seq] (I64)
 
 @group(0) @binding(0) var<storage, read> input: array<f32>;
-@group(0) @binding(1) var<storage, read> position_ids: array<u32>;  // I64 as u32 pairs
-@group(0) @binding(2) var<storage, read> cos_cache: array<f32>;
-@group(0) @binding(3) var<storage, read> sin_cache: array<f32>;
+@group(0) @binding(1) var<storage, read> cos_cache: array<f32>;
+@group(0) @binding(2) var<storage, read> sin_cache: array<f32>;
+
+// Conditional bindings based on whether position_ids is provided
+#ifdef HAS_POSITION_IDS
+@group(0) @binding(3) var<storage, read> position_ids: array<u32>;  // I64 as u32 pairs
 @group(0) @binding(4) var<storage, read_write> output: array<f32>;
+#else
+@group(0) @binding(3) var<storage, read_write> output: array<f32>;
+#endif
 
 // Immediate constants for tensor dimensions
 struct ImmediateConstants {
@@ -49,22 +61,46 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let seq = (thread_id / (half_head_dim * params.num_heads)) % params.seq_len;
     let batch = thread_id / (half_head_dim * params.num_heads * params.seq_len);
     
-    // Fetch position from position_ids (I64, but we only need low u32)
-    let batch_seq_idx = batch * params.seq_len + seq;
-    let pos_low = position_ids[batch_seq_idx * 2u];  // Low u32 of I64 pair
-    let pos = pos_low;  // Safe for positions < 2^31
+    // Determine position for cache lookup
+    var pos: u32;
+    #ifdef HAS_POSITION_IDS
+        // Fetch position from position_ids (I64, but we only need low u32)
+        let batch_seq_idx = batch * params.seq_len + seq;
+        let pos_low = position_ids[batch_seq_idx * 2u];  // Low u32 of I64 pair
+        pos = pos_low;  // Safe for positions < 2^31
+    #else
+        // No position_ids: use sequential position (0, 1, 2, ...)
+        pos = seq;
+    #endif
     
     // Fetch cos and sin values from cache
-    // cos_cache and sin_cache are [max_seq, head_dim/2]
-    let cache_idx = pos * half_head_dim + pair_idx;
+    var cache_idx: u32;
+    #ifdef HAS_POSITION_IDS
+        // 2D cache: [max_seq, head_dim/2]
+        cache_idx = pos * half_head_dim + pair_idx;
+    #else
+        // 3D cache: [batch, seq, head_dim/2]
+        cache_idx = batch * params.seq_len * half_head_dim + seq * half_head_dim + pair_idx;
+    #endif
+    
     let cos_val = cos_cache[cache_idx];
     let sin_val = sin_cache[cache_idx];
     
     // Calculate input indices for the pair
-    // Input shape: [batch, seq, num_heads, head_dim]
-    let base_idx = batch * params.seq_len * params.num_heads * params.head_dim +
+    // Note: Input can be 3D [batch, seq, hidden] or 4D [batch, num_heads, seq, head_size]
+    var base_idx: u32;
+    
+    #ifdef INPUT_3D
+        // 3D input: [batch, seq, hidden] where hidden = num_heads * head_dim
+        base_idx = batch * params.seq_len * params.num_heads * params.head_dim +
                    seq * params.num_heads * params.head_dim +
                    head * params.head_dim;
+    #else
+        // 4D input: [batch, num_heads, seq, head_size]
+        base_idx = batch * params.num_heads * params.seq_len * params.head_dim +
+                   head * params.seq_len * params.head_dim +
+                   seq * params.head_dim;
+    #endif
     
     var x0_idx: u32;
     var x1_idx: u32;

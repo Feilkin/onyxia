@@ -1,7 +1,7 @@
 //! Build IR graphs from ONNX graphs.
 
-use crate::ir::{IrGraph, IrNode, IrTensorId, TensorDef};
 use crate::ir::EdgeData;
+use crate::ir::{IrGraph, IrNode, IrTensorId, TensorDef};
 use crate::types::TensorShape;
 use crate::{Error, Result};
 use onyxia_onnx::Graph;
@@ -42,11 +42,7 @@ impl IrGraph {
             // Unknown shapes are preserved and will be resolved by shape inference pass
             let shape = TensorShape::from_onnx(&onnx_tensor.shape);
 
-            let mut tensor_def = TensorDef::new(
-                onnx_tensor.name.clone(),
-                onnx_tensor.dtype,
-                shape,
-            );
+            let mut tensor_def = TensorDef::new(onnx_tensor.name.clone(), onnx_tensor.dtype, shape);
 
             // Translate ONNX initializer data → EdgeData::Initializer
             if let Some(ref initializer_data) = onnx_tensor.initializer {
@@ -59,7 +55,15 @@ impl IrGraph {
 
         // Step 2: Convert all nodes
         for onnx_node in &onnx_graph.nodes {
-            let mut ir_node = IrNode::new(onnx_node.op_type.clone());
+            // Construct qualified operator name: if domain is non-empty and not default,
+            // prefix with domain (e.g., "com.microsoft.GemmaRotaryEmbedding")
+            let op_type = if !onnx_node.domain.is_empty() && onnx_node.domain != "ai.onnx" {
+                format!("{}.{}", onnx_node.domain, onnx_node.op_type)
+            } else {
+                onnx_node.op_type.clone()
+            };
+
+            let mut ir_node = IrNode::new(op_type);
 
             // Convert input tensor names to IDs
             for input_name in &onnx_node.inputs {
@@ -292,11 +296,11 @@ mod tests {
         // Should succeed - Unknown shapes are allowed and will be resolved by shape inference
         let result = IrGraph::from_onnx(&onnx_graph);
         assert!(result.is_ok());
-        
+
         let ir_graph = result.unwrap();
         let tensor_id = ir_graph.tensor_by_name("unknown").unwrap();
         let tensor = ir_graph.tensor(tensor_id).unwrap();
-        
+
         // Shape should be Unknown
         assert!(tensor.shape.is_unknown());
     }

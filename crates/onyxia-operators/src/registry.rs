@@ -1,18 +1,18 @@
 //! Core operator registry.
 //!
-//! Provides a pre-populated registry with all 38 core operators.
+//! Provides a pre-populated registry with all 39 core operators.
 
 use onyxia_core::OperatorRegistry;
 
 use crate::families::{BinaryElementwiseOp, ComparisonOp, ReductionOp, UnaryElementwiseOp};
 use crate::operators::{
     CastOp, ConcatOp, ConstantOfShapeOp, ConstantOp, ExpandOp, GatherOp, GeluOp,
-    GroupQueryAttentionOp, MatMulF32Op, MatMulNBitsOp, RangeOp, ReshapeOp, RmsNormOp,
-    RotaryEmbeddingOp, ScatterNDOp, ShapeOp, SliceOp, SoftmaxOp, TransposeOp, TriluOp, UnsqueezeOp,
-    WhereOp,
+    GemmaRotaryEmbeddingOp, GroupQueryAttentionOp, MatMulF32Op, MatMulNBitsOp, RangeOp, ReshapeOp,
+    RmsNormOp, RotaryEmbeddingOp, ScatterNDOp, ShapeOp, SliceOp, SoftmaxOp, TransposeOp, TriluOp,
+    UnsqueezeOp, WhereOp,
 };
 
-/// Returns an operator registry pre-populated with all 38 core operators.
+/// Returns an operator registry pre-populated with all 39 core operators.
 ///
 /// The registry includes:
 /// - 6 binary elementwise operators (Add, Sub, Mul, Div, Pow, Max)
@@ -20,6 +20,7 @@ use crate::operators::{
 /// - 2 comparison operators (Equal, Greater)
 /// - 2 reduction operators (ReduceSum, ReduceMean)
 /// - 23 individual operators (activation, normalization, matrix ops, shape ops, etc.)
+/// - 1 custom Microsoft operator (com.microsoft.GemmaRotaryEmbedding)
 ///
 /// Custom operators can be added to the returned registry via
 /// `registry.register(name, operator)`.
@@ -87,7 +88,12 @@ pub fn core_operator_registry() -> OperatorRegistry {
 
     // Attention operators (2)
     registry.register("RotaryEmbedding", RotaryEmbeddingOp);
-    registry.register("GroupQueryAttention", GroupQueryAttentionOp);
+    registry.register("com.microsoft.GroupQueryAttention", GroupQueryAttentionOp);
+
+    // Microsoft custom operators (1)
+    // Note: The operator is named "RotaryEmbedding" in the com.microsoft domain,
+    // but we call it GemmaRotaryEmbedding internally for clarity
+    registry.register("com.microsoft.RotaryEmbedding", GemmaRotaryEmbeddingOp);
 
     registry
 }

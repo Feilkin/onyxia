@@ -24,34 +24,79 @@ impl Operator for RotaryEmbeddingOp {
     }
 
     fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {
-        // RotaryEmbedding inputs:
-        // 0: input tensor [batch, seq_len, num_heads, head_dim]
-        // 1: position_ids [batch, seq_len] (I64)
-        // 2: cos_cache [max_seq_len, head_dim/2] (F32)
-        // 3: sin_cache [max_seq_len, head_dim/2] (F32)
+        // RotaryEmbedding inputs per ONNX spec:
+        // 0: X - input tensor (required)
+        //    - 4D: [batch_size, num_heads, sequence_length, head_size]
+        //    - 3D: [batch_size, sequence_length, hidden_size]
+        // 1: cos_cache (required)
+        //    - 2D: [max_position_id_plus_1, head_size/2] when position_ids provided
+        //    - 3D: [batch_size, sequence_length, head_size/2] when position_ids not provided
+        // 2: sin_cache (required) - same shape as cos_cache
+        // 3: position_ids (optional) - 2D: [batch_size, sequence_length] (I64)
 
-        if ctx.input_count() < 4 {
+        if ctx.input_count() < 3 {
             return Err(onyxia_core::Error::Planning(format!(
-                "RotaryEmbedding requires 4 inputs, got {}",
+                "RotaryEmbedding requires at least 3 inputs (X, cos_cache, sin_cache), got {}",
                 ctx.input_count()
             )));
         }
 
-        // Get input shape: [batch, seq_len, num_heads, head_dim]
+        // Get input shape and determine format (3D or 4D)
         let input_tensor = ctx.input_tensor(0)?;
         let input_shape = ctx.static_dims(&input_tensor.shape)?;
 
-        if input_shape.len() != 4 {
-            return Err(onyxia_core::Error::Planning(format!(
-                "RotaryEmbedding expects input shape [batch, seq, heads, head_dim], got {:?}",
-                input_shape
-            )));
-        }
+        // Read num_heads attribute (required for 3D input)
+        let num_heads_attr = ctx.attr_i64("num_heads").unwrap_or(0);
 
-        let batch_size = input_shape[0];
-        let seq_len = input_shape[1];
-        let num_heads = input_shape[2];
-        let head_dim = input_shape[3];
+        let (batch_size, seq_len, num_heads, head_dim) = match input_shape.len() {
+            // 4D format: [batch_size, num_heads, sequence_length, head_size]
+            4 => {
+                let batch = input_shape[0];
+                let heads = input_shape[1];
+                let seq = input_shape[2];
+                let head_size = input_shape[3];
+
+                // Validate num_heads attribute if provided
+                if num_heads_attr > 0 && heads != num_heads_attr as usize {
+                    return Err(onyxia_core::Error::Planning(format!(
+                        "RotaryEmbedding: num_heads attribute ({}) doesn't match input shape num_heads ({})",
+                        num_heads_attr, heads
+                    )));
+                }
+
+                (batch, seq, heads, head_size)
+            }
+            // 3D format: [batch_size, sequence_length, hidden_size]
+            3 => {
+                let batch = input_shape[0];
+                let seq = input_shape[1];
+                let hidden = input_shape[2];
+
+                // num_heads is required for 3D input
+                if num_heads_attr <= 0 {
+                    return Err(onyxia_core::Error::Planning(
+                        "RotaryEmbedding with 3D input requires num_heads attribute".to_string(),
+                    ));
+                }
+
+                let heads = num_heads_attr as usize;
+                if hidden % heads != 0 {
+                    return Err(onyxia_core::Error::Planning(format!(
+                        "RotaryEmbedding: hidden_size ({}) must be divisible by num_heads ({})",
+                        hidden, heads
+                    )));
+                }
+
+                let head_size = hidden / heads;
+                (batch, seq, heads, head_size)
+            }
+            _ => {
+                return Err(onyxia_core::Error::Planning(format!(
+                    "RotaryEmbedding expects 3D [batch, seq, hidden] or 4D [batch, heads, seq, head_size] input, got {:?}",
+                    input_shape
+                )));
+            }
+        };
 
         if head_dim % 2 != 0 {
             return Err(onyxia_core::Error::Planning(format!(
@@ -60,8 +105,14 @@ impl Operator for RotaryEmbeddingOp {
             )));
         }
 
+        // Check if position_ids is provided (input 3)
+        let has_position_ids = ctx.input_count() >= 4;
+
         // Read interleaved attribute (default 0 for split-half)
         let interleaved: u32 = ctx.attr_i64("interleaved").unwrap_or(0) as u32;
+
+        // Determine if input is 3D or 4D
+        let is_3d_input = input_shape.len() == 3;
 
         // Calculate total number of pairs to rotate
         let total_pairs = batch_size * seq_len * num_heads * (head_dim / 2);
@@ -71,6 +122,12 @@ impl Operator for RotaryEmbeddingOp {
 
         let mut shader_defs = HashMap::new();
         shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());
+        if has_position_ids {
+            shader_defs.insert("HAS_POSITION_IDS".to_string(), "1".to_string());
+        }
+        if is_3d_input {
+            shader_defs.insert("INPUT_3D".to_string(), "1".to_string());
+        }
 
         let shader_index = ctx.compile_shader(
             "rotary_embedding",
@@ -86,27 +143,165 @@ impl Operator for RotaryEmbeddingOp {
         immediates_data.extend_from_slice(&(head_dim as u32).to_le_bytes());
         immediates_data.extend_from_slice(&interleaved.to_le_bytes());
 
+        // Build binding list: input, cos_cache, sin_cache, [position_ids], output
+        let mut bindings = vec![
+            BindingDesc {
+                buffer: ctx.input(0)?, // X (input)
+                read_only: true,
+            },
+            BindingDesc {
+                buffer: ctx.input(1)?, // cos_cache
+                read_only: true,
+            },
+            BindingDesc {
+                buffer: ctx.input(2)?, // sin_cache
+                read_only: true,
+            },
+        ];
+
+        if has_position_ids {
+            bindings.push(BindingDesc {
+                buffer: ctx.input(3)?, // position_ids (I64)
+                read_only: true,
+            });
+        }
+
+        bindings.push(BindingDesc {
+            buffer: ctx.output(0)?, // output
+            read_only: false,
+        });
+
+        Ok(vec![Step::Dispatch {
+            shader_index,
+            bindings,
+            workgroups: [num_workgroups, 1, 1],
+            immediates: Some(immediates_data),
+        }])
+    }
+}
+
+/// Gemma Rotary Embedding operator (com.microsoft domain).
+///
+/// This is a specialized RoPE implementation used in Google Gemma models.
+/// It computes sin/cos from the embedding input and applies rotation to q and k tensors.
+///
+/// Formula:
+/// - sin_val = Sin(emb), cos_val = Cos(emb)
+/// - q_embed = (q * cos_val) + (q_rot * sin_val)
+/// - k_embed = (k * cos_val) + (k_rot * sin_val)
+pub struct GemmaRotaryEmbeddingOp;
+
+impl Operator for GemmaRotaryEmbeddingOp {
+    fn name(&self) -> &str {
+        "com.microsoft.GemmaRotaryEmbedding"
+    }
+
+    fn infer_output_shapes(&self, ctx: &InferenceCtx) -> Result<Vec<TensorShape>> {
+        if ctx.input_count() < 5 {
+            return Err(onyxia_core::Error::ShapeInference(
+                "GemmaRotaryEmbedding requires 5 inputs".to_string(),
+            ));
+        }
+        // Outputs have same shape as q and k inputs (inputs 1 and 3)
+        Ok(vec![
+            ctx.input_shape(1)?.clone(), // q_embed shape = q shape
+            ctx.input_shape(3)?.clone(), // k_embed shape = k shape
+        ])
+    }
+
+    fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>> {
+        // GemmaRotaryEmbedding inputs per ONNX spec:
+        // 0: emb - [batch_size, seq_len, dim] (F32)
+        // 1: q - [batch_size, num_heads, seq_len, dim] (F16)
+        // 2: q_rot - [batch_size, num_heads, seq_len, dim] (F16) - half rotated q
+        // 3: k - [batch_size, num_heads, seq_len, dim] (F16)
+        // 4: k_rot - [batch_size, num_heads, seq_len, dim] (F16) - half rotated k
+
+        if ctx.input_count() < 5 {
+            return Err(onyxia_core::Error::Planning(format!(
+                "GemmaRotaryEmbedding requires 5 inputs, got {}",
+                ctx.input_count()
+            )));
+        }
+
+        // Get shapes
+        let emb_tensor = ctx.input_tensor(0)?;
+        let emb_shape = ctx.static_dims(&emb_tensor.shape)?;
+
+        let q_tensor = ctx.input_tensor(1)?;
+        let q_shape = ctx.static_dims(&q_tensor.shape)?;
+
+        // Validate shapes
+        if emb_shape.len() != 3 {
+            return Err(onyxia_core::Error::Planning(format!(
+                "GemmaRotaryEmbedding emb expects 3D [batch, seq, dim], got {:?}",
+                emb_shape
+            )));
+        }
+
+        if q_shape.len() != 4 {
+            return Err(onyxia_core::Error::Planning(format!(
+                "GemmaRotaryEmbedding q expects 4D [batch, num_heads, seq, dim], got {:?}",
+                q_shape
+            )));
+        }
+
+        let batch_size = q_shape[0];
+        let num_heads = q_shape[1];
+        let seq_len = q_shape[2];
+        let dim = q_shape[3];
+
+        // Total elements to process (one thread per element in q/k)
+        let total_elements = batch_size * num_heads * seq_len * dim;
+
+        let workgroup_size: u32 = 256;
+        let num_workgroups = (total_elements as u32).div_ceil(workgroup_size);
+
+        let mut shader_defs = HashMap::new();
+        shader_defs.insert("WORKGROUP_SIZE".to_string(), workgroup_size.to_string());
+
+        let shader_index = ctx.compile_shader(
+            "gemma_rotary_embedding",
+            include_str!("../../shaders/attention/gemma_rotary_embedding.wgsl"),
+            &shader_defs,
+        )?;
+
+        // Encode immediate constants
+        let mut immediates_data = Vec::new();
+        immediates_data.extend_from_slice(&(batch_size as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&(num_heads as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&(seq_len as u32).to_le_bytes());
+        immediates_data.extend_from_slice(&(dim as u32).to_le_bytes());
+
         Ok(vec![Step::Dispatch {
             shader_index,
             bindings: vec![
                 BindingDesc {
-                    buffer: ctx.input(0)?, // input
+                    buffer: ctx.input(0)?, // emb
                     read_only: true,
                 },
                 BindingDesc {
-                    buffer: ctx.input(1)?, // position_ids (I64)
+                    buffer: ctx.input(1)?, // q
                     read_only: true,
                 },
                 BindingDesc {
-                    buffer: ctx.input(2)?, // cos_cache
+                    buffer: ctx.input(2)?, // q_rot
                     read_only: true,
                 },
                 BindingDesc {
-                    buffer: ctx.input(3)?, // sin_cache
+                    buffer: ctx.input(3)?, // k
                     read_only: true,
                 },
                 BindingDesc {
-                    buffer: ctx.output(0)?, // output
+                    buffer: ctx.input(4)?, // k_rot
+                    read_only: true,
+                },
+                BindingDesc {
+                    buffer: ctx.output(0)?, // q_embed
+                    read_only: false,
+                },
+                BindingDesc {
+                    buffer: ctx.output(1)?, // k_embed
                     read_only: false,
                 },
             ],
