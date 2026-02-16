@@ -21,61 +21,66 @@ impl Operator for MatMulF32Op {
     fn infer_output_shapes(&self, ctx: &InferenceCtx) -> Result<Vec<TensorShape>> {
         // MatMul: [M, K] × [K, N] -> [M, N]
         if ctx.input_count() < 2 {
-            return Err(onyxia_core::Error::ShapeInference(
-                "MatMul requires two inputs".to_string(),
-            ));
+            return Err(ctx.shape_error("MatMul requires two inputs"));
         }
 
         // Extract static dimensions
         let a_dims = match ctx.input_shape(0)? {
             TensorShape::Static(dims) => dims,
             TensorShape::Symbolic(_) => {
-                return Err(onyxia_core::Error::ShapeInference(
-                    "Symbolic shapes should be resolved before shape inference".to_string(),
-                ));
+                return Err(
+                    ctx.shape_error("Symbolic shapes should be resolved before shape inference")
+                );
             }
             TensorShape::Absent => {
-                return Err(onyxia_core::Error::ShapeInference(
-                    "MatMul input A is absent".to_string(),
-                ));
+                return Err(ctx.shape_error("MatMul input A is absent"));
             }
             TensorShape::Unknown => {
-                return Err(onyxia_core::Error::ShapeInference(
-                    "MatMul input A has unknown shape".to_string(),
-                ));
+                return Err(ctx.shape_error("MatMul input A has unknown shape"));
             }
         };
 
         let b_dims = match ctx.input_shape(1)? {
             TensorShape::Static(dims) => dims,
             TensorShape::Symbolic(_) => {
-                return Err(onyxia_core::Error::ShapeInference(
-                    "Symbolic shapes should be resolved before shape inference".to_string(),
-                ));
+                return Err(
+                    ctx.shape_error("Symbolic shapes should be resolved before shape inference")
+                );
             }
             TensorShape::Absent => {
-                return Err(onyxia_core::Error::ShapeInference(
-                    "MatMul input B is absent".to_string(),
-                ));
+                return Err(ctx.shape_error("MatMul input B is absent"));
             }
             TensorShape::Unknown => {
-                return Err(onyxia_core::Error::ShapeInference(
-                    "MatMul input B has unknown shape".to_string(),
-                ));
+                return Err(ctx.shape_error("MatMul input B has unknown shape"));
             }
         };
 
         if a_dims.len() < 2 || b_dims.len() < 2 {
-            return Err(onyxia_core::Error::ShapeInference(format!(
+            return Err(ctx.shape_error(format!(
                 "MatMul requires at least 2D tensors, got A: {:?}, B: {:?}",
                 a_dims, b_dims
             )));
         }
 
+        // Extract matrix dimensions
+        let a_rows = a_dims[a_dims.len() - 2];
+        let a_cols = a_dims[a_dims.len() - 1];
+        let b_rows = b_dims[b_dims.len() - 2];
+        let b_cols = b_dims[b_dims.len() - 1];
+
+        // Validate inner dimensions match
+        if a_cols != b_rows {
+            return Err(ctx.shape_error(format!(
+                "Matrix dimensions incompatible: cannot multiply [{}, {}] × [{}, {}]\n  \
+                 Inner dimensions {} and {} must match",
+                a_rows, a_cols, b_rows, b_cols, a_cols, b_rows
+            )));
+        }
+
         // Output shape: preserve batch dimensions from A, replace last two dims with [M, N]
         // A: [...batch..., M, K]  B: [K, N]  ->  Output: [...batch..., M, N]
-        let m = a_dims[a_dims.len() - 2];
-        let n = b_dims[b_dims.len() - 1];
+        let m = a_rows;
+        let n = b_cols;
 
         let mut output_dims = a_dims[..a_dims.len() - 2].to_vec();
         output_dims.push(m);

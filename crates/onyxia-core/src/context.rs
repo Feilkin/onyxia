@@ -8,7 +8,7 @@
 
 use crate::ir::{IrEdge, IrGraph, IrNode};
 use crate::plan::{BufferRef, ShaderIndex};
-use crate::types::{SymbolicDim, TensorShape, TensorValue};
+use crate::types::{SymbolicDim, TensorData, TensorShape, TensorValue};
 use crate::{Error, Result};
 use onyxia_onnx::AttributeValue;
 use std::collections::HashMap;
@@ -200,6 +200,98 @@ impl<'a> InferenceCtx<'a> {
     /// Check if an attribute exists.
     pub fn has_attr(&self, key: &str) -> bool {
         self.node.get_attribute(key).is_some()
+    }
+
+    // --- Enhanced error reporting ---
+
+    /// Create a detailed shape inference error with full context.
+    ///
+    /// This includes the node name, operator type, and detailed information
+    /// about all input tensors (shapes, types, and constant values if available).
+    pub fn shape_error(&self, message: impl Into<String>) -> Error {
+        let mut error_msg = format!(
+            "Shape inference failed for node '{}' ({})\n\n",
+            self.node_name(),
+            self.op_type()
+        );
+
+        // Add input details
+        error_msg.push_str("  Inputs:\n");
+        for i in 0..self.input_count() {
+            match self.input_details(i) {
+                Ok(details) => {
+                    error_msg.push_str(&format!("    {}\n", details));
+                }
+                Err(_) => {
+                    error_msg.push_str(&format!("    {}: <error reading input>\n", i));
+                }
+            }
+        }
+
+        error_msg.push_str("\n  Error: ");
+        error_msg.push_str(&message.into());
+
+        Error::ShapeInference(error_msg)
+    }
+
+    /// Get detailed string description of an input.
+    ///
+    /// Returns a multi-line formatted string with information about:
+    /// - Input index and tensor name
+    /// - Shape and data type
+    /// - Whether it's a constant or runtime tensor
+    /// - The constant value (for small tensors)
+    fn input_details(&self, index: usize) -> Result<String> {
+        let edge_id = self
+            .node
+            .inputs()
+            .get(index)
+            .ok_or_else(|| Error::ShapeInference(format!("Input {} not found", index)))?;
+
+        let edge = self.graph.edge(*edge_id)?;
+
+        let mut desc = format!("{}: '{}'", index, edge.name);
+        desc.push_str(&format!("\n      Shape: {:?}", edge.shape));
+        desc.push_str(&format!("\n      Type: {:?}", edge.dtype));
+
+        // Check if it's a constant value (from folding)
+        if let Some(value) = edge.constant_value() {
+            desc.push_str("\n      Source: Constant");
+            if let Some(formatted) = format_small_value(value, 20) {
+                desc.push_str(&format!(" with value {}", formatted));
+            }
+        } else if edge.has_initializer() {
+            desc.push_str("\n      Source: Constant (initializer)");
+            // Try to parse and show value for small tensors
+            if let TensorShape::Static(shape) = &edge.shape {
+                let element_count: usize = shape.iter().product();
+                if element_count <= 20
+                    && let Some(initializer) = edge.initializer()
+                    && let Ok(value) = TensorValue::from_bytes(initializer, edge.dtype, shape)
+                    && let Some(formatted) = format_small_value(&value, 20)
+                {
+                    desc.push_str(&format!(" with value {}", formatted));
+                }
+            }
+        } else {
+            desc.push_str("\n      Source: Runtime tensor");
+        }
+
+        Ok(desc)
+    }
+
+    /// Get the node name.
+    fn node_name(&self) -> &str {
+        if self.node.name.is_empty() {
+            "<unnamed>"
+        } else {
+            &self.node.name
+        }
+    }
+
+    /// Get the operator type.
+    fn op_type(&self) -> &str {
+        &self.node.op_type
     }
 }
 
@@ -716,7 +808,48 @@ impl<'a> PlanCtx<'a> {
     }
 }
 
+// ──────────────────────────────── Helpers ────────────────────────────────
+
+/// Format a small tensor value for display in error messages.
+///
+/// Returns `None` if the tensor is too large (more than `max_elements`).
+/// Arrays are formatted as `[1, 2, 3, ...]` with `...` if truncated.
+fn format_small_value(value: &TensorValue, max_elements: usize) -> Option<String> {
+    let total_elements = value.total_elements();
+    if total_elements == 0 {
+        return Some("[]".to_string());
+    }
+
+    if total_elements > max_elements {
+        return None;
+    }
+
+    // Format based on data type
+    match &value.data {
+        TensorData::I64(vec) => Some(format_vec(vec, max_elements)),
+        TensorData::I32(vec) => Some(format_vec(vec, max_elements)),
+        TensorData::F32(vec) => Some(format_vec(vec, max_elements)),
+        TensorData::Bool(vec) => Some(format_vec(vec, max_elements)),
+        TensorData::U8(vec) => Some(format_vec(vec, max_elements)),
+    }
+}
+
+/// Format a slice of values, truncating if necessary.
+fn format_vec<T: std::fmt::Debug>(vec: &[T], max_elements: usize) -> String {
+    if vec.is_empty() {
+        return "[]".to_string();
+    }
+
+    if vec.len() <= max_elements {
+        format!("{:?}", vec)
+    } else {
+        let preview: Vec<_> = vec.iter().take(max_elements).collect();
+        format!("{:?}...", preview)
+    }
+}
+
 #[cfg(test)]
+
 mod tests {
     use super::*;
     use crate::ir::{EdgeData, IrEdge, IrGraph, IrNode};

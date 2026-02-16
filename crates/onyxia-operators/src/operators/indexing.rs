@@ -24,9 +24,7 @@ impl Operator for GatherOp {
 
     fn infer_output_shapes(&self, ctx: &InferenceCtx) -> Result<Vec<TensorShape>> {
         if ctx.input_count() < 2 {
-            return Err(onyxia_core::Error::ShapeInference(
-                "Gather requires 2 inputs (data and indices)".to_string(),
-            ));
+            return Err(ctx.shape_error("Gather requires 2 inputs (data and indices)"));
         }
 
         // Get axis (defaults to 0 per ONNX spec)
@@ -36,38 +34,30 @@ impl Operator for GatherOp {
         let data_shape = match ctx.input_shape(0)? {
             TensorShape::Static(dims) => dims,
             TensorShape::Symbolic(_) => {
-                return Err(onyxia_core::Error::ShapeInference(
-                    "Symbolic shapes should be resolved before shape inference".to_string(),
-                ));
+                return Err(
+                    ctx.shape_error("Symbolic shapes should be resolved before shape inference")
+                );
             }
             TensorShape::Absent => {
-                return Err(onyxia_core::Error::ShapeInference(
-                    "Gather data input is absent".to_string(),
-                ));
+                return Err(ctx.shape_error("Gather data input is absent"));
             }
             TensorShape::Unknown => {
-                return Err(onyxia_core::Error::ShapeInference(
-                    "Gather data input has unknown shape".to_string(),
-                ));
+                return Err(ctx.shape_error("Gather data input has unknown shape"));
             }
         };
 
         let indices_shape = match ctx.input_shape(1)? {
             TensorShape::Static(dims) => dims,
             TensorShape::Symbolic(_) => {
-                return Err(onyxia_core::Error::ShapeInference(
-                    "Symbolic shapes should be resolved before shape inference".to_string(),
-                ));
+                return Err(
+                    ctx.shape_error("Symbolic shapes should be resolved before shape inference")
+                );
             }
             TensorShape::Absent => {
-                return Err(onyxia_core::Error::ShapeInference(
-                    "Gather indices input is absent".to_string(),
-                ));
+                return Err(ctx.shape_error("Gather indices input is absent"));
             }
             TensorShape::Unknown => {
-                return Err(onyxia_core::Error::ShapeInference(
-                    "Gather indices input has unknown shape".to_string(),
-                ));
+                return Err(ctx.shape_error("Gather indices input has unknown shape"));
             }
         };
 
@@ -79,9 +69,11 @@ impl Operator for GatherOp {
         };
 
         if normalized_axis >= data_shape.len() {
-            return Err(onyxia_core::Error::ShapeInference(format!(
-                "Gather axis {} is out of bounds for data shape {:?}",
-                axis, data_shape
+            let rank = data_shape.len();
+            return Err(ctx.shape_error(format!(
+                "Gather axis {} out of bounds for input rank {}\n  \
+                 Valid axis range: [-{}, {})",
+                axis, rank, rank, rank
             )));
         }
 

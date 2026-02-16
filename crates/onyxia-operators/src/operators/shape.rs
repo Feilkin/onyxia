@@ -21,46 +21,36 @@ impl Operator for ReshapeOp {
     fn infer_output_shapes(&self, ctx: &InferenceCtx) -> Result<Vec<TensorShape>> {
         // Reshape has 2 inputs: data (input 0) and shape (input 1)
         if ctx.input_count() < 2 {
-            return Err(onyxia_core::Error::ShapeInference(
-                "Reshape requires 2 inputs: data and shape".to_string(),
-            ));
+            return Err(ctx.shape_error("Reshape requires 2 inputs: data and shape"));
         }
 
         // Get input data shape
         let data_shape = match ctx.input_shape(0)? {
             TensorShape::Static(dims) => dims,
             TensorShape::Symbolic(_) => {
-                return Err(onyxia_core::Error::ShapeInference(
-                    "Reshape data input has symbolic shape - should be resolved".to_string(),
-                ));
+                return Err(
+                    ctx.shape_error("Reshape data input has symbolic shape - should be resolved")
+                );
             }
             TensorShape::Absent => {
-                return Err(onyxia_core::Error::ShapeInference(
-                    "Reshape data input is absent".to_string(),
-                ));
+                return Err(ctx.shape_error("Reshape data input is absent"));
             }
             TensorShape::Unknown => {
-                return Err(onyxia_core::Error::ShapeInference(
-                    "Reshape data input has unknown shape".to_string(),
-                ));
+                return Err(ctx.shape_error("Reshape data input has unknown shape"));
             }
         };
 
         // Get the target shape from the second input value
         let Some(target_shape_val) = ctx.input_value(1) else {
             // Shape is not a constant - we can't infer the output shape
-            return Err(onyxia_core::Error::ShapeInference(
-                "Reshape shape input must be a constant".to_string(),
-            ));
+            return Err(ctx.shape_error("Reshape shape input must be a constant"));
         };
 
         // Parse i64 shape from the value
         let target_shape = match &target_shape_val.data {
             TensorData::I64(v) => v.as_slice(),
             _ => {
-                return Err(onyxia_core::Error::ShapeInference(
-                    "Reshape shape input must be I64".to_string(),
-                ));
+                return Err(ctx.shape_error("Reshape shape input must be I64"));
             }
         };
 
@@ -73,9 +63,7 @@ impl Operator for ReshapeOp {
         for (idx, &dim) in target_shape.iter().enumerate() {
             if dim == -1 {
                 if infer_dim.is_some() {
-                    return Err(onyxia_core::Error::ShapeInference(
-                        "Reshape can have at most one -1 dimension".to_string(),
-                    ));
+                    return Err(ctx.shape_error("Reshape can have at most one -1 dimension"));
                 }
                 infer_dim = Some(idx);
                 output_shape.push(0); // Placeholder
@@ -85,17 +73,18 @@ impl Operator for ReshapeOp {
                     output_shape.push(data_shape[idx]);
                     known_product *= data_shape[idx] as i64;
                 } else {
-                    return Err(onyxia_core::Error::ShapeInference(format!(
-                        "Reshape: dimension 0 at index {} out of range",
-                        idx
+                    return Err(ctx.shape_error(format!(
+                        "Reshape: dimension 0 at index {} out of range (input rank is {})",
+                        idx,
+                        data_shape.len()
                     )));
                 }
             } else if dim > 0 {
                 output_shape.push(dim as usize);
                 known_product *= dim;
             } else {
-                return Err(onyxia_core::Error::ShapeInference(format!(
-                    "Invalid reshape dimension: {}",
+                return Err(ctx.shape_error(format!(
+                    "Invalid reshape dimension: {} (must be > 0, or -1 to infer, or 0 to copy from input)",
                     dim
                 )));
             }
@@ -105,9 +94,12 @@ impl Operator for ReshapeOp {
         if let Some(idx) = infer_dim {
             let inferred = total_elements as i64 / known_product;
             if inferred * known_product != total_elements as i64 {
-                return Err(onyxia_core::Error::ShapeInference(format!(
-                    "Cannot reshape {} elements into {:?}",
-                    total_elements, target_shape
+                return Err(ctx.shape_error(format!(
+                    "Cannot reshape {} elements into shape {:?} ({} elements)\n  \
+                     Total element count must be preserved",
+                    total_elements,
+                    target_shape,
+                    known_product * inferred
                 )));
             }
             output_shape[idx] = inferred as usize;
@@ -751,31 +743,27 @@ impl Operator for ExpandOp {
 
     fn infer_output_shapes(&self, ctx: &InferenceCtx) -> Result<Vec<TensorShape>> {
         if ctx.input_count() < 2 {
-            return Err(onyxia_core::Error::ShapeInference(
-                "Expand requires 2 inputs: data and shape".to_string(),
-            ));
+            return Err(ctx.shape_error("Expand requires 2 inputs: data and shape"));
         }
 
         let Some(target_shape_val) = ctx.input_value(1) else {
-            return Err(onyxia_core::Error::ShapeInference(
-                "Expand shape input must be a constant".to_string(),
-            ));
+            return Err(ctx.shape_error("Expand shape input must be a constant"));
         };
 
         let target_shape = match &target_shape_val.data {
             TensorData::I64(v) => v.as_slice(),
             _ => {
-                return Err(onyxia_core::Error::ShapeInference(
-                    "Expand shape input must be I64".to_string(),
-                ));
+                return Err(
+                    ctx.shape_error("Expand shape input must be I64 (found different type)")
+                );
             }
         };
 
         let mut output_dims = Vec::new();
         for (i, &target_dim) in target_shape.iter().enumerate() {
             if target_dim <= 0 {
-                return Err(onyxia_core::Error::ShapeInference(format!(
-                    "Expand target dimension {} invalid: {}",
+                return Err(ctx.shape_error(format!(
+                    "Expand target dimension {} invalid: {} (must be > 0)",
                     i, target_dim
                 )));
             }
@@ -787,7 +775,7 @@ impl Operator for ExpandOp {
             let output_rank = output_dims.len();
 
             if output_rank < input_rank {
-                return Err(onyxia_core::Error::ShapeInference(format!(
+                return Err(ctx.shape_error(format!(
                     "Expand target rank {} < input rank {}",
                     output_rank, input_rank
                 )));
@@ -798,8 +786,11 @@ impl Operator for ExpandOp {
                 let input_dim = data_shape[i];
                 let output_dim = output_dims[offset + i];
                 if input_dim != 1 && input_dim != output_dim {
-                    return Err(onyxia_core::Error::ShapeInference(format!(
-                        "Expand: incompatible dimensions at {}: input={}, target={}",
+                    return Err(ctx.shape_error(format!(
+                        "Cannot expand dimension at position {}\n  \
+                         Input dimension: {} (must be 1 or match target)\n  \
+                         Target dimension: {}\n  \
+                         Per ONNX Expand spec: corresponding dimensions must match or one must be 1",
                         offset + i,
                         input_dim,
                         output_dim
