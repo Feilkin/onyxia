@@ -111,7 +111,7 @@ impl Default for ConstantFoldingPass {
 mod tests {
     use super::*;
     use onyxia_core::ir::IrEdge;
-    use onyxia_core::{DataType, EdgeData, IrGraph, IrNode, Operator, TensorShape, TensorValue};
+    use onyxia_core::{DataType, IrGraph, IrNode, Operator, TensorShape, TensorValue};
 
     // Mock operator that folds addition
     struct MockAddOperator;

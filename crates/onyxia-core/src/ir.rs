@@ -270,9 +270,12 @@ impl IrGraph {
         }
 
         let output_edge_id = node.outputs[0];
+        let edge = self.edge_mut(output_edge_id)?;
 
-        // Store the constant value on the output edge
-        self.edge_mut(output_edge_id)?.data = EdgeData::Constant(value);
+        // Update dtype, shape, and data to match the folded value
+        edge.dtype = value.dtype;
+        edge.shape = TensorShape::Static(value.shape.clone());
+        edge.data = EdgeData::Constant(value);
 
         // Remove the node (cleans up producer/consumer tables + petgraph)
         self.remove_node(node_id)

@@ -852,7 +852,7 @@ fn format_vec<T: std::fmt::Debug>(vec: &[T], max_elements: usize) -> String {
 
 mod tests {
     use super::*;
-    use crate::ir::{EdgeData, IrEdge, IrGraph, IrNode};
+    use crate::ir::{IrEdge, IrGraph, IrNode};
     use crate::types::{DataType, TensorData, TensorShape, TensorValue};
 
     #[test]

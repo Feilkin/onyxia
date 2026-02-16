@@ -806,10 +806,10 @@ fn make_range_graph_i64(start: i64, limit: i64, delta: i64) -> Graph {
     // Calculate output size
     let output_size = ((limit - start) as f64 / delta as f64).ceil().max(0.0) as usize;
 
-    // Add output tensor (1D F32 - Range outputs as F32 on GPU)
+    // Add output tensor (1D I64 - Range outputs same type as inputs)
     graph.add_tensor(TensorInfo {
         name: "output".to_string(),
-        dtype: DataType::F32,
+        dtype: DataType::I64,
         shape: TensorShape::Static(vec![output_size]),
         kind: TensorKind::Output,
         initializer: None,
@@ -925,11 +925,11 @@ async fn test_range_integer_step_1_e2e() {
     let outputs = executor.run(&[]).expect("Execution should succeed");
 
     let output = outputs["output"]
-        .to_vec::<f32>()
-        .expect("Should convert to f32");
+        .to_vec::<i64>()
+        .expect("Should convert to i64");
 
     // Expected: [0, 1, 2, 3, 4]
-    let expected = vec![0.0f32, 1.0, 2.0, 3.0, 4.0];
+    let expected = vec![0i64, 1, 2, 3, 4];
 
     assert_eq!(output, expected, "Range(0, 5, 1) result incorrect");
 
@@ -961,11 +961,11 @@ async fn test_range_integer_step_2_e2e() {
     let outputs = executor.run(&[]).expect("Execution should succeed");
 
     let output = outputs["output"]
-        .to_vec::<f32>()
-        .expect("Should convert to f32");
+        .to_vec::<i64>()
+        .expect("Should convert to i64");
 
     // Expected: [2, 4, 6, 8]
-    let expected = vec![2.0f32, 4.0, 6.0, 8.0];
+    let expected = vec![2i64, 4, 6, 8];
 
     assert_eq!(output, expected, "Range(2, 10, 2) result incorrect");
 
@@ -997,11 +997,11 @@ async fn test_range_negative_step_e2e() {
     let outputs = executor.run(&[]).expect("Execution should succeed");
 
     let output = outputs["output"]
-        .to_vec::<f32>()
-        .expect("Should convert to f32");
+        .to_vec::<i64>()
+        .expect("Should convert to i64");
 
     // Expected: [10, 8, 6, 4, 2]
-    let expected = vec![10.0f32, 8.0, 6.0, 4.0, 2.0];
+    let expected = vec![10i64, 8, 6, 4, 2];
 
     assert_eq!(output, expected, "Range(10, 0, -2) result incorrect");
 
