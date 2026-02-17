@@ -215,6 +215,181 @@ async fn test_reduce_mean_3d_tensor() {
 }
 
 // ================================================================================
+// ReduceSum operator tests
+// ================================================================================
+
+/// Helper to create a ReduceSum graph with axes as an initializer.
+fn make_reduce_sum_graph(
+    input_shape: &[usize],
+    output_shape: &[usize],
+    axes: &[i64],
+    keepdims: bool,
+) -> Graph {
+    let mut graph = Graph::new();
+
+    // Add input tensor
+    graph.add_tensor(TensorInfo {
+        name: "data".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(input_shape.to_vec()),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Add axes as initializer tensor (constant)
+    let axes_data: Vec<u8> = axes.iter().flat_map(|&x| x.to_le_bytes()).collect();
+
+    graph.add_tensor(TensorInfo {
+        name: "axes".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![axes.len()]),
+        kind: TensorKind::Weight,
+        initializer: Some(axes_data),
+    });
+
+    // Add output tensor
+    graph.add_tensor(TensorInfo {
+        name: "reduced".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(output_shape.to_vec()),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    // Create ReduceSum node
+    let mut node = Node::new("ReduceSum");
+    node.name = "reduce_sum_op".to_string();
+    node.inputs = vec!["data".to_string(), "axes".to_string()];
+    node.outputs = vec!["reduced".to_string()];
+    node.attributes.insert(
+        "keepdims".to_string(),
+        onyxia_onnx::AttributeValue::Int(if keepdims { 1 } else { 0 }),
+    );
+    graph.add_node(node);
+
+    // Set graph inputs and outputs
+    graph.inputs = vec!["data".to_string()];
+    graph.outputs = vec!["reduced".to_string()];
+
+    // Set metadata
+    graph.metadata.name = "test_reduce_sum_graph".to_string();
+    graph.metadata.ir_version = 9;
+    graph.metadata.producer_name = "onyxia_test".to_string();
+    graph.metadata.model_version = 1;
+
+    graph
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_reduce_sum_single_axis() {
+    // Reduce along axis 0: [[1, 2, 3], [4, 5, 6]] -> [5, 7, 9]
+    // Input shape: (2, 3), output shape: (3,)
+    let graph = make_reduce_sum_graph(&[2, 3], &[3], &[0], false);
+
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+    let outputs = executor.run(&[("data", input)]).unwrap();
+    let result: Vec<f32> = outputs["reduced"].to_vec().unwrap();
+
+    let expected = vec![5.0, 7.0, 9.0]; // 1+4, 2+5, 3+6
+    assert_vec_approx_eq(&result, &expected, 1e-5);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_reduce_sum_last_axis() {
+    // Reduce along last axis: [[1, 2, 3], [4, 5, 6]] -> [6, 15]
+    // Input shape: (2, 3), output shape: (2,)
+    let graph = make_reduce_sum_graph(&[2, 3], &[2], &[1], false);
+
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+    let outputs = executor.run(&[("data", input)]).unwrap();
+    let result: Vec<f32> = outputs["reduced"].to_vec().unwrap();
+
+    let expected = vec![6.0, 15.0]; // 1+2+3, 4+5+6
+    assert_vec_approx_eq(&result, &expected, 1e-5);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_reduce_sum_all_axes() {
+    // Reduce all axes: [1, 2, 3, 4] -> [10]
+    // Input shape: (4,), output shape: (1,) (scalar)
+    let graph = make_reduce_sum_graph(&[4], &[1], &[0], false);
+
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[4]);
+    let outputs = executor.run(&[("data", input)]).unwrap();
+    let result: Vec<f32> = outputs["reduced"].to_vec().unwrap();
+
+    assert_approx_eq(result[0], 10.0, 1e-5); // 1+2+3+4
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_reduce_sum_keepdims() {
+    // Reduce with keepdims: [[1, 2, 3]] -> [[6]]
+    // Input shape: (1, 3), output shape: (1, 1)
+    let graph = make_reduce_sum_graph(&[1, 3], &[1, 1], &[1], true);
+
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], &[1, 3]);
+    let outputs = executor.run(&[("data", input)]).unwrap();
+    let result: Vec<f32> = outputs["reduced"].to_vec().unwrap();
+
+    assert_approx_eq(result[0], 6.0, 1e-5); // 1+2+3
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_reduce_sum_3d_tensor() {
+    // Reduce middle axis: [[[1, 2], [3, 4]], [[5, 6], [7, 8]]] with axes=[1]
+    // Input shape: (2, 2, 2), output shape: (2, 2)
+    // Expected: [[(1+3), (2+4)], [(5+7), (6+8)]] = [[4, 6], [12, 14]]
+    let graph = make_reduce_sum_graph(&[2, 2, 2], &[2, 2], &[1], false);
+
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 2, 2]);
+    let outputs = executor.run(&[("data", input)]).unwrap();
+    let result: Vec<f32> = outputs["reduced"].to_vec().unwrap();
+
+    let expected = vec![4.0, 6.0, 12.0, 14.0];
+    assert_vec_approx_eq(&result, &expected, 1e-5);
+}
+
+// ================================================================================
 // Max operator tests (element-wise maximum)
 // ================================================================================
 

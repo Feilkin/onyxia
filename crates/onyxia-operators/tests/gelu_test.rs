@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{make_unary_graph, CompilerPipeline, Runtime, Tensor};
+use common::{CompilerPipeline, Runtime, Tensor, make_unary_graph};
 use onyxia_onnx::DataType;
 use onyxia_operators::core_operator_registry;
 

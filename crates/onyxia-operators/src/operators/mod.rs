@@ -8,6 +8,7 @@ pub mod gather;
 pub mod matmul;
 pub mod range;
 pub mod reduce_mean;
+pub mod reduce_sum;
 pub mod scatter_nd;
 pub mod shape;
 pub mod softmax;
@@ -21,6 +22,7 @@ pub use gather::GatherOp;
 pub use matmul::MatMulOp;
 pub use range::RangeOp;
 pub use reduce_mean::ReduceMeanOp;
+pub use reduce_sum::ReduceSumOp;
 pub use scatter_nd::ScatterNDOp;
 pub use shape::{
     ConcatOp, ConstantOfShapeOp, ExpandOp, ReshapeOp, ShapeOp, SliceOp, TransposeOp, UnsqueezeOp,
