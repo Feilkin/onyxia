@@ -1,6 +1,6 @@
 //! Binary elementwise operator family.
 //!
-//! Covers: Add, Mul
+//! Covers: Add, Mul, Div, Sub, Pow
 
 use onyxia_core::{
     CompileCtx, DispatchCtx, OpDispatch, Operator, Result, RuntimeTensor, broadcast_shape,
@@ -12,6 +12,15 @@ const ADD_SHADER: &str = include_str!("../../shaders/elementwise/add.wgsl");
 
 /// Shader source for the Mul operator.
 const MUL_SHADER: &str = include_str!("../../shaders/elementwise/mul.wgsl");
+
+/// Shader source for the Div operator.
+const DIV_SHADER: &str = include_str!("../../shaders/elementwise/div.wgsl");
+
+/// Shader source for the Sub operator.
+const SUB_SHADER: &str = include_str!("../../shaders/elementwise/sub.wgsl");
+
+/// Shader source for the Pow operator.
+const POW_SHADER: &str = include_str!("../../shaders/elementwise/pow.wgsl");
 
 /// Binary elementwise operator family.
 ///
@@ -42,6 +51,30 @@ impl BinaryElementwiseOp {
         Self {
             name: "Mul",
             shader_source: MUL_SHADER,
+        }
+    }
+
+    /// Create a Div operator.
+    pub fn div() -> Self {
+        Self {
+            name: "Div",
+            shader_source: DIV_SHADER,
+        }
+    }
+
+    /// Create a Sub operator.
+    pub fn sub() -> Self {
+        Self {
+            name: "Sub",
+            shader_source: SUB_SHADER,
+        }
+    }
+
+    /// Create a Pow operator.
+    pub fn pow() -> Self {
+        Self {
+            name: "Pow",
+            shader_source: POW_SHADER,
         }
     }
 }
@@ -110,7 +143,12 @@ impl OpDispatch for BinaryElementwiseDispatch {
         });
 
         // Dispatch compute shader with immediates
-        ctx.dispatch_compute(&pipeline, &bind_group, [num_workgroups, 1, 1], Some(&immediates))?;
+        ctx.dispatch_compute(
+            &pipeline,
+            &bind_group,
+            [num_workgroups, 1, 1],
+            Some(&immediates),
+        )?;
 
         Ok(vec![output])
     }

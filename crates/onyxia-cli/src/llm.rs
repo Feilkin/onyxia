@@ -85,7 +85,6 @@ impl LlmSession {
         // Convert to the format expected by DispatchExecutor::run
         let input_refs: Vec<(&str, Tensor)> = inputs
             .into_iter()
-            .map(|(name, tensor)| (name, tensor))
             .collect();
 
         // Run the model
@@ -166,7 +165,6 @@ impl LlmSession {
         // Convert to the format expected by DispatchExecutor::run
         let input_refs: Vec<(&str, Tensor)> = inputs
             .into_iter()
-            .map(|(name, tensor)| (name, tensor))
             .collect();
 
         // Run the model

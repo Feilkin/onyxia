@@ -391,3 +391,346 @@ async fn test_reshape() {
     // Data is unchanged, just shape
     assert_eq!(result, (1..=12).map(|x| x as f32).collect::<Vec<_>>());
 }
+
+// ================================================================================
+// Div operator tests
+// ================================================================================
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_div_basic() {
+    // Create graph: a[4] / b[4] -> c[4]
+    let graph = make_binary_elementwise_graph("Div", "div_op", DataType::F32, &[4]);
+
+    // Compile
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    // Load and execute
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![6.0f32, 8.0, 10.0, 12.0], &[4]);
+    let b = Tensor::from_vec(vec![2.0f32, 4.0, 5.0, 3.0], &[4]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<f32> = outputs["c"].to_vec().unwrap();
+
+    // 6/2=3, 8/4=2, 10/5=2, 12/3=4
+    assert_eq!(result, vec![3.0, 2.0, 2.0, 4.0]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_div_broadcast() {
+    // Test [2, 3] / [1] broadcasting
+    let mut graph = Graph::new();
+
+    // Input a: [2, 3]
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![2, 3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Input b: [1] (scalar)
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Output c: [2, 3]
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![2, 3]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("Div");
+    node.name = "div_broadcast".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    // Compile
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    // Execute
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![10.0f32, 20.0, 30.0, 40.0, 50.0, 60.0], &[2, 3]);
+    let b = Tensor::from_vec(vec![2.0f32], &[1]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<f32> = outputs["c"].to_vec().unwrap();
+
+    assert_eq!(result, vec![5.0, 10.0, 15.0, 20.0, 25.0, 30.0]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_div_by_zero() {
+    // Test division by zero yields Inf
+    let graph = make_binary_elementwise_graph("Div", "div_op", DataType::F32, &[2]);
+
+    // Compile
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    // Execute
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![1.0f32, -1.0], &[2]);
+    let b = Tensor::from_vec(vec![0.0f32, 0.0], &[2]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<f32> = outputs["c"].to_vec().unwrap();
+
+    // 1.0/0.0 = Inf, -1.0/0.0 = -Inf
+    assert!(result[0].is_infinite() && result[0].is_sign_positive());
+    assert!(result[1].is_infinite() && result[1].is_sign_negative());
+}
+
+// ================================================================================
+// Sub operator tests
+// ================================================================================
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_sub_basic() {
+    // Create graph: a[4] - b[4] -> c[4]
+    let graph = make_binary_elementwise_graph("Sub", "sub_op", DataType::F32, &[4]);
+
+    // Compile
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    // Load and execute
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![5.0f32, 3.0, 10.0, 0.0], &[4]);
+    let b = Tensor::from_vec(vec![2.0f32, 1.0, 5.0, 1.0], &[4]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<f32> = outputs["c"].to_vec().unwrap();
+
+    // 5-2=3, 3-1=2, 10-5=5, 0-1=-1
+    assert_eq!(result, vec![3.0, 2.0, 5.0, -1.0]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_sub_broadcast() {
+    // Test [3] - [1] broadcasting
+    let mut graph = Graph::new();
+
+    // Input a: [3]
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Input b: [1] (scalar)
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Output c: [3]
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("Sub");
+    node.name = "sub_broadcast".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    // Compile
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    // Execute
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![10.0f32, 20.0, 30.0], &[3]);
+    let b = Tensor::from_vec(vec![5.0f32], &[1]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<f32> = outputs["c"].to_vec().unwrap();
+
+    assert_eq!(result, vec![5.0, 15.0, 25.0]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_sub_negative_result() {
+    // Test subtraction producing negative results
+    let graph = make_binary_elementwise_graph("Sub", "sub_op", DataType::F32, &[3]);
+
+    // Compile
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    // Execute
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![0.0f32, 1.0, 2.0], &[3]);
+    let b = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], &[3]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<f32> = outputs["c"].to_vec().unwrap();
+
+    assert_eq!(result, vec![-1.0, -1.0, -1.0]);
+}
+
+// ================================================================================
+// Pow operator tests
+// ================================================================================
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_pow_basic() {
+    // Create graph: a[4] ** b[4] -> c[4]
+    let graph = make_binary_elementwise_graph("Pow", "pow_op", DataType::F32, &[4]);
+
+    // Compile
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    // Load and execute
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![2.0f32, 3.0, 4.0, 5.0], &[4]);
+    let b = Tensor::from_vec(vec![3.0f32, 2.0, 2.0, 1.0], &[4]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<f32> = outputs["c"].to_vec().unwrap();
+
+    // 2^3=8, 3^2=9, 4^2=16, 5^1=5
+    assert_eq!(result, vec![8.0, 9.0, 16.0, 5.0]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_pow_broadcast() {
+    // Test [1] ** [4] broadcasting
+    let mut graph = Graph::new();
+
+    // Input a: [1] (scalar base)
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Input b: [4] (exponents)
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Output c: [4]
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("Pow");
+    node.name = "pow_broadcast".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    // Compile
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    // Execute
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![2.0f32], &[1]);
+    let b = Tensor::from_vec(vec![0.0f32, 1.0, 2.0, 3.0], &[4]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<f32> = outputs["c"].to_vec().unwrap();
+
+    // 2^0=1, 2^1=2, 2^2=4, 2^3=8
+    assert_eq!(result, vec![1.0, 2.0, 4.0, 8.0]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_pow_special_cases() {
+    // Test special cases: 0^0 = 1, 0^x = 0, x^0 = 1
+    let graph = make_binary_elementwise_graph("Pow", "pow_op", DataType::F32, &[3]);
+
+    // Compile
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    // Execute
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![0.0f32, 0.0, 5.0], &[3]);
+    let b = Tensor::from_vec(vec![0.0f32, 2.0, 0.0], &[3]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<f32> = outputs["c"].to_vec().unwrap();
+
+    // 0^0=1, 0^2=0, 5^0=1
+    assert_eq!(result, vec![1.0, 0.0, 1.0]);
+}

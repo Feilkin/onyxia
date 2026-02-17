@@ -1,16 +1,16 @@
 //! Core operator registry.
 //!
-//! Provides a pre-populated registry with 3 minimal core operators.
+//! Provides a pre-populated registry with core operators.
 
 use onyxia_core::OperatorRegistry;
 
 use crate::families::BinaryElementwiseOp;
 use crate::operators::ReshapeOp;
 
-/// Returns an operator registry pre-populated with 3 core operators.
+/// Returns an operator registry pre-populated with core operators.
 ///
 /// The registry includes:
-/// - 2 binary elementwise operators (Add, Mul)
+/// - 5 binary elementwise operators (Add, Mul, Div, Sub, Pow)
 /// - 1 shape manipulation operator (Reshape)
 ///
 /// Custom operators can be added to the returned registry via
@@ -21,6 +21,9 @@ pub fn core_operator_registry() -> OperatorRegistry {
     // Binary elementwise operators
     registry.register("Add", BinaryElementwiseOp::add());
     registry.register("Mul", BinaryElementwiseOp::mul());
+    registry.register("Div", BinaryElementwiseOp::div());
+    registry.register("Sub", BinaryElementwiseOp::sub());
+    registry.register("Pow", BinaryElementwiseOp::pow());
 
     // Shape manipulation operators
     registry.register("Reshape", ReshapeOp);
