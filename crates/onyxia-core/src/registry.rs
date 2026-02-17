@@ -87,10 +87,7 @@ impl Default for OperatorRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Result;
-    use crate::context::{InferenceCtx, PlanCtx};
-    use crate::plan::Step;
-    use crate::types::TensorShape;
+    use crate::{CompileCtx, OpDispatch, Result};
 
     // Mock operators for testing
     struct AddOp;
@@ -98,11 +95,10 @@ mod tests {
         fn name(&self) -> &str {
             "Add"
         }
-        fn infer_output_shapes(&self, _ctx: &InferenceCtx) -> Result<Vec<TensorShape>> {
-            Ok(vec![])
-        }
-        fn plan(&self, _ctx: &mut PlanCtx) -> Result<Vec<Step>> {
-            Ok(vec![])
+        fn create_dispatch(&self, _ctx: &mut CompileCtx) -> Result<Box<dyn OpDispatch>> {
+            Err(crate::Error::Compilation(
+                "mock operator for testing".to_string(),
+            ))
         }
     }
 
@@ -111,11 +107,10 @@ mod tests {
         fn name(&self) -> &str {
             "Mul"
         }
-        fn infer_output_shapes(&self, _ctx: &InferenceCtx) -> Result<Vec<TensorShape>> {
-            Ok(vec![])
-        }
-        fn plan(&self, _ctx: &mut PlanCtx) -> Result<Vec<Step>> {
-            Ok(vec![])
+        fn create_dispatch(&self, _ctx: &mut CompileCtx) -> Result<Box<dyn OpDispatch>> {
+            Err(crate::Error::Compilation(
+                "mock operator for testing".to_string(),
+            ))
         }
     }
 

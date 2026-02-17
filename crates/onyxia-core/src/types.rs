@@ -17,6 +17,9 @@ pub enum TensorShape {
 
     /// Optional input that is absent (ONNX empty string).
     Absent,
+
+    /// Shape is completely unknown (no dimension information).
+    Unknown,
 }
 
 impl TensorShape {
@@ -28,6 +31,11 @@ impl TensorShape {
     /// Check if the shape is absent.
     pub fn is_absent(&self) -> bool {
         matches!(self, TensorShape::Absent)
+    }
+
+    /// Check if the shape is unknown.
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, TensorShape::Unknown)
     }
 
     /// Get static dimensions if available.
@@ -42,7 +50,7 @@ impl TensorShape {
     pub fn ndim(&self) -> Option<usize> {
         match self {
             TensorShape::Static(dims) => Some(dims.len()),
-            TensorShape::Absent => None,
+            TensorShape::Absent | TensorShape::Unknown => None,
         }
     }
 
@@ -67,7 +75,7 @@ impl TensorShape {
                 TensorShape::Static(static_dims)
             }
             onyxia_onnx::TensorShape::Absent => TensorShape::Absent,
-            onyxia_onnx::TensorShape::Unknown => TensorShape::Static(vec![]), // Empty placeholder
+            onyxia_onnx::TensorShape::Unknown => TensorShape::Unknown,
         }
     }
 }
@@ -493,26 +501,26 @@ mod tests {
     }
 
     #[test]
-    fn test_tensor_shape_is_static() {
+    fn test_tensor_shape_variants() {
         let static_shape = TensorShape::Static(vec![1, 2, 3]);
         assert!(static_shape.is_static());
+        assert!(!static_shape.is_absent());
+        assert!(!static_shape.is_unknown());
         assert_eq!(static_shape.ndim(), Some(3));
-
-        let symbolic_shape = TensorShape::Symbolic(vec![
-            SymbolicDim::Fixed(1),
-            SymbolicDim::Expr(SymbolicExpr::Variable("batch".to_string())),
-        ]);
-        assert!(!symbolic_shape.is_static());
-        assert_eq!(symbolic_shape.ndim(), Some(2));
+        assert_eq!(static_shape.as_static(), Some(&[1, 2, 3][..]));
 
         let absent_shape = TensorShape::Absent;
         assert!(!absent_shape.is_static());
         assert!(absent_shape.is_absent());
+        assert!(!absent_shape.is_unknown());
         assert_eq!(absent_shape.ndim(), None);
+        assert_eq!(absent_shape.as_static(), None);
 
         let unknown_shape = TensorShape::Unknown;
         assert!(!unknown_shape.is_static());
+        assert!(!unknown_shape.is_absent());
         assert!(unknown_shape.is_unknown());
         assert_eq!(unknown_shape.ndim(), None);
+        assert_eq!(unknown_shape.as_static(), None);
     }
 }
