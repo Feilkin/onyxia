@@ -8,6 +8,7 @@ pub mod matmul;
 pub mod reduce_mean;
 pub mod scatter_nd;
 pub mod shape;
+pub mod softmax;
 
 // Re-export all operators
 pub use cast::CastOp;
@@ -18,3 +19,4 @@ pub use scatter_nd::ScatterNDOp;
 pub use shape::{
     ConcatOp, ConstantOfShapeOp, ExpandOp, ReshapeOp, ShapeOp, SliceOp, TransposeOp, UnsqueezeOp,
 };
+pub use softmax::SoftmaxOp;

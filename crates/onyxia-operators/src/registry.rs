@@ -7,7 +7,7 @@ use onyxia_core::OperatorRegistry;
 use crate::families::{BinaryElementwiseOp, ComparisonOp, MaxOp, UnaryMathOp};
 use crate::operators::{
     CastOp, ConcatOp, ConstantOfShapeOp, ExpandOp, GatherOp, MatMulOp, ReduceMeanOp, ReshapeOp,
-    ScatterNDOp, ShapeOp, SliceOp, TransposeOp, UnsqueezeOp,
+    ScatterNDOp, ShapeOp, SliceOp, SoftmaxOp, TransposeOp, UnsqueezeOp,
 };
 
 /// Returns an operator registry pre-populated with core operators.
@@ -21,6 +21,7 @@ use crate::operators::{
 /// - 1 matrix operator (MatMul)
 /// - 1 element-wise variadic operator (Max)
 /// - 1 reduction operator (ReduceMean)
+/// - 1 activation operator (Softmax)
 /// - 1 type conversion operator (Cast)
 ///
 /// Custom operators can be added to the returned registry via
@@ -71,6 +72,10 @@ pub fn core_operator_registry() -> OperatorRegistry {
 
     // Reduction operators
     registry.register("ReduceMean", ReduceMeanOp);
+
+    // Activation operators
+    registry.register("Softmax", SoftmaxOp);
+
     // Type conversion operators
     registry.register("Cast", CastOp);
 
