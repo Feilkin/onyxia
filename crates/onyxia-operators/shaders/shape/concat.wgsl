@@ -33,9 +33,10 @@ fn index_to_coords(idx: u32, shape: array<u32, 8>, rank: u32) -> array<u32, 8> {
     var coords: array<u32, 8>;
     var remaining = idx;
     
-    for (var i: i32 = i32(rank) - 1; i >= 0; i = i - 1) {
+    // Iterate from first dimension to last for row-major layout
+    for (var i = 0u; i < rank; i = i + 1u) {
         var stride = 1u;
-        for (var j: u32 = u32(i) + 1u; j < rank; j = j + 1u) {
+        for (var j = i + 1u; j < rank; j = j + 1u) {
             stride = stride * shape[j];
         }
         coords[i] = remaining / stride;
