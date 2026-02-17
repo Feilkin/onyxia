@@ -178,7 +178,11 @@ fn check_operator_support(model: &Graph, registry: &OperatorRegistry) -> Result<
 
     for node in &model.nodes {
         if registry.get(&node.op_type).is_none() {
-            unsupported.push(&node.op_type);
+            unsupported.push(if node.domain.is_empty() {
+                node.op_type.clone()
+            } else {
+                format!("{}::{}", node.domain, node.op_type)
+            });
         }
     }
 
