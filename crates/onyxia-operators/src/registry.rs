@@ -16,7 +16,7 @@ use crate::operators::{
 /// The registry includes:
 /// - 5 binary elementwise operators (Add, Mul, Div, Sub, Pow)
 /// - 5 comparison operators (Equal, Greater, Less, GreaterOrEqual, LessOrEqual)
-/// - 5 unary math operators (Neg, Sqrt, Cos, Sin, Tanh)
+/// - 6 unary math operators (Neg, Sqrt, Cos, Sin, Tanh, Gelu)
 /// - 8 shape manipulation operators (Reshape, Concat, Expand, Transpose, Unsqueeze, Slice, Shape, ConstantOfShape)
 /// - 2 indexing operators (Gather, ScatterND)
 /// - 1 matrix operator (MatMul)
@@ -51,6 +51,7 @@ pub fn core_operator_registry() -> OperatorRegistry {
     registry.register("Cos", UnaryMathOp::cos());
     registry.register("Sin", UnaryMathOp::sin());
     registry.register("Tanh", UnaryMathOp::tanh());
+    registry.register("Gelu", UnaryMathOp::gelu());
 
     // Shape manipulation operators
     registry.register("Reshape", ReshapeOp);

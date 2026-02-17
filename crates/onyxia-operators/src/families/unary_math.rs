@@ -20,6 +20,9 @@ const SIN_SHADER: &str = include_str!("../../shaders/unary_math/sin.wgsl");
 /// Shader source for the Tanh operator.
 const TANH_SHADER: &str = include_str!("../../shaders/unary_math/tanh.wgsl");
 
+/// Shader source for the Gelu operator.
+const GELU_SHADER: &str = include_str!("../../shaders/unary_math/gelu.wgsl");
+
 /// Unary math operator family.
 ///
 /// All unary math operations share the same structure:
@@ -72,6 +75,14 @@ impl UnaryMathOp {
         Self {
             name: "Tanh",
             shader_source: TANH_SHADER,
+        }
+    }
+
+    /// Create a Gelu operator (Gaussian Error Linear Unit: Y = GELU(X)).
+    pub fn gelu() -> Self {
+        Self {
+            name: "Gelu",
+            shader_source: GELU_SHADER,
         }
     }
 }
@@ -152,5 +163,26 @@ impl Operator for UnaryMathOp {
             module,
             label: self.name.to_string(),
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_gelu_operator_creation() {
+        let op = UnaryMathOp::gelu();
+        assert_eq!(op.name(), "Gelu");
+    }
+
+    #[test]
+    fn test_unary_math_operator_names() {
+        assert_eq!(UnaryMathOp::neg().name(), "Neg");
+        assert_eq!(UnaryMathOp::sqrt().name(), "Sqrt");
+        assert_eq!(UnaryMathOp::cos().name(), "Cos");
+        assert_eq!(UnaryMathOp::sin().name(), "Sin");
+        assert_eq!(UnaryMathOp::tanh().name(), "Tanh");
+        assert_eq!(UnaryMathOp::gelu().name(), "Gelu");
     }
 }
