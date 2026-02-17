@@ -190,4 +190,22 @@ impl DispatchExecutor {
 
         Ok(data)
     }
+
+    /// Get the model's input register names.
+    pub fn input_names(&self) -> Vec<&str> {
+        self.model
+            .input_registers
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect()
+    }
+
+    /// Get the model's output register names.
+    pub fn output_names(&self) -> Vec<&str> {
+        self.model
+            .output_registers
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect()
+    }
 }

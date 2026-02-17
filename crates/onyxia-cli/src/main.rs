@@ -223,25 +223,18 @@ fn main() -> Result<()> {
             cmd_inspect(model, dynamic_dims)?;
         }
         Commands::RunModel {
-            model: _,
-            tokenizer: _,
-            prompt: _,
-            max_tokens: _,
-            temperature: _,
-            top_k: _,
-            top_p: _,
-            seed: _,
-            max_seq_len: _,
-            num_layers: _,
-            no_stream: _,
+            model,
+            tokenizer,
+            prompt,
+            max_tokens,
+            temperature,
+            top_k,
+            top_p,
+            seed,
+            max_seq_len,
+            num_layers,
+            no_stream,
         } => {
-            // Temporarily disabled pending operator re-implementation with dispatch model
-            anyhow::bail!(
-                "RunModel command is temporarily disabled.\n\
-                 The runtime is being rewritten to use a dispatch-based execution model.\n\
-                 Model execution will be re-enabled after operators are ported to the new interface."
-            );
-            /*
             pollster::block_on(cmd_run_model(
                 model,
                 tokenizer,
@@ -255,7 +248,6 @@ fn main() -> Result<()> {
                 num_layers,
                 !no_stream,
             ))?;
-            */
         }
         Commands::InspectNode {
             model,
@@ -670,37 +662,25 @@ async fn cmd_run_model(
     let model = onyxia_onnx::load_and_parse_model(&model_path)
         .with_context(|| format!("Failed to load model from {}", model_path.display()))?;
 
-    let mut dynamic_dims = std::collections::HashMap::new();
-    dynamic_dims.insert("batch_size".to_string(), 1);
-    dynamic_dims.insert("sequence_length".to_string(), max_seq_len);
-    dynamic_dims.insert("total_sequence_length".to_string(), max_seq_len);
-    dynamic_dims.insert("past_sequence_length".to_string(), 0);
-    dynamic_dims.insert("num_attention_heads".to_string(), 4);
-    dynamic_dims.insert("num_key_value_heads".to_string(), 1);
-    dynamic_dims.insert("head_dim".to_string(), 256);
-
-    // Resolve dynamic dimensions and compile to execution plan
+    // Compile to dispatch model (no dynamic dimensions needed - shapes determined at runtime)
     let registry = onyxia_operators::core_operator_registry();
     let mut pipeline = onyxia_compiler::CompilerPipeline::new();
 
-    // Note: Dynamic dimensions no longer passed at compile time
-    let _ = dynamic_dims; // Suppress unused warning
-
     println!("Compiling execution plan...");
-    let plan = pipeline
+    let compiled_model = pipeline
         .compile(&model, &registry)
         .with_context(|| "Failed to compile model")?;
 
     println!("Initializing GPU runtime...");
 
-    // Create runtime and load plan
+    // Create runtime and load model
     let runtime = onyxia_runtime::Runtime::new()
         .await
         .with_context(|| "Failed to create GPU runtime")?;
     let executor = runtime
-        .load_model(plan)
+        .load_model(compiled_model)
         .await
-        .with_context(|| "Failed to load execution plan")?;
+        .with_context(|| "Failed to load compiled model")?;
 
     // Create LLM session
     let llm_config = LlmConfig {
