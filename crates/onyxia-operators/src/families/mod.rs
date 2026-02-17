@@ -5,8 +5,10 @@
 
 pub mod binary_elementwise;
 pub mod comparison;
+pub mod max_elementwise;
 pub mod unary_math;
 
 pub use binary_elementwise::BinaryElementwiseOp;
 pub use comparison::ComparisonOp;
+pub use max_elementwise::MaxOp;
 pub use unary_math::UnaryMathOp;
