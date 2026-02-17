@@ -97,6 +97,7 @@ pub fn core_operator_registry() -> OperatorRegistry {
         "com.microsoft::SimplifiedLayerNormalization",
         SimplifiedLayerNormOp,
     );
+    registry.register("SimplifiedLayerNormalization", SimplifiedLayerNormOp);
     registry.register("com.microsoft::RotaryEmbedding", RotaryEmbeddingOp);
     registry.register("com.microsoft::GemmaRotaryEmbedding", RotaryEmbeddingOp); // Alias for Gemma models
     registry.register("com.microsoft::GroupQueryAttention", GroupQueryAttentionOp);
