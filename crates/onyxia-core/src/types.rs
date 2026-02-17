@@ -1,29 +1,22 @@
 //! Core types for tensor shapes, values, and metadata.
 
-use crate::symbolic_expr::SymbolicExpr;
 use crate::{Error, Result};
 
 // Re-export types from onyxia-onnx
 pub use onyxia_onnx::DataType;
 
-/// Tensor shape with support for static, symbolic, absent, and unknown shapes.
+/// Tensor shape for weights and constants.
 ///
-/// Unknown shapes represent tensors whose shapes have not yet been inferred.
-/// These are allowed to exist during graph construction, but must be resolved
-/// by the shape inference pass before planning.
+/// With the dispatch model, runtime tensor shapes are computed from actual
+/// inputs. This enum only tracks compile-time known shapes for weights
+/// and constants from the ONNX model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TensorShape {
-    /// All dimensions are known at compile time.
+    /// All dimensions are known at compile time (for weights/constants).
     Static(Vec<usize>),
-
-    /// Mix of static and symbolic dimensions (e.g., `[batch_size, 128, seq_length * 8]`).
-    Symbolic(Vec<SymbolicDim>),
 
     /// Optional input that is absent (ONNX empty string).
     Absent,
-
-    /// Shape has not yet been inferred (must be resolved before planning).
-    Unknown,
 }
 
 impl TensorShape {
@@ -35,11 +28,6 @@ impl TensorShape {
     /// Check if the shape is absent.
     pub fn is_absent(&self) -> bool {
         matches!(self, TensorShape::Absent)
-    }
-
-    /// Check if the shape is unknown (not yet inferred).
-    pub fn is_unknown(&self) -> bool {
-        matches!(self, TensorShape::Unknown)
     }
 
     /// Get static dimensions if available.
@@ -54,64 +42,32 @@ impl TensorShape {
     pub fn ndim(&self) -> Option<usize> {
         match self {
             TensorShape::Static(dims) => Some(dims.len()),
-            TensorShape::Symbolic(dims) => Some(dims.len()),
-            TensorShape::Absent | TensorShape::Unknown => None,
+            TensorShape::Absent => None,
         }
     }
 
     /// Convert from ONNX TensorShape to core TensorShape.
     ///
-    /// Maps all ONNX shape variants to their core equivalents, including Unknown.
-    /// Unknown shapes must be resolved by the shape inference pass before planning.
+    /// Maps ONNX shapes to core shapes. Dynamic shapes from ONNX (runtime inputs)
+    /// are mapped to Static with placeholder dimensions — these will be ignored
+    /// at runtime since shapes come from actual input tensors.
     pub fn from_onnx(onnx_shape: &onyxia_onnx::TensorShape) -> Self {
         match onnx_shape {
             onyxia_onnx::TensorShape::Static(dims) => TensorShape::Static(dims.clone()),
             onyxia_onnx::TensorShape::Dynamic(dims) => {
-                let symbolic_dims = dims
+                // Map dynamic dimensions to placeholder static dims
+                // Runtime shapes will be computed from actual inputs
+                let static_dims = dims
                     .iter()
                     .map(|dim| match dim {
-                        onyxia_onnx::Dimension::Static(n) => SymbolicDim::Fixed(*n),
-                        onyxia_onnx::Dimension::Named(name) => {
-                            // Try to parse as expression, fall back to variable
-                            match crate::symbolic_expr::parse_expr(name) {
-                                Ok(expr) => SymbolicDim::Expr(expr),
-                                Err(_) => {
-                                    // If parsing fails, treat as a simple variable
-                                    SymbolicDim::Expr(SymbolicExpr::Variable(name.clone()))
-                                }
-                            }
-                        }
+                        onyxia_onnx::Dimension::Static(n) => *n,
+                        onyxia_onnx::Dimension::Named(_) => 0, // Placeholder
                     })
                     .collect();
-                TensorShape::Symbolic(symbolic_dims)
+                TensorShape::Static(static_dims)
             }
             onyxia_onnx::TensorShape::Absent => TensorShape::Absent,
-            onyxia_onnx::TensorShape::Unknown => TensorShape::Unknown,
-        }
-    }
-}
-
-/// A single dimension in a symbolic tensor shape.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SymbolicDim {
-    /// Compile-time constant dimension.
-    Fixed(usize),
-
-    /// Symbolic expression (e.g., `sequence_length * num_attention_heads`).
-    Expr(SymbolicExpr),
-}
-
-impl SymbolicDim {
-    /// Check if this dimension is fixed.
-    pub fn is_fixed(&self) -> bool {
-        matches!(self, SymbolicDim::Fixed(_))
-    }
-
-    /// Get the fixed value if available.
-    pub fn as_fixed(&self) -> Option<usize> {
-        match self {
-            SymbolicDim::Fixed(n) => Some(*n),
-            _ => None,
+            onyxia_onnx::TensorShape::Unknown => TensorShape::Static(vec![]), // Empty placeholder
         }
     }
 }
@@ -331,7 +287,7 @@ impl TensorValue {
                 TensorData::I64(v.iter().map(|&x| x as i64).collect())
             }
             _ => {
-                return Err(Error::ConstantFolding(format!(
+                return Err(Error::Compilation(format!(
                     "Cast from {:?} to {:?} not supported in constant folding",
                     self.dtype, target_dtype
                 )));
@@ -353,7 +309,7 @@ impl TensorValue {
         let data = match dtype {
             DataType::I64 => {
                 if bytes.len() != numel * 8 {
-                    return Err(Error::ConstantFolding(format!(
+                    return Err(Error::Compilation(format!(
                         "Invalid byte length for I64 tensor: expected {}, got {}",
                         numel * 8,
                         bytes.len()
@@ -367,7 +323,7 @@ impl TensorValue {
             }
             DataType::I32 => {
                 if bytes.len() != numel * 4 {
-                    return Err(Error::ConstantFolding(format!(
+                    return Err(Error::Compilation(format!(
                         "Invalid byte length for I32 tensor: expected {}, got {}",
                         numel * 4,
                         bytes.len()
@@ -381,7 +337,7 @@ impl TensorValue {
             }
             DataType::F32 => {
                 if bytes.len() != numel * 4 {
-                    return Err(Error::ConstantFolding(format!(
+                    return Err(Error::Compilation(format!(
                         "Invalid byte length for F32 tensor: expected {}, got {}",
                         numel * 4,
                         bytes.len()
@@ -397,7 +353,7 @@ impl TensorValue {
             DataType::Bool => {
                 // Bool stored as u32 in GPU memory (4 bytes per bool)
                 if bytes.len() != numel * 4 {
-                    return Err(Error::ConstantFolding(format!(
+                    return Err(Error::Compilation(format!(
                         "Invalid byte length for Bool tensor: expected {}, got {}",
                         numel * 4,
                         bytes.len()
@@ -410,7 +366,7 @@ impl TensorValue {
                 TensorData::Bool(values)
             }
             _ => {
-                return Err(Error::ConstantFolding(format!(
+                return Err(Error::Compilation(format!(
                     "from_bytes not implemented for {:?}",
                     dtype
                 )));

@@ -282,11 +282,9 @@ impl PlanExecutor {
                     let element_size = info.dtype.size();
                     (element_count * element_size) as u64
                 }
-                onyxia_core::TensorShape::Symbolic(_)
-                | onyxia_core::TensorShape::Absent
-                | onyxia_core::TensorShape::Unknown => {
+                onyxia_core::TensorShape::Absent => {
                     return Err(RuntimeError::TensorError(format!(
-                        "Tensor '{}' has non-static shape in execution plan. \
+                        "Tensor '{}' has absent shape in execution plan. \
                          All shapes should be resolved at plan time.",
                         info.name
                     )));
@@ -484,7 +482,7 @@ impl PlanExecutor {
     /// }
     /// ```
     pub fn update_dimensions(&mut self, dims: &HashMap<String, usize>) -> Result<bool> {
-        use onyxia_core::symbolic_expr::evaluate_expr;
+        // use onyxia_core::symbolic_expr::evaluate_expr;
 
         // Track if any shader-def dimensions changed (not yet implemented)
         let needs_recompilation = false;
@@ -1038,7 +1036,7 @@ mod tests {
         #[pollster::test]
         #[ignore(reason="requires GPU")]
         async fn test_update_dimensions() {
-            use onyxia_core::symbolic_expr::{SymbolicExpr, parse_expr};
+            // use onyxia_core::symbolic_expr::{SymbolicExpr, parse_expr};
 
             let runtime = crate::Runtime::new().await.unwrap();
 
@@ -1150,7 +1148,7 @@ mod tests {
         #[pollster::test]
         #[ignore(reason="requires GPU")]
         async fn test_update_dimensions_expression() {
-            use onyxia_core::symbolic_expr::parse_expr;
+            // use onyxia_core::symbolic_expr::parse_expr;
 
             let runtime = crate::Runtime::new().await.unwrap();
 
