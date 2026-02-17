@@ -141,6 +141,27 @@ pub trait Operator: Send + Sync {
     /// - `Step::CopyBuffer` — copy data between buffers
     /// - `Step::WriteBuffer` — write immediate data to a buffer
     fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>>;
+
+    /// Create a dispatch object for this operation.
+    ///
+    /// Called by the compiler when walking the ONNX graph. The dispatch
+    /// object captures pre-compiled shaders and attributes, then executes
+    /// the actual GPU work at runtime via `OpDispatch::dispatch()`.
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns an error — operators must implement this method to work
+    /// with the new dispatch-based architecture.
+    fn create_dispatch(
+        &self,
+        ctx: &mut crate::compile_ctx::CompileCtx,
+    ) -> Result<Box<dyn crate::dispatch::OpDispatch>> {
+        let _ = ctx;
+        Err(crate::Error::Compilation(format!(
+            "Operator '{}' does not implement create_dispatch()",
+            self.name()
+        )))
+    }
 }
 
 #[cfg(test)]

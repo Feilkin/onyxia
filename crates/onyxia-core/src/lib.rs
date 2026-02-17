@@ -7,7 +7,9 @@
 //! - Plan types for execution (`CompiledModel`, `PlannedOp`, `Step`)
 //! - Operator registry for dynamic dispatch
 
+pub mod compile_ctx;
 pub mod context;
+pub mod dispatch;
 pub mod ir;
 pub mod ir_builder;
 pub mod operator;
@@ -18,7 +20,12 @@ pub mod symbolic_expr;
 pub mod types;
 
 // Re-export commonly used types
+pub use compile_ctx::CompileCtx;
 pub use context::{FoldCtx, InferenceCtx, PlanCtx};
+pub use dispatch::{
+    CompiledModel as DispatchModel, DispatchCtx, DispatchEntry, OpDispatch, RuntimeTensor,
+    WeightRegister,
+};
 pub use ir::{EdgeData, IrEdge, IrEdgeId, IrGraph, IrNode, IrNodeId, IrTensorId, TensorDef};
 pub use operator::Operator;
 pub use pass::{Pass, Stage};
@@ -44,6 +51,9 @@ pub enum Error {
 
     #[error("Planning error: {0}")]
     Planning(String),
+
+    #[error("Compilation error: {0}")]
+    Compilation(String),
 
     #[error("Invalid graph structure: {0}")]
     InvalidGraph(String),
