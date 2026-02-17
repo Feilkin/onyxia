@@ -177,12 +177,16 @@ fn check_operator_support(model: &Graph, registry: &OperatorRegistry) -> Result<
     let mut unsupported = Vec::new();
 
     for node in &model.nodes {
-        if registry.get(&node.op_type).is_none() {
-            unsupported.push(if node.domain.is_empty() {
-                node.op_type.clone()
-            } else {
-                format!("{}::{}", node.domain, node.op_type)
-            });
+        // Build operator key with domain prefix if present
+        let op_key = if node.domain.is_empty() {
+            node.op_type.clone()
+        } else {
+            format!("{}::{}", node.domain, node.op_type)
+        };
+
+        // Check if operator is registered
+        if registry.get(&op_key).is_none() {
+            unsupported.push(op_key);
         }
     }
 
