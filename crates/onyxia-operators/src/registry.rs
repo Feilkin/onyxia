@@ -7,8 +7,8 @@ use onyxia_core::OperatorRegistry;
 use crate::families::{BinaryElementwiseOp, ComparisonOp, MaxOp, UnaryMathOp};
 use crate::operators::{
     CastOp, ConcatOp, ConstantOfShapeOp, ConstantOp, ExpandOp, GatherOp, MatMulOp, RangeOp,
-    ReduceMeanOp, ReduceSumOp, ReshapeOp, ScatterNDOp, ShapeOp, SliceOp, SoftmaxOp, TransposeOp,
-    TriluOp, UnsqueezeOp, WhereOp,
+    ReduceMeanOp, ReduceSumOp, ReshapeOp, ScatterNDOp, ShapeOp, SimplifiedLayerNormOp, SliceOp,
+    SoftmaxOp, TransposeOp, TriluOp, UnsqueezeOp, WhereOp,
 };
 
 /// Returns an operator registry pre-populated with core operators.
@@ -25,6 +25,7 @@ use crate::operators::{
 /// - 1 activation operator (Softmax)
 /// - 1 type conversion operator (Cast)
 /// - 3 special operators (Range, Trilu, Where)
+/// - 1 Microsoft contrib operator (SimplifiedLayerNormalization)
 ///
 /// Custom operators can be added to the returned registry via
 /// `registry.register(name, operator)`.
@@ -90,6 +91,12 @@ pub fn core_operator_registry() -> OperatorRegistry {
     registry.register("Range", RangeOp);
     registry.register("Trilu", TriluOp);
     registry.register("Where", WhereOp);
+
+    // Microsoft contrib operators
+    registry.register(
+        "com.microsoft::SimplifiedLayerNormalization",
+        SimplifiedLayerNormOp,
+    );
 
     registry
 }

@@ -11,6 +11,7 @@ pub mod reduce_mean;
 pub mod reduce_sum;
 pub mod scatter_nd;
 pub mod shape;
+pub mod simplified_layer_norm;
 pub mod softmax;
 pub mod trilu;
 pub mod where_op;
@@ -27,6 +28,7 @@ pub use scatter_nd::ScatterNDOp;
 pub use shape::{
     ConcatOp, ConstantOfShapeOp, ExpandOp, ReshapeOp, ShapeOp, SliceOp, TransposeOp, UnsqueezeOp,
 };
+pub use simplified_layer_norm::SimplifiedLayerNormOp;
 pub use softmax::SoftmaxOp;
 pub use trilu::TriluOp;
 pub use where_op::WhereOp;

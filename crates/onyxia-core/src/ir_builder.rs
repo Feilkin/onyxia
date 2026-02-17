@@ -56,9 +56,9 @@ impl IrGraph {
         // Step 2: Convert all nodes
         for onnx_node in &onnx_graph.nodes {
             // Construct qualified operator name: if domain is non-empty and not default,
-            // prefix with domain (e.g., "com.microsoft.GemmaRotaryEmbedding")
+            // prefix with domain (e.g., "com.microsoft::GemmaRotaryEmbedding")
             let op_type = if !onnx_node.domain.is_empty() && onnx_node.domain != "ai.onnx" {
-                format!("{}.{}", onnx_node.domain, onnx_node.op_type)
+                format!("{}::{}", onnx_node.domain, onnx_node.op_type)
             } else {
                 onnx_node.op_type.clone()
             };
