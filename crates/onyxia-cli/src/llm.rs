@@ -83,9 +83,7 @@ impl LlmSession {
         }
 
         // Convert to the format expected by DispatchExecutor::run
-        let input_refs: Vec<(&str, Tensor)> = inputs
-            .into_iter()
-            .collect();
+        let input_refs: Vec<(&str, Tensor)> = inputs.into_iter().collect();
 
         // Run the model
         let outputs = self.executor.run(&input_refs).with_context(|| {
@@ -163,9 +161,7 @@ impl LlmSession {
         }
 
         // Convert to the format expected by DispatchExecutor::run
-        let input_refs: Vec<(&str, Tensor)> = inputs
-            .into_iter()
-            .collect();
+        let input_refs: Vec<(&str, Tensor)> = inputs.into_iter().collect();
 
         // Run the model
         let outputs = self.executor.run(&input_refs).with_context(|| {

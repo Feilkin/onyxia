@@ -734,3 +734,529 @@ async fn test_pow_special_cases() {
     // 0^0=1, 0^2=0, 5^0=1
     assert_eq!(result, vec![1.0, 0.0, 1.0]);
 }
+
+// ================================================================================
+// Comparison operator tests
+// ================================================================================
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_equal_basic() {
+    // Create graph: a[4] == b[4] -> c[4]
+    let mut graph = Graph::new();
+
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::Bool,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("Equal");
+    node.name = "equal_op".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    // Compile
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    // Execute
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[4]);
+    let b = Tensor::from_vec(vec![1.0f32, 2.0, 4.0, 3.0], &[4]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<u32> = outputs["c"].to_vec().unwrap();
+
+    // [true, true, false, false]
+    assert_eq!(result, vec![1u32, 1, 0, 0]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_equal_broadcast() {
+    // Test [3] == [1] broadcasting
+    let mut graph = Graph::new();
+
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::Bool,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("Equal");
+    node.name = "equal_broadcast".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    // Compile
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    // Execute
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![5.0f32, 6.0, 5.0], &[3]);
+    let b = Tensor::from_vec(vec![5.0f32], &[1]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<u32> = outputs["c"].to_vec().unwrap();
+
+    // [true, false, true]
+    assert_eq!(result, vec![1u32, 0, 1]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_equal_nan_handling() {
+    // Test NaN == NaN returns false (IEEE 754 semantics)
+    let mut graph = Graph::new();
+
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::Bool,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("Equal");
+    node.name = "equal_nan".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    // Compile
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    // Execute
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![f32::NAN, 1.0, f32::NAN], &[3]);
+    let b = Tensor::from_vec(vec![f32::NAN, 1.0, 2.0], &[3]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<u32> = outputs["c"].to_vec().unwrap();
+
+    // [false, true, false] - NaN != NaN
+    assert_eq!(result, vec![0u32, 1, 0]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_greater_basic() {
+    // Create graph: a[4] > b[4] -> c[4]
+    let mut graph = Graph::new();
+
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::Bool,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("Greater");
+    node.name = "greater_op".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    // Compile
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    // Execute
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![5.0f32, 3.0, 1.0, 2.0], &[4]);
+    let b = Tensor::from_vec(vec![3.0f32, 3.0, 5.0, 1.0], &[4]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<u32> = outputs["c"].to_vec().unwrap();
+
+    // [true, false, false, true]
+    assert_eq!(result, vec![1u32, 0, 0, 1]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_greater_broadcast() {
+    // Test [4] > [1] broadcasting
+    let mut graph = Graph::new();
+
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::Bool,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("Greater");
+    node.name = "greater_broadcast".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    // Compile
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    // Execute
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![3.0f32, 5.0, 7.0, 5.0], &[4]);
+    let b = Tensor::from_vec(vec![5.0f32], &[1]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<u32> = outputs["c"].to_vec().unwrap();
+
+    // [false, false, true, false]
+    assert_eq!(result, vec![0u32, 0, 1, 0]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_greater_nan_handling() {
+    // Test NaN > x and x > NaN both return false
+    let mut graph = Graph::new();
+
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::Bool,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("Greater");
+    node.name = "greater_nan".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    // Compile
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    // Execute
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![f32::NAN, 1.0, 5.0], &[3]);
+    let b = Tensor::from_vec(vec![1.0, f32::NAN, 3.0], &[3]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<u32> = outputs["c"].to_vec().unwrap();
+
+    // [false, false, true] - NaN comparisons are false
+    assert_eq!(result, vec![0u32, 0, 1]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_less_basic() {
+    // Create graph: a[3] < b[3] -> c[3]
+    let mut graph = Graph::new();
+
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::Bool,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("Less");
+    node.name = "less_op".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    // Compile
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    // Execute
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![1.0f32, 5.0, 3.0], &[3]);
+    let b = Tensor::from_vec(vec![3.0f32, 5.0, 1.0], &[3]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<u32> = outputs["c"].to_vec().unwrap();
+
+    // [true, false, false]
+    assert_eq!(result, vec![1u32, 0, 0]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_greater_or_equal_basic() {
+    // Create graph: a[3] >= b[3] -> c[3]
+    let mut graph = Graph::new();
+
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::Bool,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("GreaterOrEqual");
+    node.name = "greater_or_equal_op".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    // Compile
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    // Execute
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![5.0f32, 3.0, 3.0], &[3]);
+    let b = Tensor::from_vec(vec![3.0f32, 3.0, 5.0], &[3]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<u32> = outputs["c"].to_vec().unwrap();
+
+    // [true, true, false]
+    assert_eq!(result, vec![1u32, 1, 0]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_less_or_equal_basic() {
+    // Create graph: a[3] <= b[3] -> c[3]
+    let mut graph = Graph::new();
+
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::Bool,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("LessOrEqual");
+    node.name = "less_or_equal_op".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    // Compile
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    // Execute
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![1.0f32, 3.0, 5.0], &[3]);
+    let b = Tensor::from_vec(vec![3.0f32, 3.0, 1.0], &[3]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<u32> = outputs["c"].to_vec().unwrap();
+
+    // [true, true, false]
+    assert_eq!(result, vec![1u32, 1, 0]);
+}

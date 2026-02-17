@@ -4,7 +4,8 @@
 //!
 //! # Operator Families
 //!
-//! - **Binary elementwise**: Add, Mul
+//! - **Binary elementwise**: Add, Mul, Div, Sub, Pow
+//! - **Comparison**: Equal, Greater, Less, GreaterOrEqual, LessOrEqual
 //!
 //! # Individual Operators
 //!
@@ -18,7 +19,7 @@ mod helpers;
 mod registry;
 
 // Re-export operator types
-pub use families::BinaryElementwiseOp;
+pub use families::{BinaryElementwiseOp, ComparisonOp};
 pub use registry::core_operator_registry;
 
 /// Result type for operator operations.
