@@ -1,7 +1,9 @@
 //! LLM-specific session management with KV cache support.
+//!
+//! NOTE: Currently disabled pending operator re-implementation with dispatch model.
 
-use anyhow::{Context, Result};
-use onyxia_runtime::{PlanExecutor, Tensor};
+use anyhow::Result;
+use onyxia_runtime::{DispatchExecutor, Tensor};
 
 /// Configuration for LLM session.
 #[derive(Debug, Clone)]
@@ -14,11 +16,11 @@ pub struct LlmConfig {
 
 /// High-level LLM inference session with KV cache management.
 ///
-/// Wraps a `PlanExecutor` and manages KV cache via explicit CPU-side storage.
+/// Wraps a `DispatchExecutor` and manages KV cache via explicit CPU-side storage.
 /// After each forward pass, present.* outputs are downloaded and stored,
 /// then uploaded as past_key_values.* inputs on the next call.
 pub struct LlmSession {
-    executor: PlanExecutor,
+    executor: DispatchExecutor,
     /// Current past sequence length (grows each decode step).
     past_seq_len: usize,
     /// Maximum sequence length (buffers pre-allocated to this).
@@ -31,16 +33,17 @@ pub struct LlmSession {
 }
 
 impl LlmSession {
-    /// Create from a loaded PlanExecutor + model config.
+    /// Create from a loaded DispatchExecutor + model config.
     ///
     /// Discovers KV cache pairs by scanning tensor names in the execution plan
     /// and initializes them with zeros.
-    pub fn new(executor: PlanExecutor, config: &LlmConfig) -> Self {
+    pub fn new(executor: DispatchExecutor, config: &LlmConfig) -> Self {
         let kv_pairs = discover_kv_pairs(&executor);
 
         // Initialize KV cache with zeros
-        let mut kv_cache = std::collections::HashMap::new();
-        let plan = executor.plan();
+        let kv_cache = std::collections::HashMap::new();
+        // TODO: Re-implement KV cache discovery for dispatch model
+        /*let plan = executor.plan();
 
         for (_present_name, past_name) in &kv_pairs {
             if let Some((_, tensor_info)) = plan.tensors.find_by_name(past_name) {
@@ -63,7 +66,7 @@ impl LlmSession {
                     kv_cache.insert(past_name.clone(), tensor);
                 }
             }
-        }
+        }*/
 
         Self {
             executor,
@@ -80,7 +83,10 @@ impl LlmSession {
     /// - Runs with seq_len = prompt_len
     /// - After run, aliases present.* → past_key_values.* for next step
     /// - Returns logits [vocab_size] for last position
-    pub fn prefill(&mut self, input_ids: &[i64]) -> Result<Vec<f32>> {
+    pub fn prefill(&mut self, _input_ids: &[i64]) -> Result<Vec<f32>> {
+        anyhow::bail!("LlmSession::prefill is not implemented for the new dispatch model");
+        
+        /* Original implementation - to be restored when dispatch model is complete
         let prompt_len = input_ids.len();
 
         if prompt_len == 0 {
@@ -179,6 +185,7 @@ impl LlmSession {
         let logits = logits_full[offset..offset + vocab_size].to_vec();
 
         Ok(logits)
+        */
     }
 
     /// Decode: generate one next-token logit vector.
@@ -187,7 +194,10 @@ impl LlmSession {
     /// - Runs with seq_len = 1
     /// - After run, aliases present.* → past_key_values.*
     /// - Returns logits [vocab_size]
-    pub fn decode(&mut self, token_id: i64) -> Result<Vec<f32>> {
+    pub fn decode(&mut self, _token_id: i64) -> Result<Vec<f32>> {
+        anyhow::bail!("LlmSession::decode is not implemented for the new dispatch model");
+        
+        /* Original implementation - to be restored when dispatch model is complete
         if self.past_seq_len >= self.max_seq_len {
             anyhow::bail!(
                 "Sequence length {} would exceed max_seq_len {}",
@@ -279,6 +289,7 @@ impl LlmSession {
         let logits = logits_full[offset..offset + vocab_size].to_vec();
 
         Ok(logits)
+        */
     }
 
     /// Reset state for a new conversation.
@@ -363,7 +374,12 @@ fn create_decode_inputs(token_id: i64, past_seq_len: usize) -> Vec<(&'static str
 /// Matches patterns like:
 /// - Output: `present.{N}.key`, `present.{N}.value`
 /// - Input: `past_key_values.{N}.key`, `past_key_values.{N}.value`
-fn discover_kv_pairs(executor: &PlanExecutor) -> Vec<(String, String)> {
+fn discover_kv_pairs(_executor: &DispatchExecutor) -> Vec<(String, String)> {
+    // TODO: Re-implement for dispatch model
+    // The dispatch model doesn't expose a plan() method
+    Vec::new()
+    
+    /* Original implementation for reference:
     let mut pairs = Vec::new();
     let plan = executor.plan();
 
@@ -392,4 +408,5 @@ fn discover_kv_pairs(executor: &PlanExecutor) -> Vec<(String, String)> {
     }
 
     pairs
+    */
 }

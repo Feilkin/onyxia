@@ -139,6 +139,8 @@ mod tests {
         assert!(!changed);
     }
 
+    // Test disabled - SymbolicDim no longer exists in simplified core
+    /*
     #[test]
     fn test_skips_non_static_initializer() {
         use onyxia_core::SymbolicDim;
@@ -159,6 +161,7 @@ mod tests {
 
         assert!(!changed);
     }
+    */
 
     #[test]
     fn test_already_constant_unchanged() {

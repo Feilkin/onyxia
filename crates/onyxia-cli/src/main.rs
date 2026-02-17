@@ -235,6 +235,13 @@ fn main() -> Result<()> {
             num_layers,
             no_stream,
         } => {
+            // Temporarily disabled pending operator re-implementation with dispatch model
+            anyhow::bail!(
+                "RunModel command is temporarily disabled.\n\
+                 The runtime is being rewritten to use a dispatch-based execution model.\n\
+                 Model execution will be re-enabled after operators are ported to the new interface."
+            );
+            /*
             pollster::block_on(cmd_run_model(
                 model,
                 tokenizer,
@@ -248,6 +255,7 @@ fn main() -> Result<()> {
                 num_layers,
                 !no_stream,
             ))?;
+            */
         }
         Commands::InspectNode {
             model,
@@ -531,7 +539,11 @@ fn cmd_inspect(model_path: PathBuf, dynamic_dim_args: Vec<String>) -> Result<()>
 
     // Resolve dimensions and infer shapes using the compiler pipeline
     let registry = onyxia_operators::core_operator_registry();
-    let mut pipeline = onyxia_compiler::CompilerPipeline::new(dynamic_dims.clone());
+    let mut pipeline = onyxia_compiler::CompilerPipeline::new();
+    
+    // Note: Dynamic dimensions no longer passed at compile time
+    let _ = dynamic_dims; // Suppress unused warning
+    
     // Just run up to inference stage to get shapes, don't need full compilation
     pipeline
         .compile(&model, &registry)
@@ -668,7 +680,10 @@ async fn cmd_run_model(
 
     // Resolve dynamic dimensions and compile to execution plan
     let registry = onyxia_operators::core_operator_registry();
-    let mut pipeline = onyxia_compiler::CompilerPipeline::new(dynamic_dims);
+    let mut pipeline = onyxia_compiler::CompilerPipeline::new();
+    
+    // Note: Dynamic dimensions no longer passed at compile time
+    let _ = dynamic_dims; // Suppress unused warning
 
     println!("Compiling execution plan...");
     let plan = pipeline

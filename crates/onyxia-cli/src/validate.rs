@@ -37,9 +37,37 @@ pub fn validate_model(
 
     // Convert to IR
     print_step("Converting to IR", verbose);
-    let mut ir_graph = IrGraph::from_onnx(&model).context("Failed to convert to IR")?;
+    let ir_graph = IrGraph::from_onnx(&model).context("Failed to convert to IR")?;
     print_success();
 
+    // Compile model (simplified pipeline, no staged validation)
+    print_step("Compiling model", verbose);
+    let mut pipeline = CompilerPipeline::new();
+    
+    // Note: Dynamic dimensions no longer passed at compile time in simplified pipeline
+    let _ = (dynamic_dims, until_stage); // Suppress unused warnings
+    // TODO: Re-evaluate validation workflow when dispatch model is complete
+    
+    let _compiled = pipeline
+        .compile(&model, &registry)
+        .context("Failed to compile model")?;
+    print_success();
+
+    // Check for warnings
+    let warnings = check_for_warnings(&ir_graph)?;
+    if !warnings.is_empty() {
+        println!("\n⚠ Warnings:\n");
+        for warning in &warnings {
+            println!("  {}\n", warning);
+        }
+        println!("Validation passed with {} warning(s).", warnings.len());
+    } else {
+        print_final_success();
+    }
+
+    Ok(())
+    
+    /* Original staged validation - disabled pending dispatch model completion
     // Run compilation stages
     let mut pipeline = CompilerPipeline::new(dynamic_dims.clone());
     let target_stage = until_stage.unwrap_or(Stage::Inference);
@@ -102,6 +130,7 @@ pub fn validate_model(
     }
 
     Ok(())
+    */
 }
 
 fn print_step(name: &str, verbose: bool) {
@@ -168,6 +197,7 @@ fn check_operator_support(model: &Graph, registry: &OperatorRegistry) -> Result<
     Ok(())
 }
 
+/* Original helper function - disabled pending dispatch model completion
 fn run_stage(
     pipeline: &mut CompilerPipeline,
     graph: &mut IrGraph,
@@ -178,6 +208,7 @@ fn run_stage(
         .run_until_stage(graph, registry, stage)
         .with_context(|| format!("Failed at stage {:?}", stage))
 }
+*/
 
 fn check_for_warnings(graph: &IrGraph) -> Result<Vec<String>> {
     let mut warnings = Vec::new();
