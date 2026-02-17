@@ -16,7 +16,7 @@ use std::collections::HashMap;
 /// registry.register("MatMul", MatMulOperator::new());
 ///
 /// let op = registry.get("Add").unwrap();
-/// // Use op for shape inference, folding, planning...
+/// // Use op to create dispatch objects during compilation
 /// ```
 pub struct OperatorRegistry {
     /// Map from op_type string to operator implementation.

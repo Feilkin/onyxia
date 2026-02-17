@@ -27,7 +27,7 @@ pub fn inspect_nodes(
     // TODO: Update inspection workflow when operator dispatch is fully implemented
     let _ = dynamic_dims; // Suppress unused warning
 
-    // Full compilation includes all passes including shape inference
+    // Compile model to dispatch model (validates operators and builds execution plan)
     pipeline
         .compile(model, &registry)
         .context("Failed to compile model for inspection")?;
@@ -358,7 +358,7 @@ fn display_filtered_nodes(
     show_shapes: bool,
 ) -> Result<()> {
     let pattern = name_pattern
-        .map(|p| Regex::new(p))
+        .map(Regex::new)
         .transpose()
         .context("Invalid regex pattern")?;
 

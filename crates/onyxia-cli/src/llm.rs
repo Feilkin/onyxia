@@ -2,6 +2,8 @@
 //!
 //! NOTE: Currently disabled pending operator re-implementation with dispatch model.
 
+#![allow(dead_code)] // Module temporarily disabled
+
 use anyhow::Result;
 use onyxia_runtime::{DispatchExecutor, Tensor};
 
@@ -82,10 +84,10 @@ impl LlmSession {
     /// - Passes past_sequence_length = 0 via model inputs
     /// - Runs with seq_len = prompt_len
     /// - After run, aliases present.* → past_key_values.* for next step
-    /// - Returns logits [vocab_size] for last position
+    /// - Returns logits \[vocab_size\] for last position
     pub fn prefill(&mut self, _input_ids: &[i64]) -> Result<Vec<f32>> {
         anyhow::bail!("LlmSession::prefill is not implemented for the new dispatch model");
-        
+
         /* Original implementation - to be restored when dispatch model is complete
         let prompt_len = input_ids.len();
 
@@ -193,10 +195,10 @@ impl LlmSession {
     /// - Increments past_sequence_length
     /// - Runs with seq_len = 1
     /// - After run, aliases present.* → past_key_values.*
-    /// - Returns logits [vocab_size]
+    /// - Returns logits \\[vocab_size\\]
     pub fn decode(&mut self, _token_id: i64) -> Result<Vec<f32>> {
         anyhow::bail!("LlmSession::decode is not implemented for the new dispatch model");
-        
+
         /* Original implementation - to be restored when dispatch model is complete
         if self.past_seq_len >= self.max_seq_len {
             anyhow::bail!(
@@ -378,7 +380,7 @@ fn discover_kv_pairs(_executor: &DispatchExecutor) -> Vec<(String, String)> {
     // TODO: Re-implement for dispatch model
     // The dispatch model doesn't expose a plan() method
     Vec::new()
-    
+
     /* Original implementation for reference:
     let mut pairs = Vec::new();
     let plan = executor.plan();

@@ -1,6 +1,6 @@
 # Onyxia
 
-**GPU compute shader runtime for ONNX models.** Compiles ONNX operator graphs into WGSL compute shaders and executes them on the GPU via `wgpu`.
+**GPU compute shader runtime for ONNX models.** Uses a dispatch-based execution model where operators compile their shaders at compile time and compute shapes at runtime from actual input tensors.
 
 ## Architecture
 
@@ -10,58 +10,44 @@ ONNX Model (.onnx)
      ▼
 ┌─────────────┐     ┌──────────────┐     ┌───────────────┐     ┌───────────────┐
 │ onyxia-onnx │────▶│ onyxia-core  │◀────│  onyxia-ops   │     │onyxia-runtime │
-│ Parse ONNX  │     │ IR, traits,  │     │ 40 operator   │     │ GPU execution │
-│ protobuf    │     │ plan types   │     │ impls + WGSL  │     │ via wgpu      │
+│ Parse ONNX  │     │ IR, dispatch │     │ 3 core        │     │ Register-based│
+│ protobuf    │     │ traits       │     │ operators     │     │ GPU execution │
 └─────────────┘     └──────┬───────┘     └───────────────┘     └───────────────┘
                            │
                     ┌──────┴───────┐
                     │ onyxia-      │
                     │ compiler     │──────▶ CompiledModel ──────▶ GPU Execution
-                    │ Pass pipeline│
+                    │ Build dispatch│
                     └──────────────┘
 ```
 
 | Crate | Purpose |
 |-------|---------|
 | `onyxia-onnx` | Parse ONNX protobuf into a structured `Graph` API |
-| `onyxia-core` | IR graph, operator/pass traits, plan types, operator registry |
-| `onyxia-operators` | 40 built-in ONNX operator implementations with WGSL shaders |
-| `onyxia-compiler` | Pass-based compilation pipeline (resolution → folding → inference → planning) |
-| `onyxia-runtime` | GPU execution engine via `wgpu` |
-| `onyxia-cli` | CLI for model inspection, validation, DOT export, and text generation |
+| `onyxia-core` | IR graph, operator/dispatch traits, compiled model types, operator registry |
+| `onyxia-operators` | 3 core ONNX operator implementations (Add, Mul, Reshape) |
+| `onyxia-compiler` | Simplified pipeline: initialize constants → build dispatch model |
+| `onyxia-runtime` | Register-based GPU execution engine via `wgpu` |
+| `onyxia-cli` | CLI for model inspection, validation, and DOT visualization |
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
 
 ## Features
 
 - **ONNX parsing** — stable `Graph` API independent of protobuf schema
-- **Pass-based compiler** — staged pipeline: symbolic resolution → constant folding → shape inference → planning
-- **40 built-in operators** — elementwise, matmul, attention, normalization, shape manipulation, and more
+- **Dispatch-based execution** — operators compute shapes at runtime from actual input tensors
+- **3 core operators** — Add, Mul, Reshape (minimal proof-of-concept set)
 - **Extensible operator system** — add custom operators via the `Operator` trait
-- **Constant folding** — evaluates constant subgraphs at compile time (e.g., `Shape → Gather → Concat → Reshape` chains)
-- **Symbolic dimension support** — arithmetic expressions in dimension names (e.g., `seq_len * num_heads`)
 - **Shader compilation** — WGSL → `naga::Module` via `naga_oil` at compile time
-- **GPU execution** — buffer management, compute dispatch, and CPU↔GPU data transfer
-- **CLI tools** — model inspection, node tracing, DOT visualization, validation, text generation
-- **148 tests passing**
+- **Register-based GPU execution** — efficient tensor routing via indexed register file
+- **CLI tools** — model inspection, node tracing, DOT visualization, validation
 
-### Built-in Operators (40)
+### Built-in Operators (3)
 
 | Category | Operators |
 |----------|-----------|
-| Binary elementwise | Add, Sub, Mul, Div, Pow, Max |
-| Unary elementwise | Cos, Sin, Sqrt, Neg, Tanh |
-| Comparison | Equal, Greater |
-| Activation | Gelu, Softmax |
-| Normalization | SimplifiedLayerNormalization (RmsNorm) |
-| Matrix multiplication | MatMul, MatMulNBits (4-bit quantized) |
-| Metadata | Constant, ConstantOfShape, Shape |
-| Shape manipulation | Reshape, Unsqueeze, Transpose, Concat, Expand |
-| Indexing | Gather, Slice, ScatterND, Range, Trilu |
-| Reduction | ReduceSum, ReduceMean |
-| Type conversion | Cast |
-| Conditional | Where |
-| Attention | RotaryEmbedding, GemmaRotaryEmbedding, MicrosoftRotaryEmbedding, GroupQueryAttention |
+| Binary elementwise | Add, Mul |
+| Shape manipulation | Reshape |
 
 ## Usage
 
@@ -80,13 +66,10 @@ async fn main() -> anyhow::Result<()> {
     let model = load_model("model.onnx")?;
     let graph = onyxia_onnx::parse_model(&model)?;
 
-    // 2. Compile to execution plan
+    // 2. Compile to dispatch model
     let registry = core_operator_registry();
-    let dynamic_dimensions = HashMap::from([
-        ("batch_size".to_string(), 1),
-        ("sequence_length".to_string(), 512),
-    ]);
-    let compiled = compile(&graph, &registry, &dynamic_dimensions)?;
+    let mut pipeline = onyxia_compiler::CompilerPipeline::new();
+    let compiled = pipeline.compile(&graph, &registry)?;
 
     // 3. Execute on GPU
     let runtime = Runtime::new().await?;
@@ -103,25 +86,42 @@ async fn main() -> anyhow::Result<()> {
 ### Adding Custom Operators
 
 ```rust
-use onyxia_core::{Operator, InferenceCtx, FoldCtx, PlanCtx, Step, TensorShape, TensorValue};
+use onyxia_core::{Operator, CompileCtx, OpDispatch, DispatchCtx, RuntimeTensor, Result};
+use std::collections::HashMap;
 
 struct MyCustomOperator;
 
 impl Operator for MyCustomOperator {
     fn name(&self) -> &str { "MyCustomOp" }
 
-    fn infer_output_shapes(&self, ctx: &InferenceCtx) -> onyxia_core::Result<Vec<TensorShape>> {
-        // Output has same shape as first input
-        Ok(vec![ctx.input_shape(0)?])
+    fn create_dispatch(&self, ctx: &mut CompileCtx) -> Result<Box<dyn OpDispatch>> {
+        // Compile WGSL shader and create dispatch object
+        let module = ctx.compile_shader(
+            "my_custom_op",
+            include_str!("shader.wgsl"),
+            &HashMap::new(),
+        )?;
+        
+        Ok(Box::new(MyCustomDispatch { module }))
     }
+}
 
-    fn try_fold(&self, _ctx: &FoldCtx) -> onyxia_core::Result<Vec<Option<TensorValue>>> {
-        // Optional: evaluate at compile time if inputs are constant
-        Ok(vec![None])
-    }
+struct MyCustomDispatch {
+    module: naga::Module,
+}
 
-    fn plan(&self, ctx: &mut PlanCtx) -> onyxia_core::Result<Vec<Step>> {
-        // Compile WGSL shader, set up buffer bindings, emit dispatch
+impl OpDispatch for MyCustomDispatch {
+    fn dispatch(
+        &self,
+        inputs: Vec<RuntimeTensor>,
+        ctx: &mut DispatchCtx,
+    ) -> Result<Vec<RuntimeTensor>> {
+        // Compute output shape from input shapes
+        let output_shape = inputs[0].shape.clone();
+        
+        // Allocate output buffer and dispatch GPU work
+        // ... implementation ...
+        
         todo!()
     }
 }
@@ -129,7 +129,8 @@ impl Operator for MyCustomOperator {
 // Register alongside built-in operators
 let mut registry = onyxia_operators::core_operator_registry();
 registry.register("MyCustomOp", MyCustomOperator);
-let compiled = onyxia_compiler::compile(&graph, &registry, &dynamic_dimensions)?;
+let mut pipeline = onyxia_compiler::CompilerPipeline::new();
+let compiled = pipeline.compile(&graph, &registry)?;
 ```
 
 ### CLI
@@ -147,16 +148,12 @@ cargo run --bin onyxia -- list-nodes model.onnx --op-type MatMul --show-shapes
 # Trace data flow around a node
 cargo run --bin onyxia -- trace-node model.onnx --name "/layer0/ffn/add" --depth 2
 
-# Validate model compilation (without GPU)
-cargo run --bin onyxia -- validate model.onnx -d batch_size=1 -d sequence_length=512
+# Validate model compilation
+cargo run --bin onyxia -- validate model.onnx
 
 # Generate DOT visualization
 cargo run --bin onyxia -- dot model.onnx -o model.dot -s summary
 dot -Tpng model.dot -o model.png   # requires Graphviz
-
-# Run text generation (requires tokenizer + GPU)
-cargo run --bin onyxia -- run-model model.onnx \
-  --tokenizer ./tokenizer_dir --prompt "Hello, world" --max-tokens 50
 ```
 
 ## Prerequisites
@@ -184,8 +181,8 @@ cargo build
 Tests are run with [nextest](https://nexte.st/):
 
 ```bash
-cargo nextest run                                   # Non-GPU tests (148 passing)
-cargo nextest run --run-ignored=all --no-fail-fast   # All tests including GPU
+cargo nextest run                                   # Non-GPU tests
+cargo nextest run --run-ignored=all --no-fail-fast  # All tests including GPU
 ```
 
 GPU-dependent tests are marked `#[ignore]` and require a GPU.

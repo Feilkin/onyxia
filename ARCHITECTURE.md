@@ -2,7 +2,7 @@
 
 ## System Design
 
-Onyxia is a **GPU compute shader runtime for ONNX models**, built in Rust. It compiles ONNX operator graphs into WGSL compute shaders and executes them on the GPU via `wgpu`.
+Onyxia is a **GPU compute shader runtime for ONNX models**, built in Rust. It uses a dispatch-based execution model where each operator compiles its shaders at compile time and executes GPU work at runtime with full knowledge of input shapes.
 
 The system is organized into six crates with clear responsibility boundaries:
 
@@ -10,27 +10,27 @@ The system is organized into six crates with clear responsibility boundaries:
 ┌─────────────┐     ┌──────────────┐     ┌────────────────┐     ┌───────────────┐
 │ onyxia-onnx │────▶│ onyxia-core  │     │onyxia-operators│     │onyxia-runtime │
 │             │     │              │     │                │     │               │
-│ Parse ONNX  │     │ IR, traits,  │     │ 40 operator    │     │ Execute on    │
-│ protobuf    │     │ plan types   │     │ impls + WGSL   │     │ GPU via wgpu  │
+│ Parse ONNX  │     │ IR, traits,  │     │ 3 core         │     │ Execute on    │
+│ protobuf    │     │ dispatch     │     │ operators      │     │ GPU via wgpu  │
 └─────────────┘     └──────┬───────┘     └────────────────┘     └───────┬───────┘
                            │                                           │
                     ┌──────┴───────┐                            ┌──────┴───────┐
                     │   onyxia-    │                            │  onyxia-cli  │
                     │   compiler   │                            │              │
                     │              │                            │ CLI tools,   │
-                    │ Pass pipeline│───────────────────────────▶│ LLM runner   │
-                    │ + codegen    │                            │              │
+                    │ Build        │───────────────────────────▶│ model        │
+                    │ dispatch     │                            │ inspection   │
                     └──────────────┘                            └──────────────┘
 ```
 
 | Crate | Purpose |
 |-------|---------|
 | `onyxia-onnx` | Parse ONNX protobuf models into a structured `Graph` API |
-| `onyxia-core` | IR graph, operator/pass traits, plan types, tensor types, operator registry |
-| `onyxia-operators` | 40 built-in ONNX operator implementations with WGSL shaders |
-| `onyxia-compiler` | Pass-based compilation pipeline (resolution → folding → inference → planning) |
-| `onyxia-runtime` | GPU execution engine via `wgpu` |
-| `onyxia-cli` | CLI for model inspection, DOT export, validation, and text generation |
+| `onyxia-core` | IR graph, operator/dispatch traits, compiled model types, tensor types, operator registry |
+| `onyxia-operators` | 3 core ONNX operator implementations (Add, Mul, Reshape) |
+| `onyxia-compiler` | Simplified pipeline: initialize constants → build dispatch model |
+| `onyxia-runtime` | GPU execution engine via `wgpu` with register-based tensor routing |
+| `onyxia-cli` | CLI for model inspection, DOT export, and validation |
 
 ## Crate Details
 
@@ -52,17 +52,17 @@ Parses ONNX protobuf model files into a stable `Graph` representation independen
 
 ### onyxia-core
 
-The foundational crate that all other Onyxia crates depend on. Defines the intermediate representation, extension traits, and output plan types.
+The foundational crate that all other Onyxia crates depend on. Defines the intermediate representation, operator/dispatch traits, and compiled model types.
 
 **Responsibilities:**
 - **IR graph** (`IrGraph`) — directed graph where nodes are operators and edges are tensor value flows, backed by `petgraph::StableGraph` for safe mutation during passes
-- **Operator trait** — three-method interface for shape inference, constant folding, and GPU planning
+- **Operator trait** — two-method interface: `name()` and `create_dispatch()`
+- **Dispatch trait** — runtime execution interface: `dispatch(inputs, ctx) -> outputs`
 - **Pass trait** — graph transformation interface with staged execution
-- **Plan types** — `CompiledModel`, `PlannedOp`, `Step`, `CompiledShader` (the output of compilation)
+- **Compiled model types** — `CompiledModel`, `DispatchEntry`, `WeightRegister`, `RuntimeTensor`
 - **Operator registry** — dynamic dispatch from op_type strings to `Operator` implementations
-- **Tensor types** — `TensorShape` (with symbolic dimension support), `TensorValue`, `DataType`
-- **Symbolic expressions** — parser and evaluator for arithmetic dimension expressions (e.g., `seq_len * num_heads`)
-- **Context types** — `InferenceCtx`, `FoldCtx`, `PlanCtx` passed to operators during each phase
+- **Tensor types** — `TensorShape`, `DataType` (no compile-time values or symbolic dimensions)
+- **Context types** — `CompileCtx` for operators, `DispatchCtx` for runtime
 
 **Key Types:**
 
@@ -71,25 +71,25 @@ The foundational crate that all other Onyxia crates depend on. Defines the inter
 | `IrGraph` | Directed graph of operators (nodes) and tensor flows (edges) |
 | `IrNode` | Operator with op_type, attributes, input/output edge IDs |
 | `IrEdge` | Tensor metadata: name, dtype, shape, compile-time data (`EdgeData`) |
-| `EdgeData` | `Runtime` (no data), `Initializer` (raw bytes), or `Constant` (folded value) |
-| `Operator` | Trait: `infer_output_shapes()`, `try_fold()`, `plan()` |
+| `EdgeData` | `Runtime` (no data) or `Initializer` (raw weight bytes) |
+| `Operator` | Trait: `name()`, `create_dispatch()` |
+| `OpDispatch` | Trait: `dispatch(inputs, ctx) -> outputs` |
 | `Pass` | Trait: `stage()`, `run(graph, registry)` |
 | `Stage` | Enum: `Resolution`, `Folding`, `Inference`, `Optimization`, `Planning` |
-| `CompiledModel` | Final output: operations, shaders, tensor registry, I/O mappings |
-| `Step` | `Dispatch` (compute shader), `CopyBuffer`, `WriteBuffer` |
+| `CompiledModel` | Final output: dispatch entries, registers, I/O mappings, weights |
+| `DispatchEntry` | Single operation: dispatch object, input/output register indices, name |
+| `WeightRegister` | Weight data to upload: register index, data, shape, dtype |
+| `RuntimeTensor` | GPU tensor at runtime: buffer, shape, dtype, size_bytes |
 | `OperatorRegistry` | Maps op_type strings to `Box<dyn Operator>` |
-| `TensorShape` | `Static(Vec<usize>)`, `Symbolic(Vec<SymbolicDim>)`, `Absent`, `Unknown` |
-| `TensorValue` | Compile-time constant tensor (data + shape + dtype) |
-| `InferenceCtx` | Read-only context for shape inference (input shapes, values, attributes) |
-| `FoldCtx` | Context for constant folding (wraps `InferenceCtx`, adds initializer parsing) |
-| `PlanCtx` | Mutable context for planning (buffer refs, shader compilation, scratch allocation) |
+| `CompileCtx` | Compile-time context: node metadata, shader compilation |
+| `DispatchCtx` | Runtime context: GPU device/queue, pipeline cache |
 
 ### onyxia-operators
 
-Implements 40 ONNX operators organized into operator families (for code reuse) and individual implementations.
+Implements 3 core ONNX operators for proof-of-concept dispatch-based execution.
 
 **Responsibilities:**
-- Implement `Operator` trait for each supported ONNX operation
+- Implement `Operator` trait for supported ONNX operations
 - Provide WGSL compute shaders (in `shaders/` directory)
 - Export `core_operator_registry()` — a pre-populated `OperatorRegistry`
 
@@ -97,35 +97,18 @@ Implements 40 ONNX operators organized into operator families (for code reuse) a
 
 | Family | Operators | Shared Logic |
 |--------|-----------|-------------|
-| Binary elementwise | Add, Sub, Mul, Div, Pow, Max | Broadcasting, shape inference, f32 folding |
-| Unary elementwise | Cos, Sin, Sqrt, Neg, Tanh | Pass-through shape, element-wise dispatch |
-| Comparison | Equal, Greater | Broadcasting, bool output |
-| Reduction | ReduceSum, ReduceMean | Axis handling, keepdims |
+| Binary elementwise | Add, Mul | Broadcasting, dynamic shape computation |
 
 **Individual Operators** (unique logic):
 
 | Category | Operators |
 |----------|-----------|
-| Activation | Gelu, Softmax |
-| Normalization | RmsNorm (SimplifiedLayerNormalization) |
-| Matrix multiplication | MatMulF32, MatMulNBits (4-bit quantized) |
-| Metadata | Constant, ConstantOfShape, Shape |
-| Shape manipulation | Reshape, Unsqueeze, Transpose, Concat, Expand |
-| Indexing | Gather, Slice, ScatterND, Range, Trilu |
-| Type conversion | Cast |
-| Conditional | Where |
-| Attention | RotaryEmbedding, GemmaRotaryEmbedding, MicrosoftRotaryEmbedding, GroupQueryAttention |
+| Shape manipulation | Reshape |
 
 **Shader Organization:**
 ```
 shaders/
-├── activation/        # gelu.wgsl, softmax.wgsl
-├── attention/         # rotary_embedding.wgsl, group_query_attention.wgsl
-├── elementwise/       # add.wgsl, sub.wgsl, mul.wgsl, div.wgsl, ...
-├── indexing/          # gather.wgsl, slice.wgsl, ...
-├── matmul/            # matmul_f32.wgsl, matmul_nbits.wgsl
-├── normalization/     # rms_norm.wgsl
-└── reduction/         # reduce_sum.wgsl, reduce_mean.wgsl
+└── elementwise/    # add.wgsl, mul.wgsl
 ```
 
 ### onyxia-compiler
@@ -134,70 +117,78 @@ Orchestrates the compilation pipeline that transforms an ONNX `Graph` into a `Co
 
 **Responsibilities:**
 - Convert ONNX `Graph` → `IrGraph` (via `IrGraph::from_onnx()`)
-- Run a staged pass pipeline over the IR
-- Build the final `CompiledModel` with planned operations, compiled shaders, and tensor registry
+- Run the InitializeConstants pass to parse weight data
+- Build the final `CompiledModel` with dispatch entries and register routing
 
-**Pass Pipeline:**
+**Compilation Pipeline:**
 
-The compiler runs five stages in order. Each stage contains one or more passes:
+The compiler runs a single built-in pass followed by dispatch model construction:
 
 ```
 ┌─────────────────────────────────┐
-│ 1. Resolution                   │  Substitute symbolic dimensions with user-provided values
-│    ├ SymbolicResolutionPass      │  Evaluate symbolic expressions → static dims
-│    └ InitializeConstantsPass     │  Parse ONNX initializer bytes into TensorValues
+│ 1. Resolution Stage             │  Parse weight data from ONNX initializers
+│    └ InitializeConstantsPass     │  Convert raw bytes → EdgeData::Initializer
 ├─────────────────────────────────┤
-│ 2. Folding                      │  Evaluate constant operations at compile time
-│    └ ConstantFoldingPass         │  Call Operator::try_fold() for constant-input nodes
-├─────────────────────────────────┤
-│ 3. Inference                    │  Propagate shapes through the graph
-│    └ ShapeInferencePass          │  Call Operator::infer_output_shapes() (skips folded nodes)
-├─────────────────────────────────┤
-│ 4. Optimization                 │  (Custom user passes can be inserted here)
-│    └ (user-defined passes)       │  Dead code elimination, operator fusion, etc.
-├─────────────────────────────────┤
-│ 5. Planning                     │  Generate GPU execution steps
-│    └ PlanningPass                │  Call Operator::plan() for each remaining node
+│ 2. Build Dispatch Model         │  Walk graph, create dispatch objects
+│    ├ Topological sort            │  Determine execution order
+│    ├ create_dispatch() per node  │  Call Operator::create_dispatch()
+│    └ Assign register routing     │  Map tensors to register indices
 └─────────────────────────────────┘
 ```
 
-Running constant folding *before* shape inference is deliberate — nodes whose inputs are all constants get folded away entirely, so shape inference never needs to run on them.
+**Removed Features:**
+
+These features from the previous architecture have been removed:
+- Symbolic dimension resolution (no symbolic expressions)
+- Constant folding pass (no compile-time evaluation)
+- Shape inference pass (shapes computed at runtime)
+- Optimization passes (not needed for minimal set)
+- Planning pass (replaced by dispatch creation)
 
 **Custom Passes:**
 
-Users can insert passes into any stage:
+The pass system still exists for extensibility, but no custom passes are currently used:
 
 ```rust
-let mut pipeline = CompilerPipeline::new(dynamic_dimensions);
-pipeline.add_pass(MyOptimizationPass);  // runs in Stage::Optimization
+let mut pipeline = CompilerPipeline::new();
+pipeline.add_pass(MyCustomPass);  // runs in appropriate stage
 let model = pipeline.compile(&graph, &registry)?;
-```
-
-**Partial Compilation:**
-
-The CLI tools use `run_until_stage()` to stop the pipeline early for inspection:
-
-```rust
-pipeline.run_until_stage(&mut ir_graph, &registry, Stage::Inference)?;
-// Shapes are resolved, but no GPU planning has happened
 ```
 
 ### onyxia-runtime
 
-Executes a `CompiledModel` on the GPU using `wgpu` as the hardware abstraction layer.
+Executes a `CompiledModel` on the GPU using a register-based execution model via `wgpu`.
 
 **Responsibilities:**
 - Initialize GPU device and queue via `wgpu` (cross-platform: Vulkan, DX12, Metal)
 - Create compute pipelines from `naga::Module` shaders (via `ShaderSource::Naga`)
-- Allocate GPU buffers for all tensors and scratch space
-- Upload initial data (model weights, constants) to GPU
-- Execute compute passes (`Dispatch`, `CopyBuffer`, `WriteBuffer`)
+- Manage register file (array of GPU buffers) for tensor routing
+- Upload model weights to registers at load time
+- Execute dispatch sequence: gather inputs from registers, call `OpDispatch::dispatch()`, store outputs
 - Download output tensors from GPU → CPU
 
 **Key Types:**
-- `Runtime` — GPU device management, creates `PlanExecutor` instances
-- `PlanExecutor` — Materializes a `CompiledModel` into GPU pipelines/buffers, exposes `run(inputs) -> outputs`
+- `Runtime` — GPU device management, creates `Executor` instances
+- `Executor` — Materializes a `CompiledModel`, maintains register file, exposes `run(inputs) -> outputs`
 - `Tensor` — CPU-side tensor for input/output data interchange (typed access via `from_vec()`, `to_vec()`)
+
+**Register Machine:**
+
+The runtime maintains a register file (vector of `Option<RuntimeTensor>`) where each ONNX tensor value corresponds to a register index. Operations read inputs from registers and write outputs to registers:
+
+```rust
+// For each dispatch entry:
+let inputs: Vec<RuntimeTensor> = entry.input_regs
+    .iter()
+    .map(|&reg| registers[reg].clone())
+    .collect();
+
+let outputs = entry.op.dispatch(inputs, &mut dispatch_ctx)?;
+
+for (&reg, tensor) in entry.output_regs.iter().zip(outputs) {
+    registers[reg] = Some(tensor);
+}
+```
 
 **Execution flow:**
 ```rust
@@ -208,7 +199,7 @@ let outputs = executor.run(&[("input_ids", input_tensor)])?;
 
 ### onyxia-cli
 
-Command-line interface for model inspection, debugging, validation, and text generation.
+Command-line interface for model inspection, debugging, and validation.
 
 **Subcommands:**
 
@@ -216,74 +207,100 @@ Command-line interface for model inspection, debugging, validation, and text gen
 |---------|---------|
 | `dot` | Generate Graphviz DOT files with filtering and depth control |
 | `inspect` | Show model structure: layers, shapes, dynamic dimensions |
-| `inspect-node` | Detailed view of specific nodes (attributes, I/O shapes, values) |
+| `inspect-node` | Detailed view of specific nodes (attributes, I/O shapes) |
 | `list-nodes` | List/filter nodes by op type or name pattern, show summary stats |
-| `inspect-tensor` | Inspect tensor metadata and values, list constants |
+| `inspect-tensor` | Inspect tensor metadata and initializer values |
 | `trace-node` | Trace data flow around a node (upstream/downstream, configurable depth) |
-| `validate` | Validate model through partial compilation (resolution → folding → inference) |
-| `run-model` | End-to-end text generation with tokenizer, sampling, and streaming output |
+| `validate` | Validate model through compilation |
 
 ## Key Architectural Decisions
 
-### 1. Extensible Operator System
+### 1. Dispatch-Based Execution Model
 
-Each ONNX operation is implemented as a struct implementing the `Operator` trait:
+Onyxia uses a **dispatch-based** execution model. Each ONNX operator is compiled into a self-contained `OpDispatch` object that executes itself on the GPU given concrete input tensors.
+
+#### Compilation
+
+The compiler walks the ONNX graph in topological order and calls `Operator::create_dispatch()` for each node. The dispatch object captures pre-compiled shaders and attributes. No shape inference happens at compile time — shapes are fully determined at runtime from actual input tensors.
 
 ```rust
 pub trait Operator: Send + Sync {
     fn name(&self) -> &str;
 
-    /// Determine output shapes from input shapes and attributes.
-    fn infer_output_shapes(&self, ctx: &InferenceCtx) -> Result<Vec<TensorShape>>;
-
-    /// Evaluate at compile time if all inputs are constants (default: no folding).
-    fn try_fold(&self, ctx: &FoldCtx) -> Result<Vec<Option<TensorValue>>> {
-        Ok(vec![])
-    }
-
-    /// Emit GPU execution steps (shader dispatches, buffer copies).
-    fn plan(&self, ctx: &mut PlanCtx) -> Result<Vec<Step>>;
+    /// Create a dispatch object for this operation.
+    fn create_dispatch(&self, ctx: &mut CompileCtx) -> Result<Box<dyn OpDispatch>>;
 }
 ```
 
-Operators are registered by name in an `OperatorRegistry`. The built-in registry is provided by `onyxia_operators::core_operator_registry()`, and users can add custom operators:
+#### Tensor Routing (Register Machine)
+
+Tensors flow between operations via a register file. Each tensor in the IR graph maps to a register index. Operations read inputs from registers and write outputs to registers:
+
+```rust
+// Executor maintains: Vec<Option<RuntimeTensor>>
+for entry in &model.entries {
+    let inputs = entry.input_regs.iter().map(|&r| registers[r].clone()).collect();
+    let outputs = entry.op.dispatch(inputs, &mut ctx)?;
+    for (&reg, tensor) in entry.output_regs.iter().zip(outputs) {
+        registers[reg] = Some(tensor);
+    }
+}
+```
+
+#### Runtime Dispatch
+
+For each operation, the runtime:
+1. Gathers input `RuntimeTensor`s from registers
+2. Calls `OpDispatch::dispatch(inputs, ctx)`
+3. The operator computes output shapes from input shapes
+4. Allocates output buffers, dispatches compute shaders
+5. Returns output `RuntimeTensor`s
+6. Runtime stores outputs in their designated registers
+
+```rust
+pub trait OpDispatch: Send + Sync {
+    /// Execute this operation on the GPU.
+    fn dispatch(
+        &self,
+        inputs: Vec<RuntimeTensor>,
+        ctx: &mut DispatchCtx,
+    ) -> Result<Vec<RuntimeTensor>>;
+}
+```
+
+**Why this design:**
+- Operators own their complete execution logic — no centralized orchestration
+- Runtime shapes computed from actual input tensors — no compile-time inference needed
+- Compilation is simple and fast — no multi-pass analysis
+- Register-based routing is cache-friendly and minimizes data movement
+
+### 2. Extensible Operator System
+
+Each ONNX operation is implemented as a struct implementing the `Operator` trait. Operators are registered by name in an `OperatorRegistry`:
 
 ```rust
 let mut registry = core_operator_registry();
 registry.register("MyCustomOp", MyCustomOperator);
-let model = compile(&graph, &registry, &dynamic_dimensions)?;
+let model = compile(&graph, &registry)?;
 ```
 
 **Why this design:**
-- Operators own their shape inference, folding, and planning logic — no centralized match blocks
-- One ONNX node can emit multiple GPU steps (e.g., multi-pass algorithms with scratch buffers)
 - New operators are added without modifying existing code
+- One ONNX node creates one dispatch object with all its execution logic
+- Clear separation: compilation logic in operators, execution logic in dispatches
 
-### 2. Graph-Based IR with Edge-Centric Data Model
+### 3. Graph-Based IR with Edge-Centric Data Model
 
 The IR graph (`IrGraph`) uses edges to represent tensor value flows between operators. Edges carry all tensor metadata:
 
 - **Name, dtype, shape** — tensor identity
-- **`EdgeData`** — one of three states:
+- **`EdgeData`** — one of two states:
   - `Runtime` — value arrives at inference time (graph inputs, operator outputs)
-  - `Initializer(Vec<u8>)` — raw weight bytes from the ONNX file, parsed on demand
-  - `Constant(TensorValue)` — fully evaluated at compile time (from folding)
+  - `Initializer(Vec<u8>)` — raw weight bytes from the ONNX file, uploaded to GPU at load time
 
-During constant folding, an edge transitions from `Initializer` → `Constant` (or `Runtime` → `Constant` if all producer inputs were constant), and the producing operator node is removed from the graph. Downstream consumers reference the same edge and see the constant value directly.
+During compilation, edges maintain their state. At runtime, initializers are uploaded to registers and runtime values flow through the register file.
 
 This design avoids a separate "value node" vs "operator node" distinction — all data flows through edges.
-
-### 3. Staged Compilation Pipeline
-
-The compiler pipeline runs passes in five fixed stages. The key design choice is running **constant folding before shape inference**:
-
-1. **Resolution** — Symbolic dims → static values
-2. **Folding** — Evaluate constant subgraphs at compile time
-3. **Inference** — Propagate shapes (skipping already-folded nodes)
-4. **Optimization** — Custom graph transformations
-5. **Planning** — Emit GPU execution steps
-
-This ordering means operations like `Shape → Gather → Concat → Reshape` (common in transformer models) get folded away entirely at compile time, and shape inference never runs on them.
 
 ### 4. Compiler Compiles Shaders, Runtime Executes Them
 
@@ -315,32 +332,18 @@ WGSL is the shader language, preprocessed by `naga_oil`:
 - WGSL source files are embedded via `include_str!()` at Rust compile time and preprocessed at plan time
 
 ```wgsl
-#if QUANT_BITS == 4
-    const PACK_FACTOR: u32 = 8u;
+#if WORKGROUP_SIZE == 256
+    const WG_SIZE: u32 = 256u;
 #endif
 
-var<workgroup> tile: array<f32, #{TILE_SIZE} * #{BLOCK_SIZE}>;
+var<workgroup> tile: array<f32, #{TILE_SIZE}>;
 ```
 
-### 6. Symbolic Dimension Resolution
+### 6. No Symbolic Dimensions
 
-ONNX models use symbolic dimensions (e.g., `[batch_size, sequence_length, 768]`). Onyxia supports full arithmetic expressions in dimension names (as used by PyTorch-exported models):
+Unlike the previous architecture, this implementation does not support symbolic dimensions. All shapes must be fully static in the ONNX model. This simplifies the implementation significantly.
 
-```
-sequence_length * num_attention_heads
-(batch_size + 1) * 2
-```
-
-The `SymbolicResolutionPass` evaluates these expressions using user-provided dimension values and produces fully static shapes before any other processing.
-
-```rust
-let dynamic_dimensions = HashMap::from([
-    ("batch_size".to_string(), 1),
-    ("sequence_length".to_string(), 512),
-]);
-let model = compile(&graph, &registry, &dynamic_dimensions)?;
-// All shapes in CompiledModel are TensorShape::Static
-```
+If symbolic dimensions are needed in the future, they would be handled by a resolution pass that substitutes user-provided values before dispatch model construction.
 
 ### 7. Async GPU, Sync CLI
 
@@ -353,38 +356,40 @@ let executor = runtime.load_model(model).await?;
 
 The CLI uses `pollster::block_on` for synchronous entry points.
 
-### 8. Tokenization and Sampling in CLI Only
-
-ONNX models don't include tokenization or sampling. The core library (`onyxia-onnx`, `onyxia-core`, `onyxia-compiler`, `onyxia-runtime`) processes tensors. Tokenization, chat templates, and sampling are implemented in `onyxia-cli` for the `run-model` command, using the `tokenizers` and `minijinja` crates.
-
 ## Data Flow
 
 ```
 User Code                  Compiler                  Runtime                  GPU
 ────────────────────────────────────────────────────────────────────────────────────
                         compile(graph,
-graph = load_model()    registry,
-dims = {...}        ──▶   dims)
+graph = load_model()    registry)
+                      ──▶
                           │
-                          ├ from_onnx()        ──▶ IrGraph
-                          ├ SymbolicResolution  ──▶ Static shapes
+                          ├ from_onnx()         ──▶ IrGraph
                           ├ InitializeConstants ──▶ Parse weights
-                          ├ ConstantFolding     ──▶ Fold subgraphs
-                          ├ ShapeInference      ──▶ All shapes known
-                          ├ Planning            ──▶ GPU steps
+                          ├ Build dispatch model
+                          │  ├ Topological sort
+                          │  ├ create_dispatch() ──▶ Compile shaders
+                          │  └ Assign registers
                           └─────────────────────── CompiledModel
                                                        │
                                                 load_model(model)
                                                        │
-                                                Create pipelines  ──▶ GPU pipelines
-                                                Allocate buffers   ──▶ GPU memory
+                                                Allocate registers ──▶ GPU buffers
+                                                Create pipelines   ──▶ GPU pipelines
                                                 Upload weights     ──▶ GPU buffers
                                                        │
 inputs = [("x", t)] ──────────────────────▶ executor.run(inputs)
                                                        │
-                                                 Upload inputs     ──▶ GPU buffers
-                                                 Execute steps     ◀─▶ Compute shaders
-                                                 Download outputs  ◀── GPU buffers
+                                                 Upload inputs     ──▶ GPU buffers (registers)
+                                                 For each dispatch:
+                                                   Gather inputs from registers
+                                                   dispatch(inputs, ctx)
+                                                     Compute shapes
+                                                     Allocate outputs ──▶ GPU buffers
+                                                     Execute shader   ◀─▶ Compute shader
+                                                   Store outputs in registers
+                                                 Download outputs  ◀── GPU buffers (registers)
                                                        │
 outputs ◀──────────────────────────────── HashMap<String, Tensor>
 ```
@@ -420,37 +425,33 @@ onyxia-core  (depends on: onyxia-onnx)
 
 ## Testing Strategy
 
-### Unit Tests (148 passing)
+### Unit Tests
 
 Tests are run with [nextest](https://nexte.st/):
 
 ```bash
 cargo nextest run                                   # Non-GPU tests
-cargo nextest run --run-ignored=all --no-fail-fast   # All tests (requires GPU)
+cargo nextest run --run-ignored=all --no-fail-fast  # All tests (requires GPU)
 ```
 
 - Operators are tested with programmatic `IrGraph` construction — no model files needed
-- Shape inference tests verify output shapes for each operator
-- Constant folding tests verify compile-time evaluation
-- Symbolic expression parser/evaluator tests
-
-### Integration Tests
-
-- End-to-end: `IrGraph` → compile → GPU execute → compare outputs
-- Gemma 3 270m model parsing and plan compilation
+- End-to-end dispatch tests verify GPU execution for simple graphs
 - GPU tests are marked `#[ignore]` for CI without GPU hardware
 
 ### Future Testing
 
 - Numerical validation against ONNX Runtime (atol=1e-4, rtol=1e-3)
-- Performance benchmarks (tokens/second, latency, memory)
+- Performance benchmarks (ops/second, latency, memory)
 
 ## Future Work
 
+- **More operators** — Implement remaining ONNX operators (matmul, attention, RmsNorm, etc.)
 - **Quantization** — MatMulNBits shader with Q4 dequantization, scale/zero-point handling
-- **Attention & KV Cache** — GroupQueryAttention/RotaryEmbedding shaders, persistent KV cache buffers, prefill/decode API
+- **Attention & KV Cache** — GroupQueryAttention/RotaryEmbedding shaders, persistent KV cache buffers
 - **Optimizations** — Operator fusion, memory pooling, Flash Attention, workgroup tuning
-- **Broader coverage** — More ONNX operators, additional model architectures
+- **Symbolic dimensions** — Re-introduce support for dynamic/symbolic shapes if needed
+- **Constant folding** — Re-introduce compile-time evaluation for shape operations if needed
+- **Broader coverage** — Additional model architectures
 
 ## References
 

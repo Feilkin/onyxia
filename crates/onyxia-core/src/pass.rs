@@ -8,41 +8,37 @@ use crate::registry::OperatorRegistry;
 ///
 /// Passes are grouped into stages and run in a fixed order. Within each stage,
 /// passes run in the order they were registered.
+///
+/// Note: In the current dispatch-based architecture, only the Resolution stage
+/// is actively used (for InitializeConstants pass). Other stages are preserved
+/// for future extensibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Stage {
-    /// Resolve symbolic dimensions to static values (earliest stage).
+    /// Resolution stage (earliest).
     ///
-    /// Passes in this stage take `dynamic_dimensions` provided by the user
-    /// and substitute them into symbolic dimension expressions, producing
-    /// fully static shapes.
+    /// Currently used for the InitializeConstants pass which parses
+    /// ONNX weight data.
     Resolution,
 
-    /// Constant folding (evaluate operations at compile time).
+    /// Folding stage (reserved for future use).
     ///
-    /// Passes in this stage call `Operator::try_fold()` for nodes where all
-    /// inputs are known constants, replacing the node's outputs with folded
-    /// values. Folded nodes don't need shape inference since their output
-    /// shapes are determined by the folded values.
+    /// Could be used for compile-time constant evaluation if re-introduced.
     Folding,
 
-    /// Shape inference (propagate shapes through the graph).
+    /// Inference stage (reserved for future use).
     ///
-    /// Passes in this stage call `Operator::infer_output_shapes()` for each
-    /// non-folded node in topological order, resolving output shapes from
-    /// input shapes. Nodes that were fully folded in the previous stage are
-    /// skipped since their shapes are already known.
+    /// Could be used for compile-time shape inference if re-introduced.
     Inference,
 
-    /// Graph rewriting and optimization (dead code elimination, fusion, etc.).
+    /// Optimization stage (reserved for future use).
     ///
-    /// Passes in this stage mutate the graph to improve performance or reduce
-    /// size. Examples: remove no-op nodes, fuse consecutive operations, etc.
+    /// Could be used for graph rewriting passes (dead code elimination,
+    /// operator fusion, etc.).
     Optimization,
 
-    /// Code generation (emit execution steps).
+    /// Planning stage (reserved for future use).
     ///
-    /// Passes in this stage call `Operator::plan()` for each remaining node,
-    /// generating GPU compute dispatches and buffer operations.
+    /// Could be used for advanced code generation passes.
     Planning,
 }
 

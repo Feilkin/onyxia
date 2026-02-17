@@ -80,9 +80,10 @@ impl TensorShape {
     }
 }
 
-/// Raw tensor data for constant folding.
+/// Raw tensor data.
 ///
 /// Separated from metadata (shape, dtype) to enable flexible tensor operations.
+/// Used for compile-time constants and initializer data.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TensorData {
     I64(Vec<i64>),
@@ -161,16 +162,15 @@ impl TensorData {
     }
 }
 
-/// A tensor value known at compile time (for constant folding).
+/// A tensor value known at compile time.
 ///
-/// Bundles data, shape, and dtype together to enable correct constant folding
-/// for shape-transforming operators like Reshape and Transpose.
+/// Bundles data, shape, and dtype together for operations that need
+/// concrete tensor values. Used for initializers and compile-time constants.
 ///
-/// Used to enable data-dependent shape inference: e.g., Reshape reads its
-/// target shape from an upstream Concat whose values were propagated from
-/// Shape and Gather.
+/// Note: Currently preserved for backward compatibility. In the dispatch-based
+/// execution model, most compile-time evaluation has been removed.
 ///
-/// Only small tensors are stored (shape-metadata, indices, axes).
+/// Only small tensors should be stored (shape-metadata, indices, axes).
 /// Large weight tensors should NOT be wrapped in TensorValue.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TensorValue {
@@ -296,7 +296,7 @@ impl TensorValue {
             }
             _ => {
                 return Err(Error::Compilation(format!(
-                    "Cast from {:?} to {:?} not supported in constant folding",
+                    "Cast from {:?} to {:?} not supported",
                     self.dtype, target_dtype
                 )));
             }

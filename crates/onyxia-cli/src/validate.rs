@@ -43,11 +43,11 @@ pub fn validate_model(
     // Compile model (simplified pipeline, no staged validation)
     print_step("Compiling model", verbose);
     let mut pipeline = CompilerPipeline::new();
-    
+
     // Note: Dynamic dimensions no longer passed at compile time in simplified pipeline
     let _ = (dynamic_dims, until_stage); // Suppress unused warnings
     // TODO: Re-evaluate validation workflow when dispatch model is complete
-    
+
     let _compiled = pipeline
         .compile(&model, &registry)
         .context("Failed to compile model")?;
@@ -66,7 +66,7 @@ pub fn validate_model(
     }
 
     Ok(())
-    
+
     /* Original staged validation - disabled pending dispatch model completion
     // Run compilation stages
     let mut pipeline = CompilerPipeline::new(dynamic_dims.clone());
@@ -314,6 +314,7 @@ fn check_large_concat(graph: &IrGraph, node_id: onyxia_core::IrNodeId) -> Result
     Ok(None)
 }
 
+#[allow(dead_code)] // May be used in future validation improvements
 fn suggest_fixes(error: &anyhow::Error, dynamic_dims: &HashMap<String, usize>) {
     let error_str = format!("{:?}", error);
 

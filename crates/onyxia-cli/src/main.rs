@@ -223,17 +223,17 @@ fn main() -> Result<()> {
             cmd_inspect(model, dynamic_dims)?;
         }
         Commands::RunModel {
-            model,
-            tokenizer,
-            prompt,
-            max_tokens,
-            temperature,
-            top_k,
-            top_p,
-            seed,
-            max_seq_len,
-            num_layers,
-            no_stream,
+            model: _,
+            tokenizer: _,
+            prompt: _,
+            max_tokens: _,
+            temperature: _,
+            top_k: _,
+            top_p: _,
+            seed: _,
+            max_seq_len: _,
+            num_layers: _,
+            no_stream: _,
         } => {
             // Temporarily disabled pending operator re-implementation with dispatch model
             anyhow::bail!(
@@ -540,10 +540,10 @@ fn cmd_inspect(model_path: PathBuf, dynamic_dim_args: Vec<String>) -> Result<()>
     // Resolve dimensions and infer shapes using the compiler pipeline
     let registry = onyxia_operators::core_operator_registry();
     let mut pipeline = onyxia_compiler::CompilerPipeline::new();
-    
+
     // Note: Dynamic dimensions no longer passed at compile time
     let _ = dynamic_dims; // Suppress unused warning
-    
+
     // Just run up to inference stage to get shapes, don't need full compilation
     pipeline
         .compile(&model, &registry)
@@ -644,6 +644,7 @@ fn cmd_inspect(model_path: PathBuf, dynamic_dim_args: Vec<String>) -> Result<()>
 }
 
 /// Run an ONNX model for text generation.
+#[allow(dead_code)] // Temporarily disabled pending operator re-implementation
 #[allow(clippy::too_many_arguments)]
 async fn cmd_run_model(
     model_path: PathBuf,
@@ -681,7 +682,7 @@ async fn cmd_run_model(
     // Resolve dynamic dimensions and compile to execution plan
     let registry = onyxia_operators::core_operator_registry();
     let mut pipeline = onyxia_compiler::CompilerPipeline::new();
-    
+
     // Note: Dynamic dimensions no longer passed at compile time
     let _ = dynamic_dims; // Suppress unused warning
 

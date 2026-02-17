@@ -4,9 +4,8 @@
 //! - **Nodes** (`IrNode`) are operators (e.g., Add, MatMul, Reshape)
 //! - **Edges** (`IrEdge`) are tensor value flows between operators
 //!
-//! During constant folding, edges can acquire a `constant_value` and their
-//! producing operator is removed from the graph. Downstream consumers
-//! see the constant directly on the edge.
+//! Edges can contain initializer data (model weights) or represent
+//! runtime values computed during execution.
 
 use crate::types::{DataType, TensorShape, TensorValue};
 use crate::{Error, Result};
@@ -252,13 +251,16 @@ impl IrGraph {
         self.add_edge(tensor)
     }
 
-    // ── Constant folding ──
+    // ── Constant folding (currently unused, preserved for potential future use) ──
 
     /// Fold a single-output operator into a constant on its output edge.
     ///
     /// Removes the operator node from the graph and stores the constant
     /// value on the output edge. Consumers keep referencing the same
     /// `IrEdgeId`; they see the constant via `edge.constant_value`.
+    ///
+    /// Note: Not currently used in dispatch-based execution model.
+    #[allow(dead_code)]
     pub fn fold_node_to_constant(&mut self, node_id: IrNodeId, value: TensorValue) -> Result<()> {
         let node = self.node(node_id)?.clone();
 
@@ -282,6 +284,7 @@ impl IrGraph {
     }
 
     /// Backward-compat alias for `fold_node_to_constant`.
+    #[allow(dead_code)]
     pub fn replace_single_output_with_value(
         &mut self,
         node_id: IrNodeId,
@@ -295,6 +298,7 @@ impl IrGraph {
     ///
     /// Returns `true` if the node no longer exists in the graph
     /// (it was removed during constant folding).
+    #[allow(dead_code)]
     pub fn is_fully_folded(&self, node_id: IrNodeId) -> Result<bool> {
         Ok(self.graph.node_weight(node_id).is_none())
     }
@@ -486,10 +490,10 @@ impl IrNode {
 /// Encodes the three mutually exclusive states an edge can be in:
 /// - **Runtime**: no compile-time data — value arrives at runtime (graph input
 ///   or operator output).
-/// - **Initializer**: raw weight bytes from the ONNX model file, parsed
-///   on-demand during constant folding.
-/// - **Constant**: fully evaluated compile-time value (from folding or a
-///   parsed initializer).
+/// - **Initializer**: raw weight bytes from the ONNX model file, uploaded to
+///   GPU registers at model load time.
+/// - **Constant**: fully evaluated compile-time value (currently unused, but
+///   preserved for potential future constant folding support).
 #[derive(Debug, Clone)]
 pub enum EdgeData {
     /// No compile-time data; value arrives at runtime.
@@ -509,9 +513,6 @@ pub enum EdgeData {
 /// Edges carry metadata about the tensor that flows along them:
 /// - `name` / `dtype` / `shape` describe the tensor.
 /// - `data` describes what compile-time data (if any) the edge holds.
-///
-/// During constant folding, `data` transitions from `Initializer` or
-/// `Runtime` to `Constant`, and the producing operator is removed.
 #[derive(Debug, Clone)]
 pub struct IrEdge {
     /// Tensor name (must be unique within the graph).
@@ -520,7 +521,7 @@ pub struct IrEdge {
     /// Data type.
     pub dtype: DataType,
 
-    /// Shape (static, symbolic, or absent).
+    /// Shape (static, unknown, or absent).
     pub shape: TensorShape,
 
     /// Compile-time data carried by this edge.

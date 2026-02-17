@@ -1,28 +1,30 @@
 # Copilot Instructions for Onyxia
 
-Onyxia is a **GPU compute shader runtime for ONNX models**, built in Rust 2024 edition. It compiles ONNX operator graphs into WGSL compute shaders executed via `wgpu`.
+Onyxia is a **GPU compute shader runtime for ONNX models**, built in Rust 2024 edition. It uses a dispatch-based execution model where operators compile their shaders at compile time and compute shapes at runtime from actual input tensors.
 
 ### Architecture
 
 ```
-┌─────────────────┐     ┌──────────────────┐      ┌─────────────────┐
-│  onyxia-onnx    │────▶│ onyxia-compiler  │────▶│ onyxia-runtime  │
-│  (ONNX parser)  │     │ (execution graph)│      │ (GPU executor)  │
-└─────────────────┘     └──────────────────┘      └─────────────────┘
-                                                        ▲
-                                                        │
-                                               ┌─────────────────┐
-                                               │   onyxia-cli    │
-                                               │ (CLI interface) │
-                                               └─────────────────┘
+┌─────────────────┐     ┌──────────────────┐      ┌──────────────────┐
+│  onyxia-onnx    │────▶│ onyxia-compiler  │────▶│ onyxia-runtime   │
+│  (ONNX parser)  │     │ (dispatch model) │      │ (GPU executor)   │
+└─────────────────┘     └──────────────────┘      └──────────────────┘
+                                ▲                           ▲
+                                │                           │
+                    ┌───────────┴───────────┐      ┌───────┴──────────┐
+                    │  onyxia-operators     │      │   onyxia-cli     │
+                    │  (3 core operators)   │      │  (CLI interface) │
+                    └───────────────────────┘      └──────────────────┘
 ```
 
 | Crate | Purpose |
 |-------|---------|
 | `onyxia-onnx` | Parse ONNX protobuf models into internal IR |
-| `onyxia-compiler` | Generate execution plans with pre-compiled WGSL shaders |
-| `onyxia-runtime` | Execute execution plans on GPU via `wgpu` |
-| `onyxia-cli` | CLI for testing models, generating dot graphs, benchmarking |
+| `onyxia-core` | IR graph, operator/dispatch traits, compiled model types, operator registry |
+| `onyxia-operators` | 3 core operators (Add, Mul, Reshape) with WGSL shaders |
+| `onyxia-compiler` | Build dispatch models with pre-compiled WGSL shaders |
+| `onyxia-runtime` | Execute dispatch models on GPU via `wgpu` with register-based routing |
+| `onyxia-cli` | CLI for model inspection, DOT graphs, validation |
 
 Read [ARCHITECTURE.md](../ARCHITECTURE.md) for more details.
 
@@ -81,6 +83,36 @@ pub mod onnx {
 - For GPU code, write WGSL in separate `.wgsl` files and use `naga_oil` for runtime compilation
 
 ### Cross-Crate Communication
-- `onyxia-onnx` exports an IR that `onyxia-compiler` consumes
-- `onyxia-compiler` produces execution plans for `onyxia-runtime`
+- `onyxia-onnx` exports a `Graph` that `onyxia-compiler` consumes
+- `onyxia-core` defines the `Operator` trait (with `create_dispatch()`) and `OpDispatch` trait
+- `onyxia-operators` implements operators and exports `core_operator_registry()`
+- `onyxia-compiler` produces `CompiledModel` (dispatch entries + register routing) for `onyxia-runtime`
+- `onyxia-runtime` executes dispatch entries using a register-based execution model
 - Keep crate boundaries clean; avoid circular dependencies
+
+### Key Concepts
+
+**Dispatch-based execution:**
+- Each operator implements `Operator::create_dispatch()` to produce an `OpDispatch` object
+- At runtime, `OpDispatch::dispatch(inputs, ctx) -> outputs` computes shapes from actual inputs and executes GPU work
+- No compile-time shape inference or constant folding — shapes determined at runtime
+
+**Register machine:**
+- Runtime maintains a vector of `Option<RuntimeTensor>` (the register file)
+- Each tensor in the IR graph maps to a register index
+- Operations read inputs from registers and write outputs to registers
+
+**Operator trait:**
+```rust
+pub trait Operator: Send + Sync {
+    fn name(&self) -> &str;
+    fn create_dispatch(&self, ctx: &mut CompileCtx) -> Result<Box<dyn OpDispatch>>;
+}
+```
+
+**OpDispatch trait:**
+```rust
+pub trait OpDispatch: Send + Sync {
+    fn dispatch(&self, inputs: Vec<RuntimeTensor>, ctx: &mut DispatchCtx) -> Result<Vec<RuntimeTensor>>;
+}
+```

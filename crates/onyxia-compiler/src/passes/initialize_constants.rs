@@ -1,11 +1,9 @@
 //! Initialize constants pass.
 //!
 //! Converts edges with `EdgeData::Initializer` (raw ONNX bytes) into
-//! `EdgeData::Constant` (parsed `TensorValue`) when the edge has a known
-//! static shape.
+//! parsed weight tensors that can be uploaded to GPU registers at runtime.
 //!
-//! Runs in the `Resolution` stage so that parsed constants are available
-//! for both shape inference and constant folding.
+//! Runs in the `Resolution` stage before dispatch model construction.
 
 use onyxia_core::ir::EdgeData;
 use onyxia_core::{IrGraph, OperatorRegistry, Pass, Result, Stage, TensorShape, TensorValue};
