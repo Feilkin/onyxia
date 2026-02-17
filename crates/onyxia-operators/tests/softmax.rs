@@ -312,7 +312,9 @@ async fn test_softmax_3d_tensor() {
 
     // Input data: 2x2x3 tensor
     let input = Tensor::from_vec(
-        vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+        vec![
+            1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+        ],
         &[2, 2, 3],
     );
     let outputs = executor.run(&[("input", input)]).unwrap();
@@ -352,7 +354,9 @@ async fn test_softmax_3d_middle_axis() {
 
     // Input data: 2x3x2 tensor
     let input = Tensor::from_vec(
-        vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+        vec![
+            1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+        ],
         &[2, 3, 2],
     );
     let outputs = executor.run(&[("input", input)]).unwrap();
