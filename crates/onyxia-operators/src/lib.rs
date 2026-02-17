@@ -20,7 +20,7 @@ mod registry;
 
 // Re-export operator types
 pub use families::{BinaryElementwiseOp, ComparisonOp};
-pub use operators::{ConcatOp, ExpandOp, ReshapeOp, TransposeOp, UnsqueezeOp};
+pub use operators::{ConcatOp, ExpandOp, ReshapeOp, SliceOp, TransposeOp, UnsqueezeOp};
 pub use registry::core_operator_registry;
 
 /// Result type for operator operations.

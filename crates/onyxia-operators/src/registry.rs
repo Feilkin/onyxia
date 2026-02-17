@@ -5,7 +5,7 @@
 use onyxia_core::OperatorRegistry;
 
 use crate::families::{BinaryElementwiseOp, ComparisonOp, UnaryMathOp};
-use crate::operators::{ConcatOp, ExpandOp, ReshapeOp, TransposeOp, UnsqueezeOp};
+use crate::operators::{ConcatOp, ExpandOp, ReshapeOp, SliceOp, TransposeOp, UnsqueezeOp};
 
 /// Returns an operator registry pre-populated with core operators.
 ///
@@ -47,6 +47,7 @@ pub fn core_operator_registry() -> OperatorRegistry {
     registry.register("Expand", ExpandOp);
     registry.register("Transpose", TransposeOp);
     registry.register("Unsqueeze", UnsqueezeOp);
+    registry.register("Slice", SliceOp);
 
     registry
 }

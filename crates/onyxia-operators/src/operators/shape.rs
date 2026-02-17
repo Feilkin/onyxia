@@ -16,6 +16,9 @@ const EXPAND_SHADER: &str = include_str!("../../shaders/shape/expand.wgsl");
 /// Shader source for the Transpose operator.
 const TRANSPOSE_SHADER: &str = include_str!("../../shaders/shape/transpose.wgsl");
 
+/// Shader source for the Slice operator.
+const SLICE_SHADER: &str = include_str!("../../shaders/shape/slice.wgsl");
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Reshape operator
 // ══════════════════════════════════════════════════════════════════════════════
@@ -716,6 +719,262 @@ impl Operator for UnsqueezeOp {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// Slice operator
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Slice operator - extract a sub-tensor along specified axes.
+///
+/// ONNX opset 13+:
+/// - **Inputs**:
+///   - data (T) - tensor to extract slices from
+///   - starts (Tind) - starting indices (1-D tensor)
+///   - ends (Tind) - ending indices (1-D tensor)
+///   - axes (optional, Tind) - axes to apply slicing (default: [0, 1, ..., len(starts)-1])
+///   - steps (optional, Tind) - step sizes (default: [1, 1, ..., 1])
+/// - **Outputs**: output (T) - sliced tensor
+///
+/// Behavior:
+/// - Negative indices count from end: -1 means last element
+/// - `ends[i]` is exclusive (slice up to but not including)
+/// - Negative steps enable reverse slicing
+/// - Out-of-bounds indices are clamped to valid range
+pub struct SliceOp;
+
+/// Runtime dispatch for Slice.
+struct SliceDispatch {
+    /// Pre-compiled naga module for the shader.
+    module: naga::Module,
+}
+
+impl OpDispatch for SliceDispatch {
+    fn dispatch(
+        &self,
+        inputs: Vec<RuntimeTensor>,
+        ctx: &mut DispatchCtx,
+    ) -> onyxia_core::Result<Vec<RuntimeTensor>> {
+        let data_tensor = &inputs[0];
+        let starts_tensor = &inputs[1];
+        let ends_tensor = &inputs[2];
+
+        // Download slice parameters from GPU
+        let starts_data = ctx.download_tensor(starts_tensor)?;
+        let ends_data = ctx.download_tensor(ends_tensor)?;
+
+        let starts_raw = parse_slice_indices(&starts_data, starts_tensor.dtype)?;
+        let ends_raw = parse_slice_indices(&ends_data, ends_tensor.dtype)?;
+
+        if starts_raw.len() != ends_raw.len() {
+            return Err(Error::Shape(format!(
+                "Slice: starts and ends must have same length (got {} and {})",
+                starts_raw.len(),
+                ends_raw.len()
+            )));
+        }
+
+        // Parse optional axes tensor
+        let axes: Vec<i64> = if inputs.len() > 3 && inputs[3].shape.iter().product::<usize>() > 0 {
+            let axes_data = ctx.download_tensor(&inputs[3])?;
+            parse_slice_indices(&axes_data, inputs[3].dtype)?
+        } else {
+            // Default: [0, 1, 2, ..., len(starts)-1]
+            (0..starts_raw.len() as i64).collect()
+        };
+
+        // Parse optional steps tensor
+        let steps: Vec<i64> = if inputs.len() > 4 && inputs[4].shape.iter().product::<usize>() > 0 {
+            let steps_data = ctx.download_tensor(&inputs[4])?;
+            parse_slice_indices(&steps_data, inputs[4].dtype)?
+        } else {
+            // Default: [1, 1, 1, ...]
+            vec![1; starts_raw.len()]
+        };
+
+        if axes.len() != starts_raw.len() || steps.len() != starts_raw.len() {
+            return Err(Error::Shape(format!(
+                "Slice: starts, ends, axes, and steps must all have same length (got {}, {}, {}, {})",
+                starts_raw.len(),
+                ends_raw.len(),
+                axes.len(),
+                steps.len()
+            )));
+        }
+
+        let rank = data_tensor.shape.len();
+
+        if rank > 6 {
+            return Err(Error::Shape(format!(
+                "Slice: supports up to 6 dimensions, got {}",
+                rank
+            )));
+        }
+
+        // Prepare per-axis parameters: normalize indices and compute output shape
+        let mut output_shape = data_tensor.shape.clone();
+        let mut normalized_starts = vec![0i32; rank];
+        let mut normalized_steps = vec![1i32; rank];
+
+        for (i, &axis) in axes.iter().enumerate() {
+            // Normalize negative axis
+            let axis_idx = if axis < 0 {
+                (rank as i64 + axis) as usize
+            } else {
+                axis as usize
+            };
+
+            if axis_idx >= rank {
+                return Err(Error::Shape(format!(
+                    "Slice: axis {} out of bounds for rank {}",
+                    axis, rank
+                )));
+            }
+
+            let dim_size = data_tensor.shape[axis_idx] as i64;
+            let step = steps[i];
+
+            if step == 0 {
+                return Err(Error::Shape("Slice: step cannot be 0".into()));
+            }
+
+            // Normalize negative indices: -1 means last element
+            let mut start = starts_raw[i];
+            let mut end = ends_raw[i];
+
+            if start < 0 {
+                start += dim_size;
+            }
+            if end < 0 {
+                end += dim_size;
+            }
+
+            // Clamp to valid range
+            start = start.clamp(0, dim_size);
+            end = end.clamp(0, dim_size);
+
+            // Compute output dimension size
+            let output_dim_size = if step > 0 {
+                if end > start {
+                    ((end - start + step - 1) / step) as usize
+                } else {
+                    0
+                }
+            } else {
+                if start > end {
+                    ((start - end - step - 1) / (-step)) as usize
+                } else {
+                    0
+                }
+            };
+
+            output_shape[axis_idx] = output_dim_size;
+            normalized_starts[axis_idx] = start as i32;
+            normalized_steps[axis_idx] = step as i32;
+        }
+
+        let num_elements: usize = output_shape.iter().product();
+
+        // Handle empty output
+        if num_elements == 0 {
+            return Ok(vec![
+                ctx.create_output_tensor(&output_shape, data_tensor.dtype)?,
+            ]);
+        }
+
+        // Allocate output buffer
+        let output = ctx.create_output_tensor(&output_shape, data_tensor.dtype)?;
+
+        // Encode immediates
+        let mut immediates = Vec::new();
+
+        // num_elements (u32)
+        immediates.extend_from_slice(&(num_elements as u32).to_le_bytes());
+
+        // rank (u32)
+        immediates.extend_from_slice(&(rank as u32).to_le_bytes());
+
+        // input_shape (6 x u32)
+        for dim in data_tensor.shape.iter().take(6) {
+            immediates.extend_from_slice(&(*dim as u32).to_le_bytes());
+        }
+        for _ in data_tensor.shape.len()..6 {
+            immediates.extend_from_slice(&0u32.to_le_bytes());
+        }
+
+        // output_shape (6 x u32)
+        for dim in output_shape.iter().take(6) {
+            immediates.extend_from_slice(&(*dim as u32).to_le_bytes());
+        }
+        for _ in output_shape.len()..6 {
+            immediates.extend_from_slice(&0u32.to_le_bytes());
+        }
+
+        // starts (6 x i32)
+        for &start in normalized_starts.iter().take(6) {
+            immediates.extend_from_slice(&start.to_le_bytes());
+        }
+        for _ in normalized_starts.len()..6 {
+            immediates.extend_from_slice(&0i32.to_le_bytes());
+        }
+
+        // steps (6 x i32)
+        for &step in normalized_steps.iter().take(6) {
+            immediates.extend_from_slice(&step.to_le_bytes());
+        }
+        for _ in normalized_steps.len()..6 {
+            immediates.extend_from_slice(&0i32.to_le_bytes());
+        }
+
+        // Compute workgroup count
+        let workgroup_size: u32 = 256;
+        let num_workgroups = (num_elements as u32).div_ceil(workgroup_size);
+
+        // Get or create pipeline
+        let (pipeline, bind_group_layout) =
+            ctx.get_or_create_pipeline("Slice", &self.module, "main")?;
+
+        // Create bind group
+        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("slice_bind_group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: data_tensor.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: output.buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        // Dispatch compute shader
+        ctx.dispatch_compute(
+            &pipeline,
+            &bind_group,
+            [num_workgroups, 1, 1],
+            Some(&immediates),
+        )?;
+
+        Ok(vec![output])
+    }
+}
+
+impl Operator for SliceOp {
+    fn name(&self) -> &str {
+        "Slice"
+    }
+
+    fn create_dispatch(&self, ctx: &mut CompileCtx) -> Result<Box<dyn OpDispatch>> {
+        let mut shader_defs = HashMap::new();
+        shader_defs.insert("WORKGROUP_SIZE".to_string(), "256".to_string());
+
+        let module = ctx.compile_shader("Slice", SLICE_SHADER, &shader_defs)?;
+
+        Ok(Box::new(SliceDispatch { module }))
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // Helper functions
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -760,6 +1019,20 @@ fn parse_axes_tensor(data: &[u8], dtype: DataType) -> Result<Vec<i64>> {
             .collect()),
         _ => Err(Error::Shape(format!(
             "Axes tensor has unsupported dtype: {dtype:?}"
+        ))),
+    }
+}
+
+/// Parse slice indices (starts, ends, axes, steps) from a tensor.
+fn parse_slice_indices(data: &[u8], dtype: DataType) -> Result<Vec<i64>> {
+    match dtype {
+        DataType::I64 => Ok(bytemuck::cast_slice(data).to_vec()),
+        DataType::I32 => Ok(bytemuck::cast_slice::<u8, i32>(data)
+            .iter()
+            .map(|&v| v as i64)
+            .collect()),
+        _ => Err(Error::Shape(format!(
+            "Slice index tensor has unsupported dtype: {dtype:?}"
         ))),
     }
 }
