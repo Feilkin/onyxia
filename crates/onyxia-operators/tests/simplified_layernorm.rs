@@ -13,7 +13,7 @@ use onyxia_operators::core_operator_registry;
 
 /// Helper to assert that two f32 vectors are approximately equal element-wise.
 fn assert_vec_approx_eq(actual: &[f32], expected: &[f32], epsilon: f32) {
-    assert_eq!(actual.len(),expected.len(), "Vector lengths differ");
+    assert_eq!(actual.len(), expected.len(), "Vector lengths differ");
     for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
         let diff = (a - e).abs();
         assert!(

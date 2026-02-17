@@ -5,10 +5,12 @@
 pub mod cast;
 pub mod constant;
 pub mod gather;
+pub mod group_query_attention;
 pub mod matmul;
 pub mod range;
 pub mod reduce_mean;
 pub mod reduce_sum;
+pub mod rotary_embedding;
 pub mod scatter_nd;
 pub mod shape;
 pub mod simplified_layer_norm;
@@ -20,10 +22,12 @@ pub mod where_op;
 pub use cast::CastOp;
 pub use constant::ConstantOp;
 pub use gather::GatherOp;
+pub use group_query_attention::GroupQueryAttentionOp;
 pub use matmul::MatMulOp;
 pub use range::RangeOp;
 pub use reduce_mean::ReduceMeanOp;
 pub use reduce_sum::ReduceSumOp;
+pub use rotary_embedding::RotaryEmbeddingOp;
 pub use scatter_nd::ScatterNDOp;
 pub use shape::{
     ConcatOp, ConstantOfShapeOp, ExpandOp, ReshapeOp, ShapeOp, SliceOp, TransposeOp, UnsqueezeOp,

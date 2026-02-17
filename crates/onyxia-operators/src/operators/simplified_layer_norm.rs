@@ -149,11 +149,8 @@ impl OpDispatch for SimplifiedLayerNormDispatch {
         immediates.extend_from_slice(&self.epsilon.to_le_bytes());
 
         // Pass 1: Compute RMS
-        let (rms_pipeline, rms_bind_group_layout) = ctx.get_or_create_pipeline(
-            "SimplifiedLayerNorm_RMS",
-            &self.rms_module,
-            "compute_rms",
-        )?;
+        let (rms_pipeline, rms_bind_group_layout) =
+            ctx.get_or_create_pipeline("SimplifiedLayerNorm_RMS", &self.rms_module, "compute_rms")?;
 
         let rms_bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("simplified_layernorm_rms_bind_group"),
