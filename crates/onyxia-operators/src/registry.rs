@@ -5,7 +5,7 @@
 use onyxia_core::OperatorRegistry;
 
 use crate::families::{BinaryElementwiseOp, ComparisonOp, UnaryMathOp};
-use crate::operators::ReshapeOp;
+use crate::operators::{ConcatOp, ExpandOp, ReshapeOp, TransposeOp, UnsqueezeOp};
 
 /// Returns an operator registry pre-populated with core operators.
 ///
@@ -13,7 +13,7 @@ use crate::operators::ReshapeOp;
 /// - 5 binary elementwise operators (Add, Mul, Div, Sub, Pow)
 /// - 5 comparison operators (Equal, Greater, Less, GreaterOrEqual, LessOrEqual)
 /// - 5 unary math operators (Neg, Sqrt, Cos, Sin, Tanh)
-/// - 1 shape manipulation operator (Reshape)
+/// - 5 shape manipulation operators (Reshape, Concat, Expand, Transpose, Unsqueeze)
 ///
 /// Custom operators can be added to the returned registry via
 /// `registry.register(name, operator)`.
@@ -43,6 +43,10 @@ pub fn core_operator_registry() -> OperatorRegistry {
 
     // Shape manipulation operators
     registry.register("Reshape", ReshapeOp);
+    registry.register("Concat", ConcatOp);
+    registry.register("Expand", ExpandOp);
+    registry.register("Transpose", TransposeOp);
+    registry.register("Unsqueeze", UnsqueezeOp);
 
     registry
 }

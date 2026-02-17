@@ -9,7 +9,7 @@
 //!
 //! # Individual Operators
 //!
-//! - Shape manipulation (Reshape)
+//! - Shape manipulation (Reshape, Concat, Expand, Transpose, Unsqueeze)
 
 pub mod families;
 pub mod operators;
@@ -20,6 +20,7 @@ mod registry;
 
 // Re-export operator types
 pub use families::{BinaryElementwiseOp, ComparisonOp};
+pub use operators::{ConcatOp, ExpandOp, ReshapeOp, TransposeOp, UnsqueezeOp};
 pub use registry::core_operator_registry;
 
 /// Result type for operator operations.

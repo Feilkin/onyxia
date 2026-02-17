@@ -5,4 +5,4 @@
 pub mod shape;
 
 // Re-export all operators
-pub use shape::ReshapeOp;
+pub use shape::{ConcatOp, ExpandOp, ReshapeOp, TransposeOp, UnsqueezeOp};
