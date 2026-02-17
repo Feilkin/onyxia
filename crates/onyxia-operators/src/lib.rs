@@ -1,27 +1,14 @@
 //! Core operator implementations for Onyxia.
 //!
-//! This crate provides the standard ONNX operator set with optimized implementations
-//! using collapsed operator families to eliminate code duplication.
+//! This crate provides a minimal operator set for validating the new dispatch architecture.
 //!
 //! # Operator Families
 //!
-//! - **Binary elementwise**: Add, Sub, Mul, Div, Pow, Max
-//! - **Unary elementwise**: Cos, Sin, Sqrt, Neg, Tanh
-//! - **Comparison**: Equal, Greater
-//! - **Reduction**: ReduceSum, ReduceMean
+//! - **Binary elementwise**: Add, Mul
 //!
 //! # Individual Operators
 //!
-//! Complex operators that don't fit into families:
-//! - Activation (Gelu, Softmax, Tanh)
-//! - Normalization (RmsNorm)
-//! - Matrix operations (MatMulF32, MatMulNBits)
-//! - Shape manipulation (Reshape, Unsqueeze, Transpose, Concat, Expand)
-//! - Indexing (Gather, Slice, ScatterND, Range, Trilu)
-//! - Metadata (Constant, ConstantOfShape, Shape)
-//! - Type conversion (Cast)
-//! - Conditional (Where)
-//! - Attention (RotaryEmbedding, GroupQueryAttention)
+//! - Shape manipulation (Reshape)
 
 pub mod families;
 pub mod operators;
@@ -31,7 +18,7 @@ mod helpers;
 mod registry;
 
 // Re-export operator types
-pub use families::{BinaryElementwiseOp, ComparisonOp, ReductionOp, UnaryElementwiseOp};
+pub use families::BinaryElementwiseOp;
 pub use registry::core_operator_registry;
 
 /// Result type for operator operations.
