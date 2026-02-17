@@ -3,6 +3,7 @@
 //! These operators have unique logic that doesn't generalize well into families.
 
 pub mod cast;
+pub mod constant;
 pub mod gather;
 pub mod matmul;
 pub mod range;
@@ -15,6 +16,7 @@ pub mod where_op;
 
 // Re-export all operators
 pub use cast::CastOp;
+pub use constant::ConstantOp;
 pub use gather::GatherOp;
 pub use matmul::MatMulOp;
 pub use range::RangeOp;

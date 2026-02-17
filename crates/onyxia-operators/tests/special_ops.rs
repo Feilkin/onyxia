@@ -67,7 +67,11 @@ fn make_range_graph(start: f32, limit: f32, delta: f32, output_len: usize) -> Gr
     // Create Range node
     let mut node = Node::new("Range");
     node.name = "range_op".to_string();
-    node.inputs = vec!["start".to_string(), "limit".to_string(), "delta".to_string()];
+    node.inputs = vec![
+        "start".to_string(),
+        "limit".to_string(),
+        "delta".to_string(),
+    ];
     node.outputs = vec!["output".to_string()];
     graph.add_node(node);
 
@@ -184,8 +188,10 @@ fn make_trilu_graph(input_data: &[f32], shape: &[usize], upper: bool, k: Option<
         vec!["input".to_string()]
     };
     node.outputs = vec!["output".to_string()];
-    node.attributes
-        .insert("upper".to_string(), AttributeValue::Int(if upper { 1 } else { 0 }));
+    node.attributes.insert(
+        "upper".to_string(),
+        AttributeValue::Int(if upper { 1 } else { 0 }),
+    );
     graph.add_node(node);
 
     // Set graph inputs and outputs
@@ -315,7 +321,7 @@ fn make_where_graph(
 
     // Create Where node
     let mut node = Node::new("Where");
-    node.name ="where_op".to_string();
+    node.name = "where_op".to_string();
     node.inputs = vec!["condition".to_string(), "x".to_string(), "y".to_string()];
     node.outputs = vec!["output".to_string()];
     graph.add_node(node);
