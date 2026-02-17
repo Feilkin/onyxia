@@ -1,8 +1,6 @@
 //! ScatterND operator - scatter updates into tensor at specified indices.
 
-use onyxia_core::{
-    CompileCtx, DispatchCtx, Error, OpDispatch, Operator, Result, RuntimeTensor,
-};
+use onyxia_core::{CompileCtx, DispatchCtx, Error, OpDispatch, Operator, Result, RuntimeTensor};
 use std::collections::HashMap;
 
 /// Shader source for ScatterND copy phase (copy data to output).

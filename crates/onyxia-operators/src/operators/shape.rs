@@ -19,6 +19,9 @@ const TRANSPOSE_SHADER: &str = include_str!("../../shaders/shape/transpose.wgsl"
 /// Shader source for the Slice operator.
 const SLICE_SHADER: &str = include_str!("../../shaders/shape/slice.wgsl");
 
+/// Shader source for the ConstantOfShape operator.
+const CONSTANT_OF_SHAPE_SHADER: &str = include_str!("../../shaders/shape/constant_of_shape.wgsl");
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Reshape operator
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1034,5 +1037,171 @@ fn parse_slice_indices(data: &[u8], dtype: DataType) -> Result<Vec<i64>> {
         _ => Err(Error::Shape(format!(
             "Slice index tensor has unsupported dtype: {dtype:?}"
         ))),
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Shape operator
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Shape operator - extract the shape of a tensor as a 1-D int64 tensor.
+///
+/// ONNX opset 21:
+/// - **Inputs**: data (T) - Input tensor
+/// - **Outputs**: shape (T1) - 1D tensor containing shape (int64)
+/// - **Attributes**:
+///   - start (int, optional) - Starting dimension (default: 0)
+///   - end (int, optional) - Ending dimension (default: rank)
+///
+/// This is a CPU-side metadata operation — no GPU compute required.
+/// It reads the input shape and creates an output tensor containing those values.
+pub struct ShapeOp;
+
+/// Runtime dispatch for Shape — extracts shape metadata.
+struct ShapeDispatch;
+
+impl OpDispatch for ShapeDispatch {
+    fn dispatch(
+        &self,
+        inputs: Vec<RuntimeTensor>,
+        ctx: &mut DispatchCtx,
+    ) -> onyxia_core::Result<Vec<RuntimeTensor>> {
+        let input = &inputs[0];
+        let rank = input.shape.len();
+
+        // Create output tensor: 1-D int64 tensor with shape values
+        let output_shape = vec![rank];
+        let output = ctx.create_output_tensor(&output_shape, DataType::I64)?;
+
+        // Convert shape to i64 bytes
+        let shape_values: Vec<i64> = input.shape.iter().map(|&d| d as i64).collect();
+        let shape_bytes = bytemuck::cast_slice(&shape_values);
+
+        // Upload shape data to GPU buffer
+        ctx.queue.write_buffer(&output.buffer, 0, shape_bytes);
+
+        Ok(vec![output])
+    }
+}
+
+impl Operator for ShapeOp {
+    fn name(&self) -> &str {
+        "Shape"
+    }
+
+    fn create_dispatch(&self, _ctx: &mut CompileCtx) -> Result<Box<dyn OpDispatch>> {
+        // Shape is a metadata-only operation — no shader compilation needed
+        Ok(Box::new(ShapeDispatch))
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ConstantOfShape operator
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// ConstantOfShape operator - create a tensor filled with a constant value.
+///
+/// ONNX opset 20:
+/// - **Inputs**: input (T1) - 1D tensor specifying output shape (int64)
+/// - **Outputs**: output (T2) - Tensor filled with constant value
+/// - **Attributes**:
+///   - value (tensor, optional) - Scalar value to fill (default: 0.0f32)
+///
+/// The value attribute is parsed at compile time from ONNX attributes.
+/// The output tensor is filled using a GPU compute shader.
+pub struct ConstantOfShapeOp {
+    fill_value: f32,
+}
+
+impl ConstantOfShapeOp {
+    /// Create a ConstantOfShape operator with the given fill value.
+    pub fn new(fill_value: f32) -> Self {
+        Self { fill_value }
+    }
+}
+
+/// Runtime dispatch for ConstantOfShape.
+struct ConstantOfShapeDispatch {
+    /// Pre-compiled naga module for the fill shader.
+    module: naga::Module,
+    /// Fill value to use.
+    fill_value: f32,
+}
+
+impl OpDispatch for ConstantOfShapeDispatch {
+    fn dispatch(
+        &self,
+        inputs: Vec<RuntimeTensor>,
+        ctx: &mut DispatchCtx,
+    ) -> onyxia_core::Result<Vec<RuntimeTensor>> {
+        // Input is a 1-D int64 tensor containing the desired output shape
+        let shape_tensor = &inputs[0];
+
+        // Download shape values from GPU
+        let shape_data = ctx.download_tensor(shape_tensor)?;
+        let output_shape = parse_shape_tensor(&shape_data, shape_tensor.dtype)?;
+
+        // Validate output shape
+        let num_elements: usize = output_shape.iter().product();
+        if num_elements == 0 {
+            return Err(Error::Shape(
+                "ConstantOfShape: output shape produces zero elements".into(),
+            ));
+        }
+
+        // Create output tensor (f32 for now)
+        let output = ctx.create_output_tensor(&output_shape, DataType::F32)?;
+
+        // Encode immediates: num_elements and fill_value
+        let mut immediates = Vec::new();
+        immediates.extend_from_slice(&(num_elements as u32).to_le_bytes());
+        immediates.extend_from_slice(&self.fill_value.to_le_bytes());
+
+        // Compute workgroup count
+        let workgroup_size: u32 = 256;
+        let num_workgroups = (num_elements as u32).div_ceil(workgroup_size);
+
+        // Get or create pipeline
+        let (pipeline, bind_group_layout) =
+            ctx.get_or_create_pipeline("ConstantOfShape", &self.module, "main")?;
+
+        // Create bind group (only output buffer)
+        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("constant_of_shape_bind_group"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: output.buffer.as_entire_binding(),
+            }],
+        });
+
+        // Dispatch compute shader
+        ctx.dispatch_compute(
+            &pipeline,
+            &bind_group,
+            [num_workgroups, 1, 1],
+            Some(&immediates),
+        )?;
+
+        Ok(vec![output])
+    }
+}
+
+impl Operator for ConstantOfShapeOp {
+    fn name(&self) -> &str {
+        "ConstantOfShape"
+    }
+
+    fn create_dispatch(&self, ctx: &mut CompileCtx) -> Result<Box<dyn OpDispatch>> {
+        let mut shader_defs = HashMap::new();
+        shader_defs.insert("WORKGROUP_SIZE".to_string(), "256".to_string());
+
+        let module =
+            ctx.compile_shader("ConstantOfShape", CONSTANT_OF_SHAPE_SHADER, &shader_defs)?;
+
+        Ok(Box::new(ConstantOfShapeDispatch {
+            module,
+            fill_value: self.fill_value,
+        }))
     }
 }

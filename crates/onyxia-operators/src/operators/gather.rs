@@ -1,8 +1,6 @@
 //! Gather operator - gather elements from input tensor using index tensor.
 
-use onyxia_core::{
-    CompileCtx, DispatchCtx, Error, OpDispatch, Operator, Result, RuntimeTensor,
-};
+use onyxia_core::{CompileCtx, DispatchCtx, Error, OpDispatch, Operator, Result, RuntimeTensor};
 use std::collections::HashMap;
 
 /// Shader source for the Gather operator.

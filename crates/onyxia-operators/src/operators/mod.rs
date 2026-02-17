@@ -13,4 +13,6 @@ pub use gather::GatherOp;
 pub use matmul::MatMulOp;
 pub use reduce_mean::ReduceMeanOp;
 pub use scatter_nd::ScatterNDOp;
-pub use shape::{ConcatOp, ExpandOp, ReshapeOp, SliceOp, TransposeOp, UnsqueezeOp};
+pub use shape::{
+    ConcatOp, ConstantOfShapeOp, ExpandOp, ReshapeOp, ShapeOp, SliceOp, TransposeOp, UnsqueezeOp,
+};

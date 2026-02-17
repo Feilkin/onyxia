@@ -725,3 +725,286 @@ async fn test_unsqueeze_trailing() {
 
     assert_eq!(result, vec![42.0, 99.0]);
 }
+
+// ================================================================================
+// Shape operator tests
+// ================================================================================
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_shape_1d() {
+    // Shape of [5] -> [1]
+    let mut graph = Graph::new();
+
+    graph.add_tensor(TensorInfo {
+        name: "data".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![5]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "shape".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("Shape");
+    node.name = "shape_1d".to_string();
+    node.inputs = vec!["data".to_string()];
+    node.outputs = vec!["shape".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["data".to_string()];
+    graph.outputs = vec!["shape".to_string()];
+
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let data = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0], &[5]);
+
+    let outputs = executor.run(&[("data", data)]).unwrap();
+    let result: Vec<i64> = outputs["shape"].to_vec().unwrap();
+
+    assert_eq!(result, vec![5]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_shape_2d() {
+    // Shape of [2, 3] -> [2]
+    let mut graph = Graph::new();
+
+    graph.add_tensor(TensorInfo {
+        name: "data".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![2, 3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "shape".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![2]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("Shape");
+    node.name = "shape_2d".to_string();
+    node.inputs = vec!["data".to_string()];
+    node.outputs = vec!["shape".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["data".to_string()];
+    graph.outputs = vec!["shape".to_string()];
+
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let data = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+
+    let outputs = executor.run(&[("data", data)]).unwrap();
+    let result: Vec<i64> = outputs["shape"].to_vec().unwrap();
+
+    assert_eq!(result, vec![2, 3]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_shape_4d() {
+    // Shape of [1, 3, 224, 224] -> [4]
+    let mut graph = Graph::new();
+
+    graph.add_tensor(TensorInfo {
+        name: "data".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![1, 3, 224, 224]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "shape".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![4]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("Shape");
+    node.name = "shape_4d".to_string();
+    node.inputs = vec!["data".to_string()];
+    node.outputs = vec!["shape".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec!["data".to_string()];
+    graph.outputs = vec!["shape".to_string()];
+
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    // Create a small dummy tensor with the right shape (not full 1×3×224×224)
+    let data = Tensor::from_vec(vec![1.0f32; 1 * 3 * 224 * 224], &[1, 3, 224, 224]);
+
+    let outputs = executor.run(&[("data", data)]).unwrap();
+    let result: Vec<i64> = outputs["shape"].to_vec().unwrap();
+
+    assert_eq!(result, vec![1, 3, 224, 224]);
+}
+
+// ================================================================================
+// ConstantOfShape operator tests
+// ================================================================================
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_constant_of_shape_zeros() {
+    // Create tensor of shape [2, 3] filled with 0.0
+    let mut graph = Graph::new();
+
+    let shape_bytes = bytemuck::cast_slice(&[2i64, 3i64]).to_vec();
+    graph.add_tensor(TensorInfo {
+        name: "shape".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![2]),
+        kind: TensorKind::Weight,
+        initializer: Some(shape_bytes),
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![2, 3]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("ConstantOfShape");
+    node.name = "constant_of_shape_zeros".to_string();
+    node.inputs = vec!["shape".to_string()];
+    node.outputs = vec!["output".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec![];
+    graph.outputs = vec!["output".to_string()];
+
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let outputs = executor.run(&[]).unwrap();
+    let result: Vec<f32> = outputs["output"].to_vec().unwrap();
+
+    assert_eq!(result, vec![0.0; 6]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_constant_of_shape_1d() {
+    // Create tensor of shape [5] filled with 0.0
+    let mut graph = Graph::new();
+
+    let shape_bytes = bytemuck::cast_slice(&[5i64]).to_vec();
+    graph.add_tensor(TensorInfo {
+        name: "shape".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Weight,
+        initializer: Some(shape_bytes),
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![5]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("ConstantOfShape");
+    node.name = "constant_of_shape_1d".to_string();
+    node.inputs = vec!["shape".to_string()];
+    node.outputs = vec!["output".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec![];
+    graph.outputs = vec!["output".to_string()];
+
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let outputs = executor.run(&[]).unwrap();
+    let result: Vec<f32> = outputs["output"].to_vec().unwrap();
+
+    assert_eq!(result, vec![0.0; 5]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_constant_of_shape_large() {
+    // Create tensor of shape [100, 100] filled with 0.0
+    let mut graph = Graph::new();
+
+    let shape_bytes = bytemuck::cast_slice(&[100i64, 100i64]).to_vec();
+    graph.add_tensor(TensorInfo {
+        name: "shape".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![2]),
+        kind: TensorKind::Weight,
+        initializer: Some(shape_bytes),
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![100, 100]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("ConstantOfShape");
+    node.name = "constant_of_shape_large".to_string();
+    node.inputs = vec!["shape".to_string()];
+    node.outputs = vec!["output".to_string()];
+    graph.add_node(node);
+
+    graph.inputs = vec![];
+    graph.outputs = vec!["output".to_string()];
+
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let outputs = executor.run(&[]).unwrap();
+    let result: Vec<f32> = outputs["output"].to_vec().unwrap();
+
+    assert_eq!(result.len(), 10000);
+    assert!(result.iter().all(|&x| x == 0.0));
+}
