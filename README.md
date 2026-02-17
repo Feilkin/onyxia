@@ -203,3 +203,5 @@ The `models/` directory contains sample ONNX models for testing:
 ## License
 
 MIT OR Apache-2.0
+
+Logo color palette: https://lospec.com/palette-list/technogarten
