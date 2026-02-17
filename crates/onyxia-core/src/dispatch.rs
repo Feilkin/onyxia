@@ -343,7 +343,7 @@ impl DispatchCtx {
                 label: Some("download_copy"),
             });
         encoder.copy_buffer_to_buffer(&tensor.buffer, 0, &staging, 0, tensor.size_bytes as u64);
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let sub_id = self.queue.submit(std::iter::once(encoder.finish()));
 
         // Map and read
         let slice = staging.slice(..);
@@ -354,7 +354,7 @@ impl DispatchCtx {
 
         self.device
             .poll(wgpu::PollType::Wait {
-                submission_index: None,
+                submission_index: Some(sub_id),
                 timeout: None,
             })
             .map_err(|e| Error::Runtime(format!("GPU poll failed: {e:?}")))?;
