@@ -149,7 +149,8 @@ fn compile_wgsl_to_naga(
 ) -> Result<naga::Module> {
     use naga_oil::compose::{Composer, NagaModuleDescriptor, ShaderDefValue};
 
-    let mut composer = Composer::default();
+    // Initialize composer with all capabilities to support immediates
+    let mut composer = Composer::default().with_capabilities(naga::valid::Capabilities::all());
 
     let shader_defs: HashMap<String, ShaderDefValue> = defines
         .iter()

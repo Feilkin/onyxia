@@ -109,8 +109,8 @@ impl OpDispatch for BinaryElementwiseDispatch {
             entries: &entries,
         });
 
-        // Dispatch compute shader
-        ctx.dispatch_compute(&pipeline, &bind_group, [num_workgroups, 1, 1])?;
+        // Dispatch compute shader with immediates
+        ctx.dispatch_compute(&pipeline, &bind_group, [num_workgroups, 1, 1], Some(&immediates))?;
 
         Ok(vec![output])
     }

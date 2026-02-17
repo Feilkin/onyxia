@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 // Re-export types commonly used in tests
 pub use onyxia_compiler::CompilerPipeline;
-pub use onyxia_core::{Operator, Step};
+pub use onyxia_core::Operator;
 pub use onyxia_runtime::{Runtime, Tensor};
 
 /// Create a two-input, one-output graph for binary elementwise operations.
@@ -159,7 +159,8 @@ pub async fn compile_and_run_f32(
 ) -> HashMap<String, Vec<f32>> {
     // Compile graph
     let registry = onyxia_operators::core_operator_registry();
-    let model = CompilerPipeline::new(HashMap::new())
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline
         .compile(graph, &registry)
         .expect("Compilation should succeed");
 

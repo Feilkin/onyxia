@@ -149,21 +149,31 @@ impl DispatchCtx {
                     source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module.clone())),
                 });
 
-            let bind_group_layout =
+            // First create a temporary pipeline with auto layout to get bind group layout
+            let temp_pipeline =
                 self.device
-                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                        label: Some(&format!("{label}_layout")),
-                        entries: &[], // Will be populated per-operator
+                    .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                        label: Some(&format!("{label}_temp")),
+                        layout: None, // Auto-infer to get the bind group layout
+                        module: &shader_module,
+                        entry_point: Some(entry_point),
+                        compilation_options: Default::default(),
+                        cache: None,
                     });
 
+            // Get the inferred bind group layout
+            let bind_group_layout = temp_pipeline.get_bind_group_layout(0);
+
+            // Create the actual pipeline layout with immediate data size
             let pipeline_layout =
                 self.device
                     .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                        label: Some(&format!("{label}_pipeline_layout")),
+                        label: Some(&format!("{label}_layout")),
                         bind_group_layouts: &[&bind_group_layout],
-                        immediate_size: 0,
+                        immediate_size: 128, // Support up to 128 bytes of immediate data
                     });
 
+            // Create the final pipeline with the explicit layout
             let pipeline = self
                 .device
                 .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -242,6 +252,7 @@ impl DispatchCtx {
         pipeline: &wgpu::ComputePipeline,
         bind_group: &wgpu::BindGroup,
         workgroups: [u32; 3],
+        immediates: Option<&[u8]>,
     ) -> Result<()> {
         let mut encoder = self
             .device
@@ -257,6 +268,12 @@ impl DispatchCtx {
 
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, bind_group, &[]);
+
+            // Set immediate constants (push constants) if provided
+            if let Some(data) = immediates {
+                pass.set_immediates(0, data);
+            }
+
             pass.dispatch_workgroups(workgroups[0], workgroups[1], workgroups[2]);
         }
 

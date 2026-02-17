@@ -82,28 +82,25 @@ impl Runtime {
     /// # }
     /// ```
     pub async fn load_model(&self, model: CompiledModel) -> Result<DispatchExecutor> {
-        // Request device with appropriate limits
-        let mut limits = wgpu::Limits::default();
-        limits.max_buffer_size = 4 * 1024 * 1024 * 1024; // 4GB max
-        limits.max_storage_buffer_binding_size = 2 * 1024 * 1024 * 1024; // 2GB max
-        limits.max_immediate_size = 128;
+        // Use adapter's limits, adjusting only what we need
+        let adapter_limits = self.adapter.limits();
+        let mut limits = adapter_limits.clone();
 
-        // Create device with calculated limits
+        // Only increase immediate size if supported
+        limits.max_immediate_size = limits.max_immediate_size.max(128);
+
+        // Create device with adapter-compatible limits
         let (device, queue) = self
             .adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("Onyxia Device"),
-                    required_features: wgpu::Features::IMMEDIATES,
-                    required_limits: limits,
-                    memory_hints: wgpu::MemoryHints::default(),
-                    ..Default::default()
-                },
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("Onyxia Device"),
+                required_features: wgpu::Features::IMMEDIATES,
+                required_limits: limits,
+                memory_hints: wgpu::MemoryHints::default(),
+                ..Default::default()
+            })
             .await
-            .map_err(|e| {
-                RuntimeError::InitError(format!("Failed to create device: {}", e))
-            })?;
+            .map_err(|e| RuntimeError::InitError(format!("Failed to create device: {}", e)))?;
 
         DispatchExecutor::new(Arc::new(device), Arc::new(queue), model)
     }

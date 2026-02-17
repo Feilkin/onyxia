@@ -341,4 +341,125 @@ mod tests {
         let _result = compile(&graph, &registry);
         // We don't assert Ok because an empty graph may fail
     }
+
+    #[test]
+    fn test_pipeline_produces_dispatch_model() {
+        use onyxia_onnx::{DataType, Node, TensorInfo, TensorKind, TensorShape};
+
+        // Create a simple Add graph
+        let mut graph = onyxia_onnx::Graph::new();
+
+        graph.add_tensor(TensorInfo {
+            name: "a".to_string(),
+            dtype: DataType::F32,
+            shape: TensorShape::Static(vec![4]),
+            kind: TensorKind::Input,
+            initializer: None,
+        });
+
+        graph.add_tensor(TensorInfo {
+            name: "b".to_string(),
+            dtype: DataType::F32,
+            shape: TensorShape::Static(vec![4]),
+            kind: TensorKind::Input,
+            initializer: None,
+        });
+
+        graph.add_tensor(TensorInfo {
+            name: "c".to_string(),
+            dtype: DataType::F32,
+            shape: TensorShape::Static(vec![4]),
+            kind: TensorKind::Output,
+            initializer: None,
+        });
+
+        let mut node = Node::new("Add");
+        node.inputs = vec!["a".to_string(), "b".to_string()];
+        node.outputs = vec!["c".to_string()];
+        graph.add_node(node);
+
+        graph.inputs = vec!["a".to_string(), "b".to_string()];
+        graph.outputs = vec!["c".to_string()];
+
+        // Compile with core registry (includes Add operator)
+        let registry = onyxia_operators::core_operator_registry();
+
+        let mut pipeline = CompilerPipeline::new();
+        let model = pipeline.compile(&graph, &registry).unwrap();
+
+        // Verify structure
+        assert!(!model.entries.is_empty(), "Model should have operations");
+        assert!(model.num_registers > 0, "Model should have registers");
+        assert!(
+            !model.input_registers.is_empty(),
+            "Model should have inputs"
+        );
+        assert!(
+            !model.output_registers.is_empty(),
+            "Model should have outputs"
+        );
+    }
+
+    #[test]
+    fn test_register_routing_matches_graph() {
+        use onyxia_onnx::{DataType, Node, TensorInfo, TensorKind, TensorShape};
+
+        // Create a simple Add graph
+        let mut graph = onyxia_onnx::Graph::new();
+
+        graph.add_tensor(TensorInfo {
+            name: "a".to_string(),
+            dtype: DataType::F32,
+            shape: TensorShape::Static(vec![4]),
+            kind: TensorKind::Input,
+            initializer: None,
+        });
+
+        graph.add_tensor(TensorInfo {
+            name: "b".to_string(),
+            dtype: DataType::F32,
+            shape: TensorShape::Static(vec![4]),
+            kind: TensorKind::Input,
+            initializer: None,
+        });
+
+        graph.add_tensor(TensorInfo {
+            name: "c".to_string(),
+            dtype: DataType::F32,
+            shape: TensorShape::Static(vec![4]),
+            kind: TensorKind::Output,
+            initializer: None,
+        });
+
+        let mut node = Node::new("Add");
+        node.inputs = vec!["a".to_string(), "b".to_string()];
+        node.outputs = vec!["c".to_string()];
+        graph.add_node(node);
+
+        graph.inputs = vec!["a".to_string(), "b".to_string()];
+        graph.outputs = vec!["c".to_string()];
+
+        let registry = onyxia_operators::core_operator_registry();
+        let mut pipeline = CompilerPipeline::new();
+        let model = pipeline.compile(&graph, &registry).unwrap();
+
+        // The Add entry should read from input registers and write to output register
+        assert_eq!(model.entries.len(), 1, "Should have one operation");
+
+        let add_entry = &model.entries[0];
+        assert_eq!(
+            add_entry.input_regs.len(),
+            2,
+            "Add should have 2 input registers"
+        );
+        assert_eq!(
+            add_entry.output_regs.len(),
+            1,
+            "Add should have 1 output register"
+        );
+
+        // Verify input/output mappings exist
+        assert_eq!(model.input_registers.len(), 2);
+        assert_eq!(model.output_registers.len(), 1);
+    }
 }
