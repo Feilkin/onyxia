@@ -1228,6 +1228,8 @@ dependencies = [
 name = "onyxia-operators"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
+ "naga",
  "onyxia-compiler",
  "onyxia-core",
  "onyxia-onnx",
@@ -1235,6 +1237,7 @@ dependencies = [
  "pollster",
  "thiserror",
  "tracing",
+ "wgpu",
 ]
 
 [[package]]

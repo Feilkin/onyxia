@@ -6,10 +6,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+bytemuck = "1.25.0"
+naga = "28.0.0"
 onyxia-core = { workspace = true }
 onyxia-onnx = { workspace = true }
 thiserror = "2.0.18"
 tracing = "0.1.44"
+wgpu = { version = "28.0.0", features = ["naga-ir"] }
 
 [dev-dependencies]
 onyxia-compiler.workspace = true

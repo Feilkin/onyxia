@@ -4,9 +4,9 @@
 //! dispatch their own GPU work at runtime, with full knowledge of input
 //! shapes and data.
 
-use crate::Result;
 use crate::plan::ModelMetadata;
 use crate::types::DataType;
+use crate::{Error, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -56,8 +56,8 @@ struct PipelineCacheKey {
 
 /// A cached compute pipeline and its bind group layout.
 struct CachedPipeline {
-    pipeline: wgpu::ComputePipeline,
-    bind_group_layout: wgpu::BindGroupLayout,
+    pipeline: Arc<wgpu::ComputePipeline>,
+    bind_group_layout: Arc<wgpu::BindGroupLayout>,
 }
 
 impl DispatchCtx {
@@ -129,12 +129,14 @@ impl DispatchCtx {
     ///
     /// The pipeline is cached by label — subsequent calls with the same
     /// label return the cached pipeline without recompilation.
+    ///
+    /// Returns Arc-wrapped pipeline and bind group layout for cheap cloning.
     pub fn get_or_create_pipeline(
         &mut self,
         label: &str,
         module: &naga::Module,
         entry_point: &str,
-    ) -> Result<(&wgpu::ComputePipeline, &wgpu::BindGroupLayout)> {
+    ) -> Result<(Arc<wgpu::ComputePipeline>, Arc<wgpu::BindGroupLayout>)> {
         let key = PipelineCacheKey {
             label: label.to_string(),
         };
@@ -176,14 +178,136 @@ impl DispatchCtx {
             self.pipeline_cache.insert(
                 key.clone(),
                 CachedPipeline {
-                    pipeline,
-                    bind_group_layout,
+                    pipeline: Arc::new(pipeline),
+                    bind_group_layout: Arc::new(bind_group_layout),
                 },
             );
         }
 
         let cached = self.pipeline_cache.get(&key).unwrap();
-        Ok((&cached.pipeline, &cached.bind_group_layout))
+        Ok((
+            Arc::clone(&cached.pipeline),
+            Arc::clone(&cached.bind_group_layout),
+        ))
+    }
+
+    /// Create a small uniform buffer with immediate data.
+    ///
+    /// Used for passing small constant values (shapes, sizes, etc.) to shaders
+    /// via immediate constants (push constants on Vulkan).
+    pub fn create_immediates_buffer(&self, data: &[u8]) -> Result<wgpu::Buffer> {
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("immediates"),
+            size: data.len().max(4) as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        self.queue.write_buffer(&buffer, 0, data);
+        Ok(buffer)
+    }
+
+    /// Create a bind group from buffer references.
+    ///
+    /// Binds buffers sequentially starting at binding 0.
+    pub fn create_bind_group(
+        &self,
+        layout: &wgpu::BindGroupLayout,
+        buffers: &[&wgpu::Buffer],
+    ) -> Result<wgpu::BindGroup> {
+        let entries: Vec<wgpu::BindGroupEntry> = buffers
+            .iter()
+            .enumerate()
+            .map(|(i, buffer)| wgpu::BindGroupEntry {
+                binding: i as u32,
+                resource: buffer.as_entire_binding(),
+            })
+            .collect();
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("op_bind_group"),
+            layout,
+            entries: &entries,
+        });
+
+        Ok(bind_group)
+    }
+
+    /// Submit a compute dispatch.
+    ///
+    /// Creates a command encoder, sets the pipeline and bind group, dispatches
+    /// the compute shader, and submits to the queue.
+    pub fn dispatch_compute(
+        &mut self,
+        pipeline: &wgpu::ComputePipeline,
+        bind_group: &wgpu::BindGroup,
+        workgroups: [u32; 3],
+    ) -> Result<()> {
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("compute_dispatch"),
+            });
+
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("compute_pass"),
+                timestamp_writes: None,
+            });
+
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.dispatch_workgroups(workgroups[0], workgroups[1], workgroups[2]);
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+        Ok(())
+    }
+
+    /// Download a tensor from GPU to CPU.
+    ///
+    /// Creates a staging buffer, copies data from GPU, and returns the bytes.
+    /// This is a blocking operation that waits for GPU completion.
+    pub fn download_tensor(&self, tensor: &RuntimeTensor) -> Result<Vec<u8>> {
+        // Create staging buffer
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("download_staging"),
+            size: tensor.size_bytes as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Copy from GPU buffer to staging
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("download_copy"),
+            });
+        encoder.copy_buffer_to_buffer(&tensor.buffer, 0, &staging, 0, tensor.size_bytes as u64);
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Map and read
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|e| Error::Runtime(format!("GPU poll failed: {e:?}")))?;
+
+        rx.recv()
+            .map_err(|e| Error::Runtime(format!("Channel recv failed: {e}")))?
+            .map_err(|e| Error::Runtime(format!("Buffer map failed: {e}")))?;
+
+        let data = slice.get_mapped_range().to_vec();
+        staging.unmap();
+
+        Ok(data)
     }
 }
 

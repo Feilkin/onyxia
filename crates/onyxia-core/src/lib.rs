@@ -7,6 +7,7 @@
 //! - Dispatch types for execution (`DispatchModel`, `OpDispatch`)
 //! - Operator registry for dynamic dispatch
 
+pub mod broadcast;
 pub mod compile_ctx;
 pub mod dispatch;
 pub mod ir;
@@ -18,6 +19,7 @@ pub mod registry;
 pub mod types;
 
 // Re-export commonly used types
+pub use broadcast::broadcast_shape;
 pub use compile_ctx::CompileCtx;
 pub use dispatch::{
     CompiledModel as DispatchModel, DispatchCtx, DispatchEntry, OpDispatch, RuntimeTensor,
@@ -50,4 +52,10 @@ pub enum Error {
 
     #[error("Unsupported operation: {0}")]
     Unsupported(String),
+
+    #[error("Shape error: {0}")]
+    Shape(String),
+
+    #[error("Runtime error: {0}")]
+    Runtime(String),
 }
