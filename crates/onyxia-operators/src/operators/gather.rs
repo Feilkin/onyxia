@@ -107,9 +107,13 @@ impl OpDispatch for GatherDispatch {
             immediates.extend_from_slice(&0u32.to_le_bytes());
         }
 
-        // Compute workgroup count
+        // Compute workgroup count with 2D dispatch support for large tensors
         let workgroup_size: u32 = 256;
         let num_workgroups = (num_elements as u32).div_ceil(workgroup_size);
+        let (dispatch_size, x_stride) = DispatchCtx::compute_dispatch_size(num_workgroups, workgroup_size);
+        
+        // Add x_stride for 2D dispatch
+        immediates.extend_from_slice(&x_stride.to_le_bytes());
 
         // Get or create pipeline
         let (pipeline, bind_group_layout) =
@@ -139,7 +143,7 @@ impl OpDispatch for GatherDispatch {
         ctx.dispatch_compute(
             &pipeline,
             &bind_group,
-            [num_workgroups, 1, 1],
+            dispatch_size,
             Some(&immediates),
         )?;
 

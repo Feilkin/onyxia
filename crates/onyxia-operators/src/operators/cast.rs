@@ -103,12 +103,15 @@ impl OpDispatch for CastDispatch {
         };
 
         // Encode immediates
-        let mut immediates = Vec::with_capacity(4);
+        let mut immediates = Vec::with_capacity(8);
         immediates.extend_from_slice(&(num_elements as u32).to_le_bytes());
 
-        // Compute workgroups
+        // Compute workgroups with 2D dispatch support for large tensors
         let workgroup_size: u32 = 256;
         let num_workgroups = (num_elements as u32).div_ceil(workgroup_size);
+        let (dispatch_size, x_stride) =
+            DispatchCtx::compute_dispatch_size(num_workgroups, workgroup_size);
+        immediates.extend_from_slice(&x_stride.to_le_bytes());
 
         // Get or create pipeline
         let label = format!("cast_{:?}_to_{:?}", source_dtype, target_dtype);
@@ -131,12 +134,7 @@ impl OpDispatch for CastDispatch {
         });
 
         // Dispatch compute shader
-        ctx.dispatch_compute(
-            &pipeline,
-            &bind_group,
-            [num_workgroups, 1, 1],
-            Some(&immediates),
-        )?;
+        ctx.dispatch_compute(&pipeline, &bind_group, dispatch_size, Some(&immediates))?;
 
         Ok(vec![output])
     }

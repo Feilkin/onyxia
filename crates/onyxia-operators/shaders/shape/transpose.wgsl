@@ -12,6 +12,7 @@ struct ImmediateConstants {
     total_elements: u32,        // Total elements
     input_shape: array<u32, 8>, // Input shape (up to 8 dims)
     perm: array<u32, 8>,        // Permutation indices (up to 8 dims)
+    x_stride: u32,              // X dimension stride for 2D dispatch support
 }
 
 var<immediate> params: ImmediateConstants;
@@ -53,9 +54,14 @@ fn coords_to_index(coords: array<u32, 8>, shape: array<u32, 8>, rank: u32) -> u3
     return idx;
 }
 
+// Helper: compute linear index from 2D/3D dispatch
+fn compute_linear_index(global_id: vec3<u32>, x_stride: u32) -> u32 {
+    return global_id.x + global_id.y * x_stride + global_id.z * x_stride * 65535u;
+}
+
 @compute @workgroup_size(WG_SIZE, 1, 1)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let idx = global_id.x;
+    let idx = compute_linear_index(global_id, params.x_stride);
     
     // Bounds check
     if (idx >= params.total_elements) {

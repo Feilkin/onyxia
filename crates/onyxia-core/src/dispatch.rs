@@ -243,6 +243,48 @@ impl DispatchCtx {
         Ok(bind_group)
     }
 
+    /// Compute optimal workgroup dimensions for a given linear workgroup count.
+    ///
+    /// WebGPU/wgpu limits each dispatch dimension to 65535 workgroups.
+    /// This function distributes large workgroup counts across 2D or 3D
+    /// dimensions to respect this limit.
+    ///
+    /// Returns `[x, y, z]` workgroup dimensions and the X dimension stride
+    /// (number of threads in X dimension including workgroup size).
+    ///
+    /// # Arguments
+    ///
+    /// * `linear_workgroups` — Desired total number of workgroups
+    /// * `workgroup_size` — Size of workgroup in X dimension (typically 256)
+    ///
+    /// # Returns
+    ///
+    /// Tuple of `([x, y, z], x_stride)` where:
+    /// - `[x, y, z]` are the workgroup dimensions to use in dispatch
+    /// - `x_stride` is `x * workgroup_size`, needed for computing linear indices in shaders
+    pub fn compute_dispatch_size(linear_workgroups: u32, workgroup_size: u32) -> ([u32; 3], u32) {
+        const MAX_WORKGROUPS: u32 = 65535;
+
+        if linear_workgroups <= MAX_WORKGROUPS {
+            // Simple 1D dispatch
+            (
+                [linear_workgroups, 1, 1],
+                linear_workgroups * workgroup_size,
+            )
+        } else if linear_workgroups <= MAX_WORKGROUPS * MAX_WORKGROUPS {
+            // 2D dispatch
+            let x = MAX_WORKGROUPS;
+            let y = linear_workgroups.div_ceil(MAX_WORKGROUPS);
+            ([x, y, 1], x * workgroup_size)
+        } else {
+            // 3D dispatch (extremely rare for typical models)
+            let x = MAX_WORKGROUPS;
+            let y = MAX_WORKGROUPS;
+            let z = linear_workgroups.div_ceil(MAX_WORKGROUPS * MAX_WORKGROUPS);
+            ([x, y, z], x * workgroup_size)
+        }
+    }
+
     /// Submit a compute dispatch.
     ///
     /// Creates a command encoder, sets the pipeline and bind group, dispatches

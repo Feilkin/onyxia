@@ -247,16 +247,6 @@ fn create_prefill_inputs(input_ids: &[i64], _past_seq_len: usize) -> Vec<(&'stat
             "position_ids",
             Tensor::from_vec((0..prompt_len as i64).collect::<Vec<_>>(), &[1, prompt_len]),
         ),
-        (
-            // seqlens_k: (total_sequence_lengths - 1) per batch element
-            "seqlens_k",
-            Tensor::from_vec(vec![(total_seq_len as i32) - 1], &[1]),
-        ),
-        (
-            // total_sequence_length: scalar = max total seq len of the batch
-            "total_sequence_length",
-            Tensor::from_vec(vec![total_seq_len as i32], &[1]),
-        ),
     ]
 }
 
@@ -275,16 +265,6 @@ fn create_decode_inputs(token_id: i64, past_seq_len: usize) -> Vec<(&'static str
         (
             "position_ids",
             Tensor::from_vec(vec![past_seq_len as i64], &[1, 1]),
-        ),
-        (
-            // seqlens_k: (total_sequence_lengths - 1) per batch element
-            "seqlens_k",
-            Tensor::from_vec(vec![(total_seq_len as i32) - 1], &[1]),
-        ),
-        (
-            // total_sequence_length: scalar = max total seq len of the batch
-            "total_sequence_length",
-            Tensor::from_vec(vec![total_seq_len as i32], &[1]),
         ),
     ]
 }

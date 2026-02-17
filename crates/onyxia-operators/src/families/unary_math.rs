@@ -108,13 +108,16 @@ impl OpDispatch for UnaryMathDispatch {
         // Output has same shape and dtype as input
         let output = ctx.create_output_tensor(&input.shape, input.dtype)?;
 
-        // Encode immediates (must match ImmediateConstants struct in shader)
-        let mut immediates = Vec::with_capacity(4);
-        immediates.extend_from_slice(&(num_elements as u32).to_le_bytes());
-
-        // Compute workgroups
+        // Compute workgroups with 2D dispatch support for large tensors
         let workgroup_size: u32 = 256;
         let num_workgroups = (num_elements as u32).div_ceil(workgroup_size);
+        let (dispatch_size, x_stride) =
+            DispatchCtx::compute_dispatch_size(num_workgroups, workgroup_size);
+
+        // Encode immediates (must match ImmediateConstants struct in shader)
+        let mut immediates = Vec::with_capacity(8);
+        immediates.extend_from_slice(&(num_elements as u32).to_le_bytes());
+        immediates.extend_from_slice(&x_stride.to_le_bytes());
 
         // Get or create pipeline
         let (pipeline, bind_group_layout) =
@@ -137,12 +140,7 @@ impl OpDispatch for UnaryMathDispatch {
         });
 
         // Dispatch compute shader with immediates
-        ctx.dispatch_compute(
-            &pipeline,
-            &bind_group,
-            [num_workgroups, 1, 1],
-            Some(&immediates),
-        )?;
+        ctx.dispatch_compute(&pipeline, &bind_group, dispatch_size, Some(&immediates))?;
 
         Ok(vec![output])
     }
