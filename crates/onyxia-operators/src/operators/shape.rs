@@ -8,7 +8,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Shader source for the Concat operator.
-const CONCAT_SHADER: &str = include_str!("../../shaders/shape/concat.wgsl");
+const CONCAT_F32_SHADER: &str = include_str!("../../shaders/shape/concat.wgsl");
+const CONCAT_I64_SHADER: &str = include_str!("../../shaders/shape/concat_i64.wgsl");
 
 /// Shader source for the Expand operator.
 const EXPAND_SHADER: &str = include_str!("../../shaders/shape/expand.wgsl");
@@ -52,6 +53,7 @@ impl OpDispatch for ReshapeDispatch {
 
         // Download shape values from GPU (small tensor, so roundtrip is okay)
         let shape_data = ctx.download_tensor(shape_tensor)?;
+
         let target_shape =
             parse_reshape_shape(&shape_data, shape_tensor.dtype, &data_tensor.shape)?;
 
@@ -107,6 +109,11 @@ fn parse_reshape_shape(data: &[u8], dtype: DataType, input_shape: &[usize]) -> R
             let input_dim = input_shape.get(i).copied().unwrap_or(1);
             result.push(input_dim);
             known_product *= input_dim;
+        } else if dim < 0 {
+            // Reject any negative value other than -1
+            return Err(Error::Shape(format!(
+                "Reshape: invalid negative dimension value {dim} at index {i} (only -1 is allowed)"
+            )));
         } else {
             result.push(dim as usize);
             known_product *= dim as usize;
@@ -145,8 +152,8 @@ pub struct ConcatOp;
 
 /// Runtime dispatch for Concat.
 struct ConcatDispatch {
-    /// Pre-compiled naga module for the shader.
-    module: naga::Module,
+    /// Pre-compiled naga modules for different data types.
+    modules: HashMap<DataType, naga::Module>,
 
     /// Axis to concatenate along.
     axis: i64,
@@ -167,6 +174,23 @@ impl OpDispatch for ConcatDispatch {
                 "Concat: supports up to 4 inputs only".into(),
             ));
         }
+
+        // All inputs must have the same dtype
+        let dtype = inputs[0].dtype;
+        for (i, tensor) in inputs.iter().enumerate().skip(1) {
+            if tensor.dtype != dtype {
+                return Err(Error::Runtime(format!(
+                    "Concat: input {} has dtype {:?} but input 0 has dtype {:?}",
+                    i, tensor.dtype, dtype
+                )));
+            }
+        }
+
+        // Get the appropriate shader module
+        let module = self
+            .modules
+            .get(&dtype)
+            .ok_or_else(|| Error::Runtime(format!("Concat: unsupported data type {:?}", dtype)))?;
 
         // All inputs must have the same rank
         let rank = inputs[0].shape.len();
@@ -256,8 +280,8 @@ impl OpDispatch for ConcatDispatch {
         let num_workgroups = (num_elements as u32).div_ceil(workgroup_size);
 
         // Get or create pipeline
-        let (pipeline, bind_group_layout) =
-            ctx.get_or_create_pipeline("Concat", &self.module, "main")?;
+        let label = format!("concat_{:?}", dtype);
+        let (pipeline, bind_group_layout) = ctx.get_or_create_pipeline(&label, module, "main")?;
 
         // Create a dummy buffer for unused input slots (shader expects 4 inputs + 1 output)
         // Use the output buffer size for simplicity (it's large enough to satisfy any binding requirements)
@@ -322,9 +346,18 @@ impl Operator for ConcatOp {
         let mut shader_defs = HashMap::new();
         shader_defs.insert("WORKGROUP_SIZE".to_string(), "256".to_string());
 
-        let module = ctx.compile_shader("Concat", CONCAT_SHADER, &shader_defs)?;
+        // Compile shaders for supported data types
+        let mut modules = HashMap::new();
 
-        Ok(Box::new(ConcatDispatch { module, axis }))
+        // F32 version
+        let f32_module = ctx.compile_shader("Concat_F32", CONCAT_F32_SHADER, &shader_defs)?;
+        modules.insert(DataType::F32, f32_module);
+
+        // I64 version
+        let i64_module = ctx.compile_shader("Concat_I64", CONCAT_I64_SHADER, &shader_defs)?;
+        modules.insert(DataType::I64, i64_module);
+
+        Ok(Box::new(ConcatDispatch { modules, axis }))
     }
 }
 

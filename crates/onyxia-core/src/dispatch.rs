@@ -458,6 +458,9 @@ pub struct DispatchEntry {
 
     /// Operation name for debugging/profiling.
     pub name: String,
+
+    /// Original ONNX node name for debugging (may be empty).
+    pub node_name: String,
 }
 
 /// Weight data to upload to a register at model load time.

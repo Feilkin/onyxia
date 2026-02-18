@@ -159,6 +159,7 @@ impl CompilerPipeline {
                 input_regs,
                 output_regs,
                 name: op_type.to_string(),
+                node_name: node.name.clone(),
             });
         }
 

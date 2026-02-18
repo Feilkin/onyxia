@@ -215,6 +215,193 @@ async fn test_concat_negative_axis() {
     );
 }
 
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_concat_i64_axis_0() {
+    // Concat two I64 tensors along axis 0: [2] + [3] -> [5]
+    // This tests that I64 values (8 bytes each) are properly handled
+    let mut graph = Graph::new();
+
+    // First input: [2]
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![2]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Second input: [3]
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Output: [5]
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![5]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("Concat");
+    node.name = "concat_i64_axis0".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    node.attributes
+        .insert("axis".to_string(), AttributeValue::Int(0));
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    // Compile and execute
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![100i64, 200], &[2]);
+    let b = Tensor::from_vec(vec![300i64, 400, 500], &[3]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<i64> = outputs["c"].to_vec().unwrap();
+
+    assert_eq!(result, vec![100, 200, 300, 400, 500]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_concat_i64_negative_values() {
+    // Regression test for bug where -1 was misread as 4294967295
+    // Concat [-1] + [4] -> [-1, 4]
+    let mut graph = Graph::new();
+
+    // First input: [1] containing -1
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Second input: [1] containing 4
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![1]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Output: [2]
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![2]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("Concat");
+    node.name = "concat_i64_negative".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    node.attributes
+        .insert("axis".to_string(), AttributeValue::Int(0));
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    // Compile and execute
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let a = Tensor::from_vec(vec![-1i64], &[1]);
+    let b = Tensor::from_vec(vec![4i64], &[1]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<i64> = outputs["c"].to_vec().unwrap();
+
+    // This should be [-1, 4], not [4294967295, 4]
+    assert_eq!(result, vec![-1, 4]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_concat_i64_2d() {
+    // Concat two 2D I64 tensors along axis 0: [2, 3] + [1, 3] -> [3, 3]
+    let mut graph = Graph::new();
+
+    // First input: [2, 3]
+    graph.add_tensor(TensorInfo {
+        name: "a".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![2, 3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Second input: [1, 3]
+    graph.add_tensor(TensorInfo {
+        name: "b".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![1, 3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    // Output: [3, 3]
+    graph.add_tensor(TensorInfo {
+        name: "c".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![3, 3]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("Concat");
+    node.name = "concat_i64_2d".to_string();
+    node.inputs = vec!["a".to_string(), "b".to_string()];
+    node.outputs = vec!["c".to_string()];
+    node.attributes
+        .insert("axis".to_string(), AttributeValue::Int(0));
+    graph.add_node(node);
+
+    graph.inputs = vec!["a".to_string(), "b".to_string()];
+    graph.outputs = vec!["c".to_string()];
+
+    // Compile and execute
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    // Include negative values to ensure proper I64 handling
+    let a = Tensor::from_vec(vec![1i64, -2, 3, 4, -5, 6], &[2, 3]);
+    let b = Tensor::from_vec(vec![7i64, 8, -9], &[1, 3]);
+
+    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let result: Vec<i64> = outputs["c"].to_vec().unwrap();
+
+    assert_eq!(result, vec![1, -2, 3, 4, -5, 6, 7, 8, -9]);
+}
+
 // ================================================================================
 // Expand operator tests
 // ================================================================================
