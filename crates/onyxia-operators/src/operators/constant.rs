@@ -90,7 +90,6 @@ impl Operator for ConstantOp {
             }
         };
 
-
         Ok(Box::new(ConstantDispatch {
             data,
             shape,

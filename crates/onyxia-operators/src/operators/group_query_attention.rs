@@ -280,6 +280,7 @@ impl OpDispatch for GroupQueryAttentionDispatch {
             batch_size,
             seq_len,
             kv_seq_len_effective,
+            kv_seq_len_effective.saturating_sub(seq_len),
             scale,
         )?;
 
@@ -488,6 +489,7 @@ impl GroupQueryAttentionDispatch {
         batch: usize,
         seq_q: usize,
         seq_k: usize,
+        past_seq_len: usize,
         scale: f32,
     ) -> Result<()> {
         let mut params = Vec::new();
@@ -495,6 +497,7 @@ impl GroupQueryAttentionDispatch {
         params.extend_from_slice(&(self.num_heads as u32).to_le_bytes());
         params.extend_from_slice(&(seq_q as u32).to_le_bytes());
         params.extend_from_slice(&(seq_k as u32).to_le_bytes());
+        params.extend_from_slice(&(past_seq_len as u32).to_le_bytes());
         params.extend_from_slice(&scale.to_le_bytes());
 
         let (pipeline, bind_group_layout) =

@@ -472,3 +472,159 @@ async fn test_group_query_attention_kv_cache() {
     );
     println!("✓ KV cache concatenation test passed!");
 }
+
+#[pollster::test]
+#[ignore = "requires GPU"]
+async fn test_group_query_attention_decode_masks_with_past_offset() {
+    let mut graph = Graph::new();
+
+    let batch = 1;
+    let seq_len = 1;
+    let num_heads = 1;
+    let kv_num_heads = 1;
+    let head_size = 1;
+    let past_seq_len = 4;
+
+    graph.add_tensor(TensorInfo {
+        name: "query".into(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![batch, seq_len, num_heads * head_size]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+    graph.add_tensor(TensorInfo {
+        name: "key".into(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![batch, seq_len, kv_num_heads * head_size]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+    graph.add_tensor(TensorInfo {
+        name: "value".into(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![batch, seq_len, kv_num_heads * head_size]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "past_key".into(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![batch, kv_num_heads, past_seq_len, head_size]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+    graph.add_tensor(TensorInfo {
+        name: "past_value".into(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![batch, kv_num_heads, past_seq_len, head_size]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+
+    graph.add_tensor(TensorInfo {
+        name: "output".into(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![batch, seq_len, num_heads * head_size]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+    graph.add_tensor(TensorInfo {
+        name: "present_key".into(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![batch, kv_num_heads, past_seq_len + seq_len, head_size]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+    graph.add_tensor(TensorInfo {
+        name: "present_value".into(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![batch, kv_num_heads, past_seq_len + seq_len, head_size]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut gqa_node = Node::new("GroupQueryAttention");
+    gqa_node.domain = "com.microsoft".into();
+    gqa_node.inputs = vec![
+        "query".into(),
+        "key".into(),
+        "value".into(),
+        "past_key".into(),
+        "past_value".into(),
+    ];
+    gqa_node.outputs = vec![
+        "output".into(),
+        "present_key".into(),
+        "present_value".into(),
+    ];
+    gqa_node
+        .attributes
+        .insert("num_heads".into(), AttributeValue::Int(num_heads as i64));
+    gqa_node.attributes.insert(
+        "kv_num_heads".into(),
+        AttributeValue::Int(kv_num_heads as i64),
+    );
+    graph.nodes.push(gqa_node);
+
+    graph.inputs = vec![
+        "query".into(),
+        "key".into(),
+        "value".into(),
+        "past_key".into(),
+        "past_value".into(),
+    ];
+    graph.outputs = vec![
+        "output".into(),
+        "present_key".into(),
+        "present_value".into(),
+    ];
+
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let compiled = pipeline
+        .compile(&graph, &registry)
+        .expect("Compilation should succeed");
+
+    let runtime = Runtime::new().await.expect("Runtime init");
+    let mut executor = runtime.load_model(compiled).await.expect("Load model");
+
+    let query = Tensor::from_vec(vec![1.0f32], &[batch, seq_len, num_heads * head_size]);
+    let key = Tensor::from_vec(vec![1.0f32], &[batch, seq_len, kv_num_heads * head_size]);
+    let value = Tensor::from_vec(vec![50.0f32], &[batch, seq_len, kv_num_heads * head_size]);
+
+    let past_key = Tensor::from_vec(
+        vec![1.0f32, 1.0, 1.0, 1.0],
+        &[batch, kv_num_heads, past_seq_len, head_size],
+    );
+    let past_value = Tensor::from_vec(
+        vec![10.0f32, 20.0, 30.0, 40.0],
+        &[batch, kv_num_heads, past_seq_len, head_size],
+    );
+
+    let outputs = executor
+        .run(&[
+            ("query", query),
+            ("key", key),
+            ("value", value),
+            ("past_key", past_key),
+            ("past_value", past_value),
+        ])
+        .expect("Decode execution");
+
+    let output: Vec<f32> = outputs["output"].to_vec().expect("Convert output to f32");
+    let present_value: Vec<f32> = outputs["present_value"]
+        .to_vec()
+        .expect("Convert present_value to f32");
+
+    assert_eq!(present_value, vec![10.0, 20.0, 30.0, 40.0, 50.0]);
+
+    // With q=k=1 across all tokens and causal masking using past offset,
+    // decode token should attend across all 5 positions => mean(value)=30.
+    assert_eq!(output.len(), 1);
+    assert!(
+        (output[0] - 30.0).abs() < 1e-3,
+        "unexpected decode output: {}",
+        output[0]
+    );
+}

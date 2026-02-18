@@ -39,7 +39,7 @@ pub struct GenerationStats {
 /// * `max_tokens` - Maximum number of tokens to generate (not including prompt)
 /// * `config` - Sampling configuration (temperature, top-k, top-p, seed)
 /// * `stream` - Whether to print tokens as they're generated
-/// * `eos_token_id` - Token ID for end-of-sequence (generation stops when this is sampled)
+/// * `stop_token_ids` - Token IDs that stop generation when sampled
 ///
 /// # Returns
 /// Generated text and statistics
@@ -50,7 +50,7 @@ pub fn generate(
     max_tokens: usize,
     config: &SamplingConfig,
     stream: bool,
-    eos_token_id: u32,
+    stop_token_ids: &[u32],
 ) -> Result<(String, GenerationStats)> {
     let generation_start = Instant::now();
 
@@ -115,8 +115,8 @@ pub fn generate(
         io::stdout().flush().ok();
     }
 
-    // Check if first token is EOS
-    if first_token == eos_token_id {
+    // Check if first token is a stop token
+    if stop_token_ids.contains(&first_token) {
         let total_time = generation_start.elapsed().as_secs_f64();
         let stats = GenerationStats {
             tokens_generated: 1,
@@ -172,8 +172,8 @@ pub fn generate(
             io::stdout().flush().ok();
         }
 
-        // Stop if EOS token
-        if next_token == eos_token_id {
+        // Stop if a stop token is generated
+        if stop_token_ids.contains(&next_token) {
             break;
         }
     }

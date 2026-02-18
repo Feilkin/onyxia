@@ -711,7 +711,7 @@ async fn cmd_run_model(
     use onyxia_cli::generate::{generate, print_stats};
     use onyxia_cli::llm::{LlmConfig, LlmSession};
     use onyxia_cli::sampling::SamplingConfig;
-    use onyxia_cli::tokenizer::Tokenizer;
+    use onyxia_cli::tokenizer::{ChatMessage, Tokenizer};
 
     println!("Loading model from {}...", model_path.display());
 
@@ -750,11 +750,44 @@ async fn cmd_run_model(
 
     // Load tokenizer (expects path to directory containing tokenizer.json)
     let tokenizer_file = tokenizer_path.join("tokenizer.json");
-    let tokenizer = Tokenizer::from_file(&tokenizer_file)
+    let mut tokenizer = Tokenizer::from_file(&tokenizer_file)
         .with_context(|| format!("Failed to load tokenizer from {}", tokenizer_file.display()))?;
 
-    // Get EOS token ID (default to 1 for Gemma)
-    let eos_token_id = tokenizer.eos_token_id() as u32;
+    // Auto-load chat template when available (e.g., Gemma instruct models).
+    let chat_template_file = tokenizer_path.join("chat_template.jinja");
+    if chat_template_file.exists() {
+        tokenizer = tokenizer
+            .with_chat_template_file(&chat_template_file)
+            .with_context(|| {
+                format!(
+                    "Failed to load chat template from {}",
+                    chat_template_file.display()
+                )
+            })?;
+    }
+
+    let prompt_for_model = if chat_template_file.exists() {
+        tokenizer
+            .apply_chat_template(
+                &[ChatMessage {
+                    role: "user".to_string(),
+                    content: prompt.clone(),
+                }],
+                true,
+            )
+            .with_context(|| "Failed to apply chat template")?
+    } else {
+        prompt.clone()
+    };
+
+    // Build stop-token set (EOS always, plus end-of-turn for chat templates when available)
+    let mut stop_token_ids = vec![tokenizer.eos_token_id() as u32];
+    if chat_template_file.exists()
+        && let Ok(end_of_turn_ids) = tokenizer.encode("<end_of_turn>", false)
+        && end_of_turn_ids.len() == 1
+    {
+        stop_token_ids.push(end_of_turn_ids[0] as u32);
+    }
 
     // Set up sampling config
     let sampling_config = SamplingConfig {
@@ -773,11 +806,11 @@ async fn cmd_run_model(
     let (generated_text, stats) = generate(
         &mut session,
         &tokenizer,
-        &prompt,
+        &prompt_for_model,
         max_tokens,
         &sampling_config,
         stream,
-        eos_token_id,
+        &stop_token_ids,
     )
     .with_context(|| "Generation failed")?;
 

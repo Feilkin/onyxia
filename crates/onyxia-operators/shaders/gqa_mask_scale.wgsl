@@ -5,6 +5,7 @@ struct Params {
     heads: u32,
     seq_q: u32,
     seq_k: u32,
+    past_seq_len: u32,
     scale: f32,
 }
 
@@ -29,9 +30,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     
     var val = scores[idx] * params.scale;
     
-    // Causal mask: query position q_pos can only attend to key positions <= q_pos
-    // For autoregressive generation, mask future positions
-    if k_pos > q_pos {
+    // Causal mask with KV-cache offset:
+    // effective_query_pos = past_seq_len + q_pos
+    // query can only attend to key positions <= effective_query_pos
+    let effective_q_pos = params.past_seq_len + q_pos;
+    if k_pos > effective_q_pos {
         val = -1e10;  // Large negative value → softmax ≈ 0
     }
     

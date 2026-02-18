@@ -8,6 +8,7 @@ struct ImmediateConstants {
     batch_size: u32,
     seq_len: u32,
     hidden_size: u32,
+    head_size: u32,
     rotary_dim: u32,
     interleaved: u32,
 }
@@ -33,21 +34,22 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let remainder = idx % (immediates.seq_len * immediates.hidden_size);
     let seq = remainder / immediates.hidden_size;
     let hidden = remainder % immediates.hidden_size;
+    let head_offset = hidden % immediates.head_size;
     
     // Get position for this element
     let pos_idx = batch * immediates.seq_len + seq;
     let position = position_ids[pos_idx];
     
     // If outside rotary range, copy input
-    if hidden >= immediates.rotary_dim {
+    if head_offset >= immediates.rotary_dim {
         output[idx] = input[idx];
         return;
     }
     
     if immediates.interleaved != 0u {
         // Interleaved mode: pairs (0,1), (2,3), (4,5), ...
-        let pair_idx = hidden / 2u;
-        let is_first = (hidden % 2u) == 0u;
+        let pair_idx = head_offset / 2u;
+        let is_first = (head_offset % 2u) == 0u;
         
         let cos_val = cos_cache[position * (immediates.rotary_dim / 2u) + pair_idx];
         let sin_val = sin_cache[position * (immediates.rotary_dim / 2u) + pair_idx];
@@ -67,19 +69,19 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // Non-interleaved mode: first half with second half
         let half_dim = immediates.rotary_dim / 2u;
         
-        if hidden < half_dim {
+        if head_offset < half_dim {
             // First half
-            let cos_val = cos_cache[position * half_dim + hidden];
-            let sin_val = sin_cache[position * half_dim + hidden];
+            let cos_val = cos_cache[position * half_dim + head_offset];
+            let sin_val = sin_cache[position * half_dim + head_offset];
             
             let partner_idx = idx + half_dim;
             let x_i = input[idx];
             let x_j = input[partner_idx];
             
             output[idx] = x_i * cos_val - x_j * sin_val;
-        } else if hidden < immediates.rotary_dim {
+        } else if head_offset < immediates.rotary_dim {
             // Second half
-            let rot_idx = hidden - half_dim;
+            let rot_idx = head_offset - half_dim;
             let cos_val = cos_cache[position * half_dim + rot_idx];
             let sin_val = sin_cache[position * half_dim + rot_idx];
             

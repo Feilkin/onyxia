@@ -282,6 +282,118 @@ async fn test_gather_negative_indices() {
     assert_eq!(result, vec![1.0, 5.0, 4.0]);
 }
 
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_gather_f32_with_i64_indices() {
+    let mut graph = Graph::new();
+
+    graph.add_tensor(TensorInfo {
+        name: "data".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![6]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+    graph.add_tensor(TensorInfo {
+        name: "indices".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::F32,
+        shape: TensorShape::Static(vec![3]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("Gather");
+    node.name = "gather_i64_indices".to_string();
+    node.inputs = vec!["data".to_string(), "indices".to_string()];
+    node.outputs = vec!["output".to_string()];
+    node.attributes
+        .insert("axis".to_string(), AttributeValue::Int(0));
+    graph.add_node(node);
+
+    graph.inputs = vec!["data".to_string(), "indices".to_string()];
+    graph.outputs = vec!["output".to_string()];
+
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let data = Tensor::from_vec(vec![10.0f32, 11.0, 12.0, 13.0, 14.0, 15.0], &[6]);
+    let indices = Tensor::from_vec(vec![5i64, 0, 3], &[3]);
+
+    let outputs = executor
+        .run(&[("data", data), ("indices", indices)])
+        .unwrap();
+    let result: Vec<f32> = outputs["output"].to_vec().unwrap();
+
+    assert_eq!(result, vec![15.0, 10.0, 13.0]);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_gather_i64_data_cpu_fallback() {
+    let mut graph = Graph::new();
+
+    graph.add_tensor(TensorInfo {
+        name: "data".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![2, 3]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+    graph.add_tensor(TensorInfo {
+        name: "indices".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![2]),
+        kind: TensorKind::Input,
+        initializer: None,
+    });
+    graph.add_tensor(TensorInfo {
+        name: "output".to_string(),
+        dtype: DataType::I64,
+        shape: TensorShape::Static(vec![2, 2]),
+        kind: TensorKind::Output,
+        initializer: None,
+    });
+
+    let mut node = Node::new("Gather");
+    node.name = "gather_i64_data".to_string();
+    node.inputs = vec!["data".to_string(), "indices".to_string()];
+    node.outputs = vec!["output".to_string()];
+    node.attributes
+        .insert("axis".to_string(), AttributeValue::Int(1));
+    graph.add_node(node);
+
+    graph.inputs = vec!["data".to_string(), "indices".to_string()];
+    graph.outputs = vec!["output".to_string()];
+
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let data = Tensor::from_vec(vec![1i64, 2, 3, 4, 5, 6], &[2, 3]);
+    let indices = Tensor::from_vec(vec![2i64, 0], &[2]);
+
+    let outputs = executor
+        .run(&[("data", data), ("indices", indices)])
+        .unwrap();
+    let result: Vec<i64> = outputs["output"].to_vec().unwrap();
+
+    assert_eq!(result, vec![3, 1, 6, 4]);
+}
+
 // ================================================================================
 // ScatterND operator tests
 // ================================================================================

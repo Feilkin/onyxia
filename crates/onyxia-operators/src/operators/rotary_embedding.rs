@@ -44,6 +44,16 @@ impl Operator for RotaryEmbeddingOp {
             _ => false,
         };
 
+        let num_heads = match ctx.attr("num_heads") {
+            Some(onyxia_onnx::AttributeValue::Int(v)) if *v > 0 => Some(*v as usize),
+            _ => None,
+        };
+
+        let rotary_embedding_dim = match ctx.attr("rotary_embedding_dim") {
+            Some(onyxia_onnx::AttributeValue::Int(v)) if *v > 0 => Some(*v as usize),
+            _ => None,
+        };
+
         let shader_defs = HashMap::new();
         let module =
             ctx.compile_shader("RotaryEmbedding", ROTARY_EMBEDDING_SHADER, &shader_defs)?;
@@ -51,6 +61,8 @@ impl Operator for RotaryEmbeddingOp {
         Ok(Box::new(RotaryEmbeddingDispatch {
             module,
             interleaved,
+            num_heads,
+            rotary_embedding_dim,
         }))
     }
 }
@@ -62,6 +74,12 @@ struct RotaryEmbeddingDispatch {
 
     /// Whether to use interleaved rotation mode.
     interleaved: bool,
+
+    /// Optional number of attention heads.
+    num_heads: Option<usize>,
+
+    /// Optional rotary embedding dimension override.
+    rotary_embedding_dim: Option<usize>,
 }
 
 impl OpDispatch for RotaryEmbeddingDispatch {
@@ -85,16 +103,10 @@ impl OpDispatch for RotaryEmbeddingDispatch {
         // Convert position_ids from i64 to u32 for GPU (WGSL doesn't support i64)
         let position_ids_data = ctx.download_tensor(position_ids)?;
         let position_ids_i64: &[i64] = bytemuck::cast_slice(&position_ids_data);
-        let position_ids_u32: Vec<u32> = position_ids_i64
-            .iter()
-            .map(|&x| x as u32)
-            .collect();
+        let position_ids_u32: Vec<u32> = position_ids_i64.iter().map(|&x| x as u32).collect();
         let position_ids_u32_bytes: &[u8] = bytemuck::cast_slice(&position_ids_u32);
-        let position_ids_gpu = ctx.upload_tensor(
-            position_ids_u32_bytes,
-            &position_ids.shape,
-            DataType::U32,
-        )?;
+        let position_ids_gpu =
+            ctx.upload_tensor(position_ids_u32_bytes, &position_ids.shape, DataType::U32)?;
 
         // Extract dimensions
         if input.shape.len() != 3 {
@@ -108,8 +120,33 @@ impl OpDispatch for RotaryEmbeddingDispatch {
         let seq_len = input.shape[1];
         let hidden_size = input.shape[2];
 
-        // Rotary dimension is 2 * last dimension of cos_cache
-        let rotary_dim = cos_cache.shape[cos_cache.shape.len() - 1] * 2;
+        // Infer per-head geometry.
+        let cache_rotary_dim = cos_cache.shape[cos_cache.shape.len() - 1] * 2;
+        let rotary_dim = self.rotary_embedding_dim.unwrap_or(cache_rotary_dim);
+
+        let num_heads = self.num_heads.unwrap_or_else(|| {
+            if cache_rotary_dim > 0 && hidden_size % cache_rotary_dim == 0 {
+                hidden_size / cache_rotary_dim
+            } else {
+                1
+            }
+        });
+
+        if hidden_size % num_heads != 0 {
+            return Err(Error::Shape(format!(
+                "Hidden size {} is not divisible by num_heads {}",
+                hidden_size, num_heads
+            )));
+        }
+
+        let head_size = hidden_size / num_heads;
+
+        if rotary_dim > head_size {
+            return Err(Error::Shape(format!(
+                "Rotary dimension {} exceeds head size {}",
+                rotary_dim, head_size
+            )));
+        }
 
         if rotary_dim > hidden_size {
             return Err(Error::Shape(format!(
@@ -126,6 +163,7 @@ impl OpDispatch for RotaryEmbeddingDispatch {
         immediates.extend_from_slice(&(batch_size as u32).to_le_bytes());
         immediates.extend_from_slice(&(seq_len as u32).to_le_bytes());
         immediates.extend_from_slice(&(hidden_size as u32).to_le_bytes());
+        immediates.extend_from_slice(&(head_size as u32).to_le_bytes());
         immediates.extend_from_slice(&(rotary_dim as u32).to_le_bytes());
         immediates.extend_from_slice(&(self.interleaved as u32).to_le_bytes());
 
@@ -182,10 +220,7 @@ impl OpDispatch for RotaryEmbeddingDispatch {
 }
 
 /// Helper to create an immediates buffer.
-fn create_immediates_buffer(
-    ctx: &mut DispatchCtx,
-    immediates: &[u8],
-) -> Result<Arc<wgpu::Buffer>> {
+fn create_immediates_buffer(ctx: &mut DispatchCtx, immediates: &[u8]) -> Result<Arc<wgpu::Buffer>> {
     let buffer = Arc::new(ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("rotary_embedding_immediates"),
         size: immediates.len() as u64,

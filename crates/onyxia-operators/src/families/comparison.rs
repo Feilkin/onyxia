@@ -109,7 +109,8 @@ impl OpDispatch for ComparisonDispatch {
         // Compute workgroups with 2D dispatch support for large tensors
         let workgroup_size: u32 = 256;
         let num_workgroups = (num_elements as u32).div_ceil(workgroup_size);
-        let (dispatch_size, x_stride) = DispatchCtx::compute_dispatch_size(num_workgroups, workgroup_size);
+        let (dispatch_size, x_stride) =
+            DispatchCtx::compute_dispatch_size(num_workgroups, workgroup_size);
 
         // Encode immediates (must match ImmediateConstants struct in shader)
         let mut immediates = Vec::with_capacity(16);
@@ -145,12 +146,7 @@ impl OpDispatch for ComparisonDispatch {
         });
 
         // Dispatch compute shader with immediates
-        ctx.dispatch_compute(
-            &pipeline,
-            &bind_group,
-            dispatch_size,
-            Some(&immediates),
-        )?;;
+        ctx.dispatch_compute(&pipeline, &bind_group, dispatch_size, Some(&immediates))?;
 
         Ok(vec![output])
     }
