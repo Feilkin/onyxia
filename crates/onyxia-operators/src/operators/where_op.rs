@@ -99,10 +99,45 @@ impl OpDispatch for WhereDispatch {
         // Create output tensor
         let output = ctx.create_output_tensor(&output_shape, x.dtype)?;
 
-        // Compute broadcast strides for each input
-        let cond_size: usize = condition.shape.iter().product();
-        let x_size: usize = x.shape.iter().product();
-        let y_size: usize = y.shape.iter().product();
+        // Prepare shape immediates for broadcasting
+        let rank = output_shape.len();
+        if rank == 0 || rank > 8 {
+            return Err(Error::Shape(format!(
+                "Where: unsupported output rank {} (must be 1..=8)",
+                rank
+            )));
+        }
+
+        // Left-align shapes into arrays of length `rank`. For inputs with fewer
+        // dims we pad with leading 1s so they are right-aligned with broadcasting rules.
+        let mut padded_output = Vec::with_capacity(8);
+        let mut padded_cond = Vec::with_capacity(8);
+        let mut padded_x = Vec::with_capacity(8);
+        let mut padded_y = Vec::with_capacity(8);
+
+        for i in 0..rank {
+            padded_output.push(output_shape[i] as u32);
+        }
+
+        let pad_and_copy = |src: &[usize], rank: usize| -> Vec<u32> {
+            let mut v = Vec::with_capacity(rank);
+            let src_len = src.len();
+            let leading = rank.saturating_sub(src_len);
+            for _ in 0..leading {
+                v.push(1u32);
+            }
+            for &d in src.iter() {
+                v.push(d as u32);
+            }
+            v
+        };
+
+        padded_cond = pad_and_copy(&condition.shape, rank);
+        padded_x = pad_and_copy(&x.shape, rank);
+        padded_y = pad_and_copy(&y.shape, rank);
+
+        // Total elements
+        let num_elements_u32 = num_elements as u32;
 
         // Get or create compute pipeline
         let (pipeline, bind_group_layout) =
@@ -114,12 +149,34 @@ impl OpDispatch for WhereDispatch {
             &[&condition.buffer, &x.buffer, &y.buffer, &output.buffer],
         )?;
 
-        // Encode immediates
-        let mut immediates = Vec::new();
-        immediates.extend_from_slice(&(num_elements as u32).to_le_bytes());
-        immediates.extend_from_slice(&(cond_size as u32).to_le_bytes());
-        immediates.extend_from_slice(&(x_size as u32).to_le_bytes());
-        immediates.extend_from_slice(&(y_size as u32).to_le_bytes());
+        // Encode immediates matching ImmediateConstants in shader
+        // Layout:
+        // output_rank: u32
+        // total_elements: u32
+        // padding: u32
+        // output_shape: 8 * u32
+        // cond_shape: 8 * u32
+        // x_shape: 8 * u32
+        // y_shape: 8 * u32
+        let mut immediates = Vec::with_capacity(4 * (3 + 8 * 4));
+        immediates.extend_from_slice(&(rank as u32).to_le_bytes());
+        immediates.extend_from_slice(&num_elements_u32.to_le_bytes());
+        immediates.extend_from_slice(&0u32.to_le_bytes()); // padding
+
+        // Helper to write an array of length 8, filling trailing slots with 1s
+        let write_array8 = |buf: &mut Vec<u8>, vals: &Vec<u32>| {
+            // Write `rank` entries first, then fill remaining up to 8 with 1s
+            for i in 0..8 {
+                let v = if i < vals.len() { vals[i] } else { 1u32 };
+                buf.extend_from_slice(&v.to_le_bytes());
+            }
+        };
+
+        // Write shapes arrays
+        write_array8(&mut immediates, &padded_output);
+        write_array8(&mut immediates, &padded_cond);
+        write_array8(&mut immediates, &padded_x);
+        write_array8(&mut immediates, &padded_y);
 
         // Dispatch compute shader
         let workgroups_x = num_elements.div_ceil(256) as u32;

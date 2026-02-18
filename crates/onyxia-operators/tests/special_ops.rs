@@ -387,3 +387,137 @@ async fn test_where_broadcast() {
     // Expected: [1, 6, 3, 8] (condition selects alternating elements)
     assert_vec_eq(&result, &[1.0, 6.0, 3.0, 8.0]);
 }
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_where_scalar_broadcast() {
+    // condition is scalar true -> select from X for all elements
+    let cond_data = bytemuck::cast_slice(&[1u32]).to_vec();
+    let x_data = vec![2.0f32, 4.0, 6.0, 8.0];
+    let y_data = vec![10.0f32, 20.0, 30.0, 40.0];
+
+    let graph = make_where_graph(&cond_data, &[], &x_data, &[4], &y_data, &[4], &[4]);
+
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let outputs = executor.run(&[]).unwrap();
+    let result: Vec<f32> = outputs["output"].to_vec().unwrap();
+
+    assert_vec_eq(&result, &x_data);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_where_trailing_dim_expansion() {
+    // X has shape [4] and should broadcast to [2,3,4]
+    let out_shape = [2usize, 3, 4];
+    let total = out_shape.iter().product();
+
+    // Build a condition that alternates per element
+    let mut cond_u32 = Vec::with_capacity(total);
+    for i in 0..total {
+        cond_u32.push(((i % 2) == 0) as u32);
+    }
+    let cond_data = bytemuck::cast_slice(&cond_u32).to_vec();
+
+    let x_data = vec![1.0f32, 2.0, 3.0, 4.0]; // shape [4]
+    let mut y_data = Vec::with_capacity(total);
+    for i in 0..total {
+        y_data.push((100 + i) as f32);
+    }
+
+    let graph = make_where_graph(
+        &cond_data,
+        &out_shape,
+        &x_data,
+        &[4],
+        &y_data,
+        &out_shape,
+        &out_shape,
+    );
+
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let outputs = executor.run(&[]).unwrap();
+    let result: Vec<f32> = outputs["output"].to_vec().unwrap();
+
+    // Build expected
+    let mut expected = Vec::with_capacity(total);
+    for i in 0..total {
+        if cond_u32[i] != 0 {
+            expected.push(x_data[i % 4]);
+        } else {
+            expected.push(y_data[i]);
+        }
+    }
+
+    assert_vec_eq(&result, &expected);
+}
+
+#[ignore = "requires GPU"]
+#[pollster::test]
+async fn test_where_leading_and_multi_dimensional_broadcast() {
+    // X: [3,1] and Y: [1,4] -> broadcast to [3,4]
+    let out_shape = [3usize, 4usize];
+    let total = out_shape.iter().product();
+
+    // condition shape [3,4]
+    let mut cond_u32 = Vec::with_capacity(total);
+    for r in 0..out_shape[0] {
+        for c in 0..out_shape[1] {
+            cond_u32.push(((r + c) % 2 == 0) as u32);
+        }
+    }
+    let cond_data = bytemuck::cast_slice(&cond_u32).to_vec();
+
+    // X is [3,1]
+    let x_data = vec![1.0f32, 2.0, 3.0];
+    // Y is [1,4]
+    let y_data = vec![10.0f32, 20.0, 30.0, 40.0];
+
+    let graph = make_where_graph(
+        &cond_data,
+        &out_shape,
+        &x_data,
+        &[3, 1],
+        &y_data,
+        &[1, 4],
+        &out_shape,
+    );
+
+    let registry = core_operator_registry();
+    let mut pipeline = CompilerPipeline::new();
+    let model = pipeline.compile(&graph, &registry).unwrap();
+
+    let runtime = Runtime::new().await.unwrap();
+    let mut executor = runtime.load_model(model).await.unwrap();
+
+    let outputs = executor.run(&[]).unwrap();
+    let result: Vec<f32> = outputs["output"].to_vec().unwrap();
+
+    // Build expected
+    let mut expected = Vec::with_capacity(total);
+    for r in 0..out_shape[0] {
+        for c in 0..out_shape[1] {
+            if cond_u32[r * out_shape[1] + c] != 0 {
+                // x row r, col 0
+                expected.push(x_data[r]);
+            } else {
+                // y row 0, col c
+                expected.push(y_data[c]);
+            }
+        }
+    }
+
+    assert_vec_eq(&result, &expected);
+}

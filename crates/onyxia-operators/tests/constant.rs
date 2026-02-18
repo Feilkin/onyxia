@@ -74,8 +74,6 @@ async fn test_constant_f32() {
 
     assert_eq!(data.len(), 4);
     assert_eq!(data, vec![1.0, 2.0, 3.0, 4.0]);
-
-    println!("✓ Constant f32 test passed!");
 }
 
 #[pollster::test]
@@ -111,8 +109,6 @@ async fn test_constant_i64() {
 
     assert_eq!(data.len(), 3);
     assert_eq!(data, vec![10, 20, 30]);
-
-    println!("✓ Constant i64 test passed!");
 }
 
 #[pollster::test]
@@ -145,8 +141,6 @@ async fn test_constant_scalar() {
 
     assert_eq!(data.len(), 1);
     assert_eq!(data[0], 42.0);
-
-    println!("✓ Constant scalar test passed!");
 }
 
 #[pollster::test]
@@ -182,6 +176,4 @@ async fn test_constant_multidimensional() {
 
     assert_eq!(data.len(), 6);
     assert_eq!(data, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-
-    println!("✓ Constant multidimensional test passed!");
 }

@@ -76,8 +76,4 @@ async fn test_gelu_e2e() {
         "GELU(3) should be ~2.9964, got {}",
         result[5]
     );
-
-    println!("✓ Gelu operator test passed!");
-    println!("  Input:  {:?}", input_data);
-    println!("  Output: {:?}", result);
 }

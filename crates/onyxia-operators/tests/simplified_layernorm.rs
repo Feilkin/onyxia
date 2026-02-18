@@ -133,8 +133,6 @@ async fn test_simplified_layernorm_basic_2d() {
     ];
 
     assert_vec_approx_eq(&result, &expected, 1e-4);
-
-    println!("✓ SimplifiedLayerNormalization 2D basic test passed!");
 }
 
 #[ignore = "requires GPU"]
@@ -176,6 +174,4 @@ async fn test_simplified_layernorm_with_scale() {
     ];
 
     assert_vec_approx_eq(&result, &expected, 1e-4);
-
-    println!("✓ SimplifiedLayerNormalization with scale test passed!");
 }

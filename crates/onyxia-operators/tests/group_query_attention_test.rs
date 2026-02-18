@@ -139,8 +139,6 @@ async fn test_group_query_attention_basic() {
         present_value.len(),
         batch * kv_num_heads * seq_len * head_size
     );
-
-    println!("✓ GroupQueryAttention test passed!");
 }
 
 #[pollster::test]
@@ -356,11 +354,6 @@ async fn test_group_query_attention_kv_cache() {
         batch * kv_num_heads * prefill_seq_len * head_size
     );
 
-    println!(
-        "✓ Prefill: present cache has correct size (seq_len={})",
-        prefill_seq_len
-    );
-
     // Step 2: Decode step 1 - use present from prefill as past
     let query_decode = Tensor::from_vec(
         vec![1.5f32; batch * decode_seq_len * num_heads * head_size],
@@ -409,11 +402,6 @@ async fn test_group_query_attention_kv_cache() {
     assert_eq!(
         present_value_after_decode.len(),
         batch * kv_num_heads * expected_total_seq * head_size
-    );
-
-    println!(
-        "✓ Decode step 1: present cache grew to seq_len={}",
-        expected_total_seq
     );
 
     // Step 3: Another decode step to verify continued concatenation
@@ -465,12 +453,6 @@ async fn test_group_query_attention_kv_cache() {
         present_value_after_decode2.len(),
         batch * kv_num_heads * expected_total_seq2 * head_size
     );
-
-    println!(
-        "✓ Decode step 2: present cache grew to seq_len={}",
-        expected_total_seq2
-    );
-    println!("✓ KV cache concatenation test passed!");
 }
 
 #[pollster::test]

@@ -112,7 +112,6 @@ async fn test_rotary_embedding_basic() {
 
     // With cos=1 and sin=0, the rotation should preserve the input
     // for the first half and negate for second half in non-interleaved mode
-    println!("✓ RotaryEmbedding test passed!");
 }
 
 #[pollster::test]
