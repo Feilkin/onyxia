@@ -39,6 +39,14 @@ impl DispatchExecutor {
 
         // Upload weights to GPU registers
         for weight in &model.weight_registers {
+            if weight.register >= registers.len() {
+                return Err(RuntimeError::ExecutionError(format!(
+                    "Weight register {} is out of bounds (num_registers={})",
+                    weight.register,
+                    registers.len()
+                )));
+            }
+
             let tensor = ctx
                 .upload_tensor(&weight.data, &weight.shape, weight.dtype)
                 .map_err(|e| {

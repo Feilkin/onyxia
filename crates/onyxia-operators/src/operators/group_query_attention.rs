@@ -150,6 +150,12 @@ impl OpDispatch for GroupQueryAttentionDispatch {
         let query = &inputs[0];
         let key = &inputs[1];
         let value = &inputs[2];
+        
+        // Inputs 3 and 4 are past_key and past_value (KV cache from previous iteration)
+        // For now, we ignore them and just use the new K/V
+        // TODO: Concatenate past KV cache with new KV along sequence dimension
+        let _past_key = if inputs.len() > 3 { Some(&inputs[3]) } else { None };
+        let _past_value = if inputs.len() > 4 { Some(&inputs[4]) } else { None };
 
         // Extract dimensions
         if query.shape.len() != 3 || key.shape.len() != 3 || value.shape.len() != 3 {
@@ -187,6 +193,10 @@ impl OpDispatch for GroupQueryAttentionDispatch {
             self.kv_num_heads,
             head_size,
         )?;
+
+        // Save present_key and present_value before they're potentially modified
+        let present_key = k_shaped.clone();
+        let present_value = v_shaped.clone();
 
         // Step 2: Repeat KV heads if grouped (kv_num_heads < num_heads)
         let k_repeated = if self.num_heads != self.kv_num_heads {
@@ -239,8 +249,10 @@ impl OpDispatch for GroupQueryAttentionDispatch {
             head_size,
         )?;
 
-        // TODO: Handle present_key and present_value outputs for KV caching
-        Ok(vec![output])
+        // Return 3 outputs: attention_output, present_key, present_value
+        // present_key and present_value are the reshaped K and V tensors
+        // TODO: Concatenate with past KV cache along sequence dimension
+        Ok(vec![output, present_key, present_value])
     }
 }
 

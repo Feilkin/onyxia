@@ -74,11 +74,18 @@ impl LlmSession {
         // Create input tensors including KV caches
         let mut inputs = create_prefill_inputs(input_ids, 0);
 
-        // Add KV cache tensors if available (empty on first run)
+        // Add KV cache tensors
+        // On first run, create empty tensors with shape [1, num_heads, 0, head_dim]
         for (_present_name, past_name) in &self.kv_pairs {
             if let Some(tensor) = self.kv_cache.get(past_name) {
-                // Need to clone the past_name to avoid lifetime issues
+                // Use existing cache from previous iteration
                 inputs.push((past_name.as_str(), tensor.clone()));
+            } else {
+                // First run: create empty KV cache with past_sequence_length=0
+                // Shape: [batch_size=1, num_heads, past_seq_len=0, head_dim]
+                // For Gemma, num_heads=1 for KV, head_dim=256
+                let empty_kv = Tensor::from_vec(Vec::<f32>::new(), &[1, 1, 0, 256]);
+                inputs.push((past_name.as_str(), empty_kv));
             }
         }
 

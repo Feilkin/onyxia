@@ -10,6 +10,7 @@
 pub mod broadcast;
 pub mod compile_ctx;
 pub mod dispatch;
+pub mod dispatch_dot;
 pub mod ir;
 pub mod ir_builder;
 pub mod operator;
@@ -25,6 +26,7 @@ pub use dispatch::{
     CompiledModel as DispatchModel, DispatchCtx, DispatchEntry, OpDispatch, RuntimeTensor,
     WeightRegister,
 };
+pub use dispatch_dot::to_dispatch_dot;
 pub use ir::{EdgeData, IrEdge, IrEdgeId, IrGraph, IrNode, IrNodeId, IrTensorId, TensorDef};
 pub use operator::Operator;
 pub use pass::{Pass, Stage};

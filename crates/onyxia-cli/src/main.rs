@@ -39,6 +39,16 @@ enum Commands {
         #[arg(long, default_value = "0")]
         depth: usize,
     },
+    /// Generate a dispatch graph DOT file showing register routing
+    DispatchDot {
+        /// Path to the ONNX model file
+        #[arg(value_name = "MODEL")]
+        model: PathBuf,
+
+        /// Output file path (defaults to stdout)
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
     /// Inspect an ONNX model's structure
     Inspect {
         /// Path to the ONNX model file
@@ -216,6 +226,9 @@ fn main() -> Result<()> {
         } => {
             cmd_dot(model, output, &simplify, filter, depth)?;
         }
+        Commands::DispatchDot { model, output } => {
+            cmd_dispatch_dot(model, output)?;
+        }
         Commands::Inspect {
             model,
             dynamic_dims,
@@ -385,6 +398,50 @@ fn cmd_dot(
         std::fs::write(&output_path, dot)
             .with_context(|| format!("Failed to write DOT output to {}", output_path.display()))?;
         eprintln!("Wrote DOT output to {}", output_path.display());
+    } else {
+        print!("{}", dot);
+    }
+
+    Ok(())
+}
+
+/// Generate dispatch graph DOT format from compiled model.
+fn cmd_dispatch_dot(model_path: PathBuf, output_path: Option<PathBuf>) -> Result<()> {
+    eprintln!("Loading model from {}...", model_path.display());
+
+    // Load ONNX model
+    let onnx_model = onyxia_onnx::load_model(&model_path)
+        .with_context(|| format!("Failed to load model from {}", model_path.display()))?;
+
+    let base_dir = model_path.parent();
+    let graph =
+        onyxia_onnx::parse_model(&onnx_model, base_dir).with_context(|| "Failed to parse model")?;
+
+    eprintln!("Compiling execution plan...");
+
+    // Compile to dispatch model
+    let registry = onyxia_operators::core_operator_registry();
+    let compiled_model =
+        onyxia_compiler::compile(&graph, &registry).with_context(|| "Failed to compile model")?;
+
+    eprintln!(
+        "Compiled {} operations, {} registers",
+        compiled_model.entries.len(),
+        compiled_model.num_registers
+    );
+
+    // Generate DOT graph
+    let dot = onyxia_core::to_dispatch_dot(&compiled_model);
+
+    // Write to output (file or stdout)
+    if let Some(output_path) = output_path {
+        std::fs::write(&output_path, &dot)
+            .with_context(|| format!("Failed to write DOT output to {}", output_path.display()))?;
+        eprintln!("Wrote dispatch graph to {}", output_path.display());
+        eprintln!(
+            "Render with: dot -Tpng {} -o dispatch.png",
+            output_path.display()
+        );
     } else {
         print!("{}", dot);
     }
