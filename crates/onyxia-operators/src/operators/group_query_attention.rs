@@ -15,37 +15,59 @@ const SOFTMAX_MAX_SHADER: &str = include_str!("../../shaders/gqa_softmax_max.wgs
 const SOFTMAX_NORMALIZE_SHADER: &str = include_str!("../../shaders/gqa_softmax_normalize.wgsl");
 const MATMUL_AV_SHADER: &str = include_str!("../../shaders/gqa_matmul_av.wgsl");
 const RESHAPE_FROM_HEADS_SHADER: &str = include_str!("../../shaders/gqa_reshape_from_heads.wgsl");
+const CONCAT_KV_SHADER: &str = include_str!("../../shaders/gqa_concat_kv.wgsl");
 
 /// GroupQueryAttention operator (Microsoft contrib).
 ///
 /// Implements multi-head attention with grouped queries for efficient KV caching.
+/// Follows the `com.microsoft::GroupQueryAttention` specification from ONNX Runtime.
 ///
-/// **ONNX Specification:**
-/// - Domain: com.microsoft
-/// - Inputs:
-///   - query (T) - [batch, seq_len, num_heads * head_size]
-///   - key (T) - [batch, kv_seq_len, kv_num_heads * head_size]
-///   - value (T) - [batch, kv_seq_len, kv_num_heads * head_size]
-///   - past_key (optional) - Not implemented yet
-///   - past_value (optional) - Not implemented yet
-/// - Outputs:
-///   - output (T) - [batch, seq_len, num_heads * head_size]
-///   - present_key (optional) - Not implemented yet
-///   - present_value (optional) - Not implemented yet
-/// - Attributes:
+/// **ONNX Specification (com.microsoft domain):**
+///
+/// **Inputs (7-14, Gemma uses first 7):**
+///   0. query (T) - [batch, seq_len, num_heads * head_size]
+///   1. key (T) - [batch, kv_seq_len, kv_num_heads * head_size]
+///   2. value (T) - [batch, kv_seq_len, kv_num_heads * head_size]
+///   3. past_key (T_CACHE) - [batch, num_heads, past_seq_len, head_size] in BNSH format
+///   4. past_value (T_CACHE) - [batch, num_heads, past_seq_len, head_size] in BNSH format
+///   5. seqlens_k (int32) - [batch] tensor of sequence lengths
+///   6. total_sequence_length (int32) - scalar max sequence length
+///   7-14. Optional: cos_cache, sin_cache, position_ids, attention_bias, head_sink, k_scale, v_scale
+///
+/// **Outputs (3-4, Gemma uses first 3):**
+///   0. output (T) - [batch, seq_len, num_heads * head_size]
+///   1. present_key (T_CACHE) - [batch, num_heads, total_seq_len, head_size] in BNSH format
+///   2. present_value (T_CACHE) - [batch, num_heads, total_seq_len, head_size] in BNSH format
+///   3. output_qk (optional, not implemented) - QK matrix values for debugging
+///
+/// **Attributes (required):**
 ///   - num_heads (int) - Number of query heads
-///   - kv_num_heads (int) - Number of key/value heads (≤ num_heads)
-///   - scale (float, optional) - Attention scale factor (default: 1/sqrt(head_size))
+///   - kv_num_heads (int) - Number of key/value heads (≤ num_heads for grouped attention)
+///
+/// **Attributes (optional, not all implemented):**
+///   - scale (float) - Attention scale factor (default: 1/sqrt(head_size)) ✅ Implemented
+///   - do_rotary (int) - Rotary position embedding (Gemma does this separately)
+///   - local_window_size (int) - For local attention like Mistral
+///   - softcap (float) - Softcap for attention weights
+///   - rotary_interleaved (int) - Rotary embedding pattern
+///   - Quantization: k_quant_type, v_quant_type, kv_cache_bit_width (for int8/float8 KV cache)
+///
+/// **Current Implementation Status:**
+/// - ✅ Core attention computation with grouped queries
+/// - ✅ Returns 3 outputs (output, present_key, present_value)
+/// - ✅ KV cache: present_k/v are correctly concatenated with past_k/v along sequence dimension
+/// - ❌ Optional features not implemented: rotary, local attention, softcap, quantization
 ///
 /// **Implementation:**
-/// Uses a decomposed multi-stage pipeline:
-/// 1. Reshape Q, K, V to separate heads
+/// Uses a decomposed multi-stage GPU pipeline:
+/// 1. Reshape Q, K, V to separate heads: [B,S,H] → [B,NH,S,HS]
+/// 1.5. Concatenate past KV cache with new KV along sequence dimension (if provided)
 /// 2. Repeat KV heads to match Q heads (for grouped attention)
-/// 3. Compute attention scores: Q @ K^T
+/// 3. Compute attention scores: Q @ K^T → [B,NH,S_q,S_k]
 /// 4. Apply causal mask and scale
-/// 5. Compute softmax
-/// 6. Compute attention output: softmax @ V
-/// 7. Reshape back to original format
+/// 5. Compute softmax along last dimension
+/// 6. Compute attention output: softmax @ V → [B,NH,S_q,HS]
+/// 7. Reshape back to original format: [B,NH,S,HS] → [B,S,H]
 pub struct GroupQueryAttentionOp;
 
 impl Operator for GroupQueryAttentionOp {
@@ -108,6 +130,8 @@ impl Operator for GroupQueryAttentionOp {
             RESHAPE_FROM_HEADS_SHADER,
             &shader_defs,
         )?;
+        let concat_kv_module =
+            ctx.compile_shader("GQA_ConcatKV", CONCAT_KV_SHADER, &shader_defs)?;
 
         Ok(Box::new(GroupQueryAttentionDispatch {
             reshape_module,
@@ -118,6 +142,7 @@ impl Operator for GroupQueryAttentionOp {
             softmax_normalize_module,
             matmul_av_module,
             reshape_from_heads_module,
+            concat_kv_module,
             num_heads,
             kv_num_heads,
             scale_override,
@@ -135,6 +160,7 @@ struct GroupQueryAttentionDispatch {
     softmax_normalize_module: naga::Module,
     matmul_av_module: naga::Module,
     reshape_from_heads_module: naga::Module,
+    concat_kv_module: naga::Module,
     num_heads: usize,
     kv_num_heads: usize,
     scale_override: Option<f32>,
@@ -150,12 +176,18 @@ impl OpDispatch for GroupQueryAttentionDispatch {
         let query = &inputs[0];
         let key = &inputs[1];
         let value = &inputs[2];
-        
-        // Inputs 3 and 4 are past_key and past_value (KV cache from previous iteration)
-        // For now, we ignore them and just use the new K/V
-        // TODO: Concatenate past KV cache with new KV along sequence dimension
-        let _past_key = if inputs.len() > 3 { Some(&inputs[3]) } else { None };
-        let _past_value = if inputs.len() > 4 { Some(&inputs[4]) } else { None };
+
+        // KV cache inputs (optional)
+        let past_key = if inputs.len() > 3 {
+            Some(&inputs[3])
+        } else {
+            None
+        };
+        let past_value = if inputs.len() > 4 {
+            Some(&inputs[4])
+        } else {
+            None
+        };
 
         // Extract dimensions
         if query.shape.len() != 3 || key.shape.len() != 3 || value.shape.len() != 3 {
@@ -194,21 +226,40 @@ impl OpDispatch for GroupQueryAttentionDispatch {
             head_size,
         )?;
 
-        // Save present_key and present_value before they're potentially modified
-        let present_key = k_shaped.clone();
-        let present_value = v_shaped.clone();
+        // Step 1.5: Concatenate past and new KV caches
+        let (k_full, v_full) = if let (Some(pk), Some(pv)) = (past_key, past_value) {
+            if pk.shape[2] > 0 {
+                // Non-empty past cache - concatenate with new KV
+                let k_concat = self.concat_kv_cache(ctx, pk, &k_shaped, batch_size, head_size)?;
+                let v_concat = self.concat_kv_cache(ctx, pv, &v_shaped, batch_size, head_size)?;
+                (k_concat, v_concat)
+            } else {
+                // Empty past cache (prefill) - use new KV directly
+                (k_shaped, v_shaped)
+            }
+        } else {
+            // No past cache - use new KV directly
+            (k_shaped, v_shaped)
+        };
+
+        // Save present_key and present_value (full concatenated cache)
+        let present_key = k_full.clone();
+        let present_value = v_full.clone();
+
+        // Update effective KV sequence length
+        let kv_seq_len_effective = k_full.shape[2];
 
         // Step 2: Repeat KV heads if grouped (kv_num_heads < num_heads)
         let k_repeated = if self.num_heads != self.kv_num_heads {
-            self.repeat_kv_heads(ctx, &k_shaped, batch_size, kv_seq_len, head_size)?
+            self.repeat_kv_heads(ctx, &k_full, batch_size, kv_seq_len_effective, head_size)?
         } else {
-            k_shaped
+            k_full
         };
 
         let v_repeated = if self.num_heads != self.kv_num_heads {
-            self.repeat_kv_heads(ctx, &v_shaped, batch_size, kv_seq_len, head_size)?
+            self.repeat_kv_heads(ctx, &v_full, batch_size, kv_seq_len_effective, head_size)?
         } else {
-            v_shaped
+            v_full
         };
 
         // Step 3: Compute Q @ K^T -> scores [batch, heads, seq_q, seq_k]
@@ -218,15 +269,23 @@ impl OpDispatch for GroupQueryAttentionDispatch {
             &k_repeated,
             batch_size,
             seq_len,
-            kv_seq_len,
+            kv_seq_len_effective,
             head_size,
         )?;
 
         // Step 4: Apply mask and scale
-        self.apply_mask_scale(ctx, &mut scores, batch_size, seq_len, kv_seq_len, scale)?;
+        self.apply_mask_scale(
+            ctx,
+            &mut scores,
+            batch_size,
+            seq_len,
+            kv_seq_len_effective,
+            scale,
+        )?;
 
         // Step 5: Softmax along last dimension
-        let attn_weights = self.apply_softmax(ctx, &scores, batch_size, seq_len, kv_seq_len)?;
+        let attn_weights =
+            self.apply_softmax(ctx, &scores, batch_size, seq_len, kv_seq_len_effective)?;
 
         // Step 6: Compute attn @ V -> [batch, heads, seq_q, head_size]
         let attn_output = self.matmul_av(
@@ -235,7 +294,7 @@ impl OpDispatch for GroupQueryAttentionDispatch {
             &v_repeated,
             batch_size,
             seq_len,
-            kv_seq_len,
+            kv_seq_len_effective,
             head_size,
         )?;
 
@@ -250,8 +309,7 @@ impl OpDispatch for GroupQueryAttentionDispatch {
         )?;
 
         // Return 3 outputs: attention_output, present_key, present_value
-        // present_key and present_value are the reshaped K and V tensors
-        // TODO: Concatenate with past KV cache along sequence dimension
+        // present_key and present_value are the concatenated KV cache (past + new)
         Ok(vec![output, present_key, present_value])
     }
 }
@@ -699,6 +757,103 @@ impl GroupQueryAttentionDispatch {
 
         let total = (batch * seq * heads * size) as u32;
         ctx.dispatch_compute(&pipeline, &bind_group, [total.div_ceil(256), 1, 1], None)?;
+
+        Ok(output)
+    }
+
+    /// Concatenate past KV cache with new KV along sequence dimension.
+    ///
+    /// Inputs:
+    ///   - past_kv: [batch, num_heads, past_seq, head_size]
+    ///   - new_kv: [batch, num_heads, new_seq, head_size]
+    ///
+    /// Output:
+    ///   - present_kv: [batch, num_heads, past_seq + new_seq, head_size]
+    fn concat_kv_cache(
+        &self,
+        ctx: &mut DispatchCtx,
+        past_kv: &RuntimeTensor,
+        new_kv: &RuntimeTensor,
+        batch_size: usize,
+        head_size: usize,
+    ) -> Result<RuntimeTensor> {
+        // Extract dimensions
+        let num_heads = past_kv.shape[1];
+        let past_seq_len = past_kv.shape[2];
+        let new_seq_len = new_kv.shape[2];
+        let total_seq_len = past_seq_len + new_seq_len;
+
+        // Create output tensor
+        let output = ctx.create_output_tensor(
+            &[batch_size, num_heads, total_seq_len, head_size],
+            past_kv.dtype,
+        )?;
+
+        // Prepare parameters
+        #[repr(C)]
+        #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+        struct Params {
+            batch_size: u32,
+            num_heads: u32,
+            past_seq_len: u32,
+            new_seq_len: u32,
+            head_size: u32,
+        }
+
+        let params = Params {
+            batch_size: batch_size as u32,
+            num_heads: num_heads as u32,
+            past_seq_len: past_seq_len as u32,
+            new_seq_len: new_seq_len as u32,
+            head_size: head_size as u32,
+        };
+
+        // Get or create pipeline
+        let (pipeline, bind_group_layout) =
+            ctx.get_or_create_pipeline("GQA_ConcatKV", &self.concat_kv_module, "main")?;
+
+        // Create uniform buffer with parameters
+        let params_buffer = Arc::new(ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gqa_concat_kv_params"),
+            size: std::mem::size_of::<Params>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+
+        ctx.queue
+            .write_buffer(&params_buffer, 0, bytemuck::bytes_of(&params));
+
+        // Create bind group
+        let entries = vec![
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: past_kv.buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: new_kv.buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: output.buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: params_buffer.as_entire_binding(),
+            },
+        ];
+
+        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gqa_concat_kv_bind_group"),
+            layout: &bind_group_layout,
+            entries: &entries,
+        });
+
+        // Dispatch compute shader
+        let total_elements = (batch_size * num_heads * total_seq_len * head_size) as u32;
+        let workgroups = total_elements.div_ceil(256);
+
+        ctx.dispatch_compute(&pipeline, &bind_group, [workgroups, 1, 1], None)?;
 
         Ok(output)
     }

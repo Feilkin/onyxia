@@ -186,6 +186,7 @@ impl LlmSession {
         // Download and store present.* outputs as KV cache for next step
         for (present_name, past_name) in &self.kv_pairs {
             if let Some(tensor) = outputs.get(present_name) {
+
                 let tensor_clone: Tensor = tensor.clone();
                 self.kv_cache.insert(past_name.clone(), tensor_clone);
             }
