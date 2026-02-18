@@ -170,7 +170,7 @@ impl DispatchCtx {
                     .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                         label: Some(&format!("{label}_layout")),
                         bind_group_layouts: &[&bind_group_layout],
-                        immediate_size: 128, // Support up to 128 bytes of immediate data
+                        immediate_size: 256, // Support up to 256 bytes of immediate data
                     });
 
             // Create the final pipeline with the explicit layout
