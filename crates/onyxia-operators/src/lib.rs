@@ -21,8 +21,8 @@ mod registry;
 // Re-export operator types
 pub use families::{BinaryElementwiseOp, ComparisonOp};
 pub use operators::{
-    CastOp, ConcatOp, ConstantOp, ExpandOp, ReshapeOp, SimplifiedLayerNormOp, SliceOp, TransposeOp,
-    UnsqueezeOp,
+    CastOp, ConcatOp, ConstantOp, ExpandOp, MatMulNBitsOp, ReshapeOp, SimplifiedLayerNormOp,
+    SliceOp, TransposeOp, UnsqueezeOp,
 };
 pub use registry::core_operator_registry;
 
