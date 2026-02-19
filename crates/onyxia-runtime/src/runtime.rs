@@ -1,9 +1,8 @@
 //! Runtime initialization and GPU device management.
 
+use crate::dispatch_executor::DispatchExecutor;
 use crate::error::{Result, RuntimeError};
-use crate::plan_executor::PlanExecutor;
-use onyxia_onnx::TensorShape;
-use onyxia_planner::ExecutionPlan;
+use onyxia_core::dispatch::CompiledModel;
 use std::sync::Arc;
 
 /// Main entry point for GPU runtime.
@@ -21,7 +20,7 @@ use std::sync::Arc;
 /// }
 /// ```
 pub struct Runtime {
-    instance: wgpu::Instance,
+    _instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     adapter_info: wgpu::AdapterInfo,
 }
@@ -46,116 +45,51 @@ impl Runtime {
                 compatible_surface: None,
                 force_fallback_adapter: false,
             })
-            .await;
-
-        let adapter = match adapter {
-            Ok(a) => a,
-            Err(e) => {
-                return Err(RuntimeError::InitError(format!(
-                    "Failed to find suitable GPU adapter: {}",
-                    e
-                )));
-            }
-        };
+            .await
+            .map_err(|e| {
+                RuntimeError::InitError(format!("Failed to find suitable GPU adapter: {e}"))
+            })?;
 
         let adapter_info = adapter.get_info();
 
         Ok(Self {
-            instance,
+            _instance: instance,
             adapter,
             adapter_info,
         })
     }
 
-    /// Calculate maximum buffer size from an execution plan.
+    /// Load a compiled model for execution.
     ///
-    /// All shapes are static in an execution plan, so this is straightforward.
-    fn calculate_max_buffer_size(plan: &ExecutionPlan) -> Result<u64> {
-        let mut max_size = 0u64;
-
-        for tensor_info in plan.tensors.all() {
-            let size = match &tensor_info.shape {
-                TensorShape::Static(dims) => {
-                    let element_count: usize = dims.iter().product();
-                    let element_size = tensor_info.dtype.size();
-                    (element_count * element_size) as u64
-                }
-                TensorShape::Dynamic(_) | TensorShape::Unknown | TensorShape::Absent => {
-                    return Err(RuntimeError::TensorError(format!(
-                        "Tensor '{}' in execution plan has non-static shape. \
-                         All shapes should be resolved at plan time.",
-                        tensor_info.name
-                    )));
-                }
-            };
-
-            max_size = max_size.max(size);
-        }
-
-        // Also account for scratch buffers
-        for operation in &plan.operations {
-            for scratch_desc in &operation.scratch_buffers {
-                max_size = max_size.max(scratch_desc.size);
-            }
-        }
-
-        Ok(max_size)
-    }
-
-    /// Load an execution plan into a model executor.
-    ///
-    /// This creates a GPU device and materializes pre-compiled shaders into pipelines.
-    /// Dynamic dimensions are already resolved at plan-time, so all shapes are static.
+    /// Creates a GPU device and initializes the dispatch executor with weight data.
     ///
     /// # Arguments
-    /// * `plan` - Pre-compiled execution plan with resolved shapes and naga modules
+    /// * `model` - Compiled model with dispatch entries and routing
     ///
     /// # Errors
-    /// Returns an error if device creation or resource materialization fails.
+    /// Returns an error if device creation or resource initialization fails.
     ///
     /// # Example
     /// ```no_run
     /// # use onyxia_runtime::Runtime;
-    /// # use onyxia_planner::ExecutionPlan;
+    /// # use onyxia_core::dispatch::CompiledModel;
     /// # #[pollster::main]
     /// # async fn main() -> anyhow::Result<()> {
     /// let runtime = Runtime::new().await?;
-    /// # let plan: ExecutionPlan = todo!();
-    /// let executor = runtime.load_model(plan).await?;
+    /// # let model: CompiledModel = todo!();
+    /// let executor = runtime.load_model(model).await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn load_model(&self, plan: ExecutionPlan) -> Result<PlanExecutor> {
-        // Calculate maximum buffer size needed
-        let max_buffer_size = Self::calculate_max_buffer_size(&plan)?;
-
-        // Add 10% headroom for intermediate buffers
-        let required_buffer_size = max_buffer_size;
-
-        // Check if adapter can support the required buffer size
+    pub async fn load_model(&self, model: CompiledModel) -> Result<DispatchExecutor> {
+        // Use adapter's limits, adjusting only what we need
         let adapter_limits = self.adapter.limits();
-        if required_buffer_size > adapter_limits.max_buffer_size {
-            return Err(RuntimeError::InitError(format!(
-                "Model requires buffer size of {} bytes ({:.2} MB), but adapter only supports {} bytes ({:.2} MB)",
-                required_buffer_size,
-                required_buffer_size as f64 / (1024.0 * 1024.0),
-                adapter_limits.max_buffer_size,
-                adapter_limits.max_buffer_size as f64 / (1024.0 * 1024.0)
-            )));
-        }
+        let mut limits = adapter_limits.clone();
 
-        // Get default limits and override buffer size limits
-        let mut limits = wgpu::Limits::default();
-        let required_size_u32 = required_buffer_size.min(u32::MAX as u64) as u32;
+        // Only increase immediate size if supported
+        limits.max_immediate_size = limits.max_immediate_size.max(128);
 
-        // Set both buffer size and binding size limits
-        limits.max_buffer_size = required_buffer_size;
-        limits.max_storage_buffer_binding_size = required_size_u32;
-
-        // Request immediate data support (push constants)
-        limits.max_immediate_size = 128;
-
-        // Create device with calculated limits
+        // Create device with adapter-compatible limits
         let (device, queue) = self
             .adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -166,14 +100,9 @@ impl Runtime {
                 ..Default::default()
             })
             .await
-            .map_err(|e| {
-                RuntimeError::InitError(format!(
-                    "Failed to create device with max buffer size {}: {}",
-                    required_buffer_size, e
-                ))
-            })?;
+            .map_err(|e| RuntimeError::InitError(format!("Failed to create device: {}", e)))?;
 
-        PlanExecutor::new(Arc::new(device), Arc::new(queue), plan)
+        DispatchExecutor::new(Arc::new(device), Arc::new(queue), model)
     }
 
     /// Get information about the GPU adapter.

@@ -5,6 +5,11 @@
         "cargo doc": true,
         "cargo check": true,
         "cargo clippy": true,
-        "cargo fmt": true
+        "cargo fmt": true,
+        "git add": true,
+        "git commit": true,
+        "git status": true,
+        "git log": true,
+        "cargo test": true
     }
 }

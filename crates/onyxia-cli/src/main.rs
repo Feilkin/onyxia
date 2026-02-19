@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use onyxia_cli::{TraceDirection, TraceFormat};
 use onyxia_onnx::TensorShape;
 use std::path::PathBuf;
 
@@ -37,6 +38,16 @@ enum Commands {
         /// Maximum depth from filtered nodes to include (0 = only matched nodes)
         #[arg(long, default_value = "0")]
         depth: usize,
+    },
+    /// Generate a dispatch graph DOT file showing register routing
+    DispatchDot {
+        /// Path to the ONNX model file
+        #[arg(value_name = "MODEL")]
+        model: PathBuf,
+
+        /// Output file path (defaults to stdout)
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<PathBuf>,
     },
     /// Inspect an ONNX model's structure
     Inspect {
@@ -94,6 +105,112 @@ enum Commands {
         #[arg(long)]
         no_stream: bool,
     },
+    /// Inspect a specific node in the model
+    InspectNode {
+        /// Path to the ONNX model file
+        #[arg(value_name = "MODEL")]
+        model: PathBuf,
+
+        /// Node name(s) to inspect
+        #[arg(long = "name", required = true)]
+        names: Vec<String>,
+
+        /// Dynamic dimension values (format: name=value, can be repeated)
+        #[arg(short = 'd', long = "dynamic-dim")]
+        dynamic_dims: Vec<String>,
+
+        /// Show full tensor values (may be large)
+        #[arg(long)]
+        full_values: bool,
+    },
+    /// List nodes in the model, optionally filtered
+    ListNodes {
+        /// Path to the ONNX model file
+        #[arg(value_name = "MODEL")]
+        model: PathBuf,
+
+        /// Filter by operator type(s)
+        #[arg(long = "op-type")]
+        op_types: Vec<String>,
+
+        /// Filter by name pattern (regex)
+        #[arg(long)]
+        name_pattern: Option<String>,
+
+        /// Show input/output shapes
+        #[arg(long)]
+        show_shapes: bool,
+
+        /// Show summary statistics instead of listing
+        #[arg(long)]
+        summary: bool,
+
+        /// Dynamic dimension values (format: name=value, can be repeated)
+        #[arg(long = "dynamic-dim", value_parser = parse_dynamic_dim)]
+        dynamic_dims: Vec<(String, usize)>,
+    },
+    /// Inspect tensor(s) by name
+    InspectTensor {
+        /// Path to the ONNX model file
+        #[arg(value_name = "MODEL")]
+        model: PathBuf,
+
+        /// Tensor name(s) to inspect
+        #[arg(long = "name")]
+        names: Vec<String>,
+
+        /// List all constant tensors
+        #[arg(long)]
+        list_constants: bool,
+
+        /// Show full tensor values
+        #[arg(long)]
+        full: bool,
+    },
+    /// Trace data flow around a specific node
+    TraceNode {
+        /// Path to the ONNX model file
+        #[arg(value_name = "MODEL")]
+        model: PathBuf,
+
+        /// Node name to trace
+        #[arg(long)]
+        name: String,
+
+        /// Number of hops to trace (0 = just the node)
+        #[arg(long, default_value = "1")]
+        depth: usize,
+
+        /// Direction to trace: both, upstream, downstream
+        #[arg(long, default_value = "both")]
+        direction: TraceDirection,
+
+        /// Output format: text, dot
+        #[arg(long, default_value = "text")]
+        format: TraceFormat,
+
+        /// Output file (for dot format)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Validate model without full compilation
+    Validate {
+        /// Path to the ONNX model file
+        #[arg(value_name = "MODEL")]
+        model: PathBuf,
+
+        /// Dynamic dimension values (format: name=value, can be repeated)
+        #[arg(long = "dynamic-dim", value_parser = parse_dynamic_dim)]
+        dynamic_dims: Vec<(String, usize)>,
+
+        /// Show detailed progress
+        #[arg(short, long)]
+        verbose: bool,
+
+        /// Stop validation at specific stage (resolution, folding, inference)
+        #[arg(long, value_parser = parse_stage)]
+        until: Option<onyxia_core::Stage>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -108,6 +225,9 @@ fn main() -> Result<()> {
             depth,
         } => {
             cmd_dot(model, output, &simplify, filter, depth)?;
+        }
+        Commands::DispatchDot { model, output } => {
+            cmd_dispatch_dot(model, output)?;
         }
         Commands::Inspect {
             model,
@@ -141,6 +261,57 @@ fn main() -> Result<()> {
                 num_layers,
                 !no_stream,
             ))?;
+        }
+        Commands::InspectNode {
+            model,
+            names,
+            dynamic_dims,
+            full_values,
+        } => {
+            cmd_inspect_node(model, names, dynamic_dims, full_values)?;
+        }
+        Commands::ListNodes {
+            model,
+            op_types,
+            name_pattern,
+            show_shapes,
+            summary,
+            dynamic_dims,
+        } => {
+            cmd_list_nodes(
+                model,
+                op_types,
+                name_pattern,
+                show_shapes,
+                summary,
+                dynamic_dims,
+            )?;
+        }
+        Commands::InspectTensor {
+            model,
+            names,
+            list_constants,
+            full,
+        } => {
+            cmd_inspect_tensor(model, names, list_constants, full)?;
+        }
+        Commands::TraceNode {
+            model,
+            name,
+            depth,
+            direction,
+            format,
+            output,
+        } => {
+            cmd_trace_node(model, name, depth, direction, format, output)?;
+        }
+        Commands::Validate {
+            model,
+            dynamic_dims,
+            verbose,
+            until,
+        } => {
+            cmd_validate(model, dynamic_dims, verbose, until)?;
         }
     }
 
@@ -234,6 +405,50 @@ fn cmd_dot(
     Ok(())
 }
 
+/// Generate dispatch graph DOT format from compiled model.
+fn cmd_dispatch_dot(model_path: PathBuf, output_path: Option<PathBuf>) -> Result<()> {
+    eprintln!("Loading model from {}...", model_path.display());
+
+    // Load ONNX model
+    let onnx_model = onyxia_onnx::load_model(&model_path)
+        .with_context(|| format!("Failed to load model from {}", model_path.display()))?;
+
+    let base_dir = model_path.parent();
+    let graph =
+        onyxia_onnx::parse_model(&onnx_model, base_dir).with_context(|| "Failed to parse model")?;
+
+    eprintln!("Compiling execution plan...");
+
+    // Compile to dispatch model
+    let registry = onyxia_operators::core_operator_registry();
+    let compiled_model =
+        onyxia_compiler::compile(&graph, &registry).with_context(|| "Failed to compile model")?;
+
+    eprintln!(
+        "Compiled {} operations, {} registers",
+        compiled_model.entries.len(),
+        compiled_model.num_registers
+    );
+
+    // Generate DOT graph
+    let dot = onyxia_core::to_dispatch_dot(&compiled_model);
+
+    // Write to output (file or stdout)
+    if let Some(output_path) = output_path {
+        std::fs::write(&output_path, &dot)
+            .with_context(|| format!("Failed to write DOT output to {}", output_path.display()))?;
+        eprintln!("Wrote dispatch graph to {}", output_path.display());
+        eprintln!(
+            "Render with: dot -Tpng {} -o dispatch.png",
+            output_path.display()
+        );
+    } else {
+        print!("{}", dot);
+    }
+
+    Ok(())
+}
+
 /// Generate DOT format for a filtered subset of nodes.
 fn generate_filtered_dot(
     graph: &onyxia_onnx::Graph,
@@ -252,12 +467,7 @@ fn generate_filtered_dot(
             continue;
         }
 
-        let node_id = node
-            .name
-            .replace('/', "_")
-            .replace('.', "_")
-            .replace('[', "_")
-            .replace(']', "_");
+        let node_id = node.name.replace(['/', '.', '[', ']'], "_");
         dot.push_str(&format!(
             "  {} [label=\"{}\\n({})\"];\n",
             node_id,
@@ -274,15 +484,11 @@ fn generate_filtered_dot(
         }
     }
 
-    dot.push_str("\n");
+    dot.push('\n');
 
     // Add tensor nodes (inputs/outputs/intermediates)
     for tensor_name in &used_tensors {
-        let tensor_id = tensor_name
-            .replace('/', "_")
-            .replace('.', "_")
-            .replace('[', "_")
-            .replace(']', "_");
+        let tensor_id = tensor_name.replace(['/', '.', '[', ']'], "_");
 
         // Determine tensor style
         let (shape, color) = if let Some(&tid) = graph.tensors.get(*tensor_name) {
@@ -318,7 +524,7 @@ fn generate_filtered_dot(
         ));
     }
 
-    dot.push_str("\n");
+    dot.push('\n');
 
     // Add edges
     for node in &graph.nodes {
@@ -326,28 +532,15 @@ fn generate_filtered_dot(
             continue;
         }
 
-        let node_id = node
-            .name
-            .replace('/', "_")
-            .replace('.', "_")
-            .replace('[', "_")
-            .replace(']', "_");
+        let node_id = node.name.replace(['/', '.', '[', ']'], "_");
 
         for inp in &node.inputs {
-            let inp_id = inp
-                .replace('/', "_")
-                .replace('.', "_")
-                .replace('[', "_")
-                .replace(']', "_");
+            let inp_id = inp.replace(['/', '.', '[', ']'], "_");
             dot.push_str(&format!("  {} -> {};\n", inp_id, node_id));
         }
 
         for out in &node.outputs {
-            let out_id = out
-                .replace('/', "_")
-                .replace('.', "_")
-                .replace('[', "_")
-                .replace(']', "_");
+            let out_id = out.replace(['/', '.', '[', ']'], "_");
             dot.push_str(&format!("  {} -> {};\n", node_id, out_id));
         }
     }
@@ -366,7 +559,7 @@ fn escape_dot_string(s: &str) -> String {
 /// Inspect an ONNX model's structure.
 fn cmd_inspect(model_path: PathBuf, dynamic_dim_args: Vec<String>) -> Result<()> {
     // Load and parse the ONNX model (handles external data automatically)
-    let mut model = onyxia_onnx::load_and_parse_model(&model_path).with_context(|| {
+    let model = onyxia_onnx::load_and_parse_model(&model_path).with_context(|| {
         format!(
             "Failed to load and parse model from {}",
             model_path.display()
@@ -393,12 +586,17 @@ fn cmd_inspect(model_path: PathBuf, dynamic_dim_args: Vec<String>) -> Result<()>
         dynamic_dims.insert(name, value);
     }
 
-    // Infer shapes for analysis using planner's kernel-based inference
-    let registry = onyxia_planner::KernelRegistry::with_defaults();
-    onyxia_planner::resolve_dynamic_dimensions(&mut model, &dynamic_dims)
-        .with_context(|| "Failed to resolve dynamic dimensions")?;
-    onyxia_planner::infer_shapes(&mut model, &registry)
-        .with_context(|| "Failed to infer shapes")?;
+    // Resolve dimensions and infer shapes using the compiler pipeline
+    let registry = onyxia_operators::core_operator_registry();
+    let mut pipeline = onyxia_compiler::CompilerPipeline::new();
+
+    // Note: Dynamic dimensions no longer passed at compile time
+    let _ = dynamic_dims; // Suppress unused warning
+
+    // Just run up to inference stage to get shapes, don't need full compilation
+    pipeline
+        .compile(&model, &registry)
+        .with_context(|| "Failed to compile model for analysis")?;
 
     println!("Model: {}", model.metadata.name);
     println!("  IR version: {}", model.metadata.ir_version);
@@ -495,6 +693,7 @@ fn cmd_inspect(model_path: PathBuf, dynamic_dim_args: Vec<String>) -> Result<()>
 }
 
 /// Run an ONNX model for text generation.
+#[allow(dead_code)] // Temporarily disabled pending operator re-implementation
 #[allow(clippy::too_many_arguments)]
 async fn cmd_run_model(
     model_path: PathBuf,
@@ -512,48 +711,33 @@ async fn cmd_run_model(
     use onyxia_cli::generate::{generate, print_stats};
     use onyxia_cli::llm::{LlmConfig, LlmSession};
     use onyxia_cli::sampling::SamplingConfig;
-    use onyxia_cli::tokenizer::Tokenizer;
+    use onyxia_cli::tokenizer::{ChatMessage, Tokenizer};
 
     println!("Loading model from {}...", model_path.display());
 
     // Load and parse ONNX model
-    let mut model = onyxia_onnx::load_and_parse_model(&model_path)
+    let model = onyxia_onnx::load_and_parse_model(&model_path)
         .with_context(|| format!("Failed to load model from {}", model_path.display()))?;
 
-    // Set up dynamic dimensions - use max sequence length so buffers can handle variable inputs
-    let mut dynamic_dims = std::collections::HashMap::new();
-    dynamic_dims.insert("batch_size".to_string(), 1);
-    dynamic_dims.insert("sequence_length".to_string(), max_seq_len); // Max length for buffer allocation
-    dynamic_dims.insert("total_sequence_length".to_string(), max_seq_len);
-    // Pre-allocate KV cache to max_sequence_length for buffer sharing (prevents aliasing conflicts)
-    dynamic_dims.insert("past_sequence_length".to_string(), max_seq_len);
-    dynamic_dims.insert("num_attention_heads".to_string(), 4);
-    dynamic_dims.insert("num_key_value_heads".to_string(), 1);
-    dynamic_dims.insert("head_dim".to_string(), 256);
-
-    // Resolve dynamic dimensions and infer shapes
-    let registry = onyxia_planner::KernelRegistry::with_defaults();
-    onyxia_planner::resolve_dynamic_dimensions(&mut model, &dynamic_dims)
-        .with_context(|| "Failed to resolve dynamic dimensions")?;
-    onyxia_planner::infer_shapes(&mut model, &registry)
-        .with_context(|| "Failed to infer shapes")?;
+    // Compile to dispatch model (no dynamic dimensions needed - shapes determined at runtime)
+    let registry = onyxia_operators::core_operator_registry();
+    let mut pipeline = onyxia_compiler::CompilerPipeline::new();
 
     println!("Compiling execution plan...");
-
-    // Compile model to execution plan
-    let plan = onyxia_planner::compile(&model, &registry, &dynamic_dims)
+    let compiled_model = pipeline
+        .compile(&model, &registry)
         .with_context(|| "Failed to compile model")?;
 
     println!("Initializing GPU runtime...");
 
-    // Create runtime and load plan
+    // Create runtime and load model
     let runtime = onyxia_runtime::Runtime::new()
         .await
         .with_context(|| "Failed to create GPU runtime")?;
     let executor = runtime
-        .load_model(plan)
+        .load_model(compiled_model)
         .await
-        .with_context(|| "Failed to load execution plan")?;
+        .with_context(|| "Failed to load compiled model")?;
 
     // Create LLM session
     let llm_config = LlmConfig {
@@ -566,11 +750,44 @@ async fn cmd_run_model(
 
     // Load tokenizer (expects path to directory containing tokenizer.json)
     let tokenizer_file = tokenizer_path.join("tokenizer.json");
-    let tokenizer = Tokenizer::from_file(&tokenizer_file)
+    let mut tokenizer = Tokenizer::from_file(&tokenizer_file)
         .with_context(|| format!("Failed to load tokenizer from {}", tokenizer_file.display()))?;
 
-    // Get EOS token ID (default to 1 for Gemma)
-    let eos_token_id = tokenizer.eos_token_id() as u32;
+    // Auto-load chat template when available (e.g., Gemma instruct models).
+    let chat_template_file = tokenizer_path.join("chat_template.jinja");
+    if chat_template_file.exists() {
+        tokenizer = tokenizer
+            .with_chat_template_file(&chat_template_file)
+            .with_context(|| {
+                format!(
+                    "Failed to load chat template from {}",
+                    chat_template_file.display()
+                )
+            })?;
+    }
+
+    let prompt_for_model = if chat_template_file.exists() {
+        tokenizer
+            .apply_chat_template(
+                &[ChatMessage {
+                    role: "user".to_string(),
+                    content: prompt.clone(),
+                }],
+                true,
+            )
+            .with_context(|| "Failed to apply chat template")?
+    } else {
+        prompt.clone()
+    };
+
+    // Build stop-token set (EOS always, plus end-of-turn for chat templates when available)
+    let mut stop_token_ids = vec![tokenizer.eos_token_id() as u32];
+    if chat_template_file.exists()
+        && let Ok(end_of_turn_ids) = tokenizer.encode("<end_of_turn>", false)
+        && end_of_turn_ids.len() == 1
+    {
+        stop_token_ids.push(end_of_turn_ids[0] as u32);
+    }
 
     // Set up sampling config
     let sampling_config = SamplingConfig {
@@ -589,11 +806,11 @@ async fn cmd_run_model(
     let (generated_text, stats) = generate(
         &mut session,
         &tokenizer,
-        &prompt,
+        &prompt_for_model,
         max_tokens,
         &sampling_config,
         stream,
-        eos_token_id,
+        &stop_token_ids,
     )
     .with_context(|| "Generation failed")?;
 
@@ -606,4 +823,182 @@ async fn cmd_run_model(
     print_stats(&stats);
 
     Ok(())
+}
+
+/// Inspect specific nodes in an ONNX model.
+fn cmd_inspect_node(
+    model_path: PathBuf,
+    node_names: Vec<String>,
+    dynamic_dim_args: Vec<String>,
+    full_values: bool,
+) -> Result<()> {
+    // Load and parse the ONNX model
+    let model = onyxia_onnx::load_and_parse_model(&model_path).with_context(|| {
+        format!(
+            "Failed to load and parse model from {}",
+            model_path.display()
+        )
+    })?;
+
+    // Parse dynamic dimensions
+    let dynamic_dims = parse_dynamic_dims(&dynamic_dim_args)?;
+
+    // Inspect the nodes
+    onyxia_cli::inspect::inspect_nodes(&model, &node_names, dynamic_dims, full_values)
+}
+
+/// List nodes in an ONNX model with optional filtering.
+fn cmd_list_nodes(
+    model_path: PathBuf,
+    op_types: Vec<String>,
+    name_pattern: Option<String>,
+    show_shapes: bool,
+    summary: bool,
+    dynamic_dims: Vec<(String, usize)>,
+) -> Result<()> {
+    // Load and parse the ONNX model
+    let model = onyxia_onnx::load_and_parse_model(&model_path).with_context(|| {
+        format!(
+            "Failed to load and parse model from {}",
+            model_path.display()
+        )
+    })?;
+
+    // Convert dynamic_dims to HashMap
+    let dynamic_dims_map: std::collections::HashMap<String, usize> =
+        dynamic_dims.into_iter().collect();
+
+    // List nodes
+    onyxia_cli::inspect::list_nodes(
+        &model,
+        &op_types,
+        name_pattern.as_deref(),
+        show_shapes,
+        summary,
+        dynamic_dims_map,
+    )
+}
+
+/// Parse dynamic dimension arguments from command line.
+///
+/// Expects format: "name=value" (e.g., "sequence_length=32")
+fn parse_dynamic_dims(args: &[String]) -> Result<std::collections::HashMap<String, usize>> {
+    let mut dynamic_dims = std::collections::HashMap::new();
+
+    for arg in args {
+        let parts: Vec<&str> = arg.split('=').collect();
+        if parts.len() != 2 {
+            anyhow::bail!(
+                "Invalid dynamic dimension format '{}'. Expected format: name=value",
+                arg
+            );
+        }
+
+        let name = parts[0].to_string();
+        let value: usize = parts[1].parse().with_context(|| {
+            format!(
+                "Invalid value '{}' for dynamic dimension '{}'",
+                parts[1], name
+            )
+        })?;
+
+        dynamic_dims.insert(name, value);
+    }
+
+    Ok(dynamic_dims)
+}
+
+/// Parse a single dynamic dimension argument for clap value_parser.
+///
+/// Expects format: "name=value" (e.g., "sequence_length=32")
+fn parse_dynamic_dim(arg: &str) -> Result<(String, usize)> {
+    let parts: Vec<&str> = arg.split('=').collect();
+    if parts.len() != 2 {
+        anyhow::bail!(
+            "Invalid dynamic dimension format '{}'. Expected format: name=value",
+            arg
+        );
+    }
+
+    let name = parts[0].to_string();
+    let value: usize = parts[1].parse().with_context(|| {
+        format!(
+            "Invalid value '{}' for dynamic dimension '{}'",
+            parts[1], name
+        )
+    })?;
+
+    Ok((name, value))
+}
+
+/// Inspect tensor(s) in an ONNX model.
+fn cmd_inspect_tensor(
+    model_path: PathBuf,
+    names: Vec<String>,
+    list_constants: bool,
+    full: bool,
+) -> Result<()> {
+    // Load and parse the ONNX model
+    let model = onyxia_onnx::load_and_parse_model(&model_path).with_context(|| {
+        format!(
+            "Failed to load and parse model from {}",
+            model_path.display()
+        )
+    })?;
+
+    // Inspect the tensors
+    onyxia_cli::inspect::inspect_tensor(&model, &names, list_constants, full)
+}
+
+/// Trace data flow around a specific node.
+fn cmd_trace_node(
+    model_path: PathBuf,
+    name: String,
+    depth: usize,
+    direction: TraceDirection,
+    format: TraceFormat,
+    output: Option<PathBuf>,
+) -> Result<()> {
+    // Load and parse the ONNX model
+    let model = onyxia_onnx::load_and_parse_model(&model_path).with_context(|| {
+        format!(
+            "Failed to load and parse model from {}",
+            model_path.display()
+        )
+    })?;
+
+    // Trace the node
+    onyxia_cli::inspect::trace_node(&model, &name, depth, direction, format, output.as_deref())
+}
+
+/// Validate a model without full compilation.
+fn cmd_validate(
+    model_path: PathBuf,
+    dynamic_dims: Vec<(String, usize)>,
+    verbose: bool,
+    until: Option<onyxia_core::Stage>,
+) -> Result<()> {
+    // Convert dynamic_dims to HashMap
+    let dynamic_dims_map: std::collections::HashMap<String, usize> =
+        dynamic_dims.into_iter().collect();
+
+    // Validate the model
+    onyxia_cli::validate::validate_model(&model_path, dynamic_dims_map, verbose, until)
+}
+
+/// Parse a stage name for clap value_parser.
+///
+/// Expects one of: resolution, folding, inference, optimization, planning
+fn parse_stage(arg: &str) -> Result<onyxia_core::Stage> {
+    match arg.to_lowercase().as_str() {
+        "resolution" => Ok(onyxia_core::Stage::Resolution),
+        "folding" => Ok(onyxia_core::Stage::Folding),
+        "inference" => Ok(onyxia_core::Stage::Inference),
+        "optimization" => Ok(onyxia_core::Stage::Optimization),
+        "planning" => Ok(onyxia_core::Stage::Planning),
+        _ => anyhow::bail!(
+            "Invalid stage '{}'. Expected one of: resolution, folding, inference, optimization, planning",
+            arg
+        ),
+    }
 }

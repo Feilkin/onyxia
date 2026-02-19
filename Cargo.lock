@@ -1173,12 +1173,45 @@ dependencies = [
  "anyhow",
  "clap",
  "minijinja",
+ "onyxia-compiler",
+ "onyxia-core",
  "onyxia-onnx",
- "onyxia-planner",
+ "onyxia-operators",
  "onyxia-runtime",
  "pollster",
  "rand 0.10.0",
+ "regex",
  "tokenizers",
+]
+
+[[package]]
+name = "onyxia-compiler"
+version = "0.1.0"
+dependencies = [
+ "half",
+ "naga",
+ "naga_oil",
+ "onyxia-core",
+ "onyxia-onnx",
+ "onyxia-operators",
+ "petgraph",
+ "thiserror",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "onyxia-core"
+version = "0.1.0"
+dependencies = [
+ "half",
+ "naga",
+ "naga_oil",
+ "onyxia-onnx",
+ "petgraph",
+ "thiserror",
+ "tracing",
+ "wgpu",
 ]
 
 [[package]]
@@ -1192,17 +1225,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "onyxia-planner"
+name = "onyxia-operators"
 version = "0.1.0"
 dependencies = [
- "half",
+ "bytemuck",
  "naga",
- "naga_oil",
+ "onyxia-compiler",
+ "onyxia-core",
  "onyxia-onnx",
- "petgraph",
+ "onyxia-runtime",
+ "pollster",
  "thiserror",
  "tracing",
- "tracing-subscriber",
+ "wgpu",
 ]
 
 [[package]]
@@ -1212,8 +1247,10 @@ dependencies = [
  "bytemuck",
  "futures",
  "naga",
+ "onyxia-compiler",
+ "onyxia-core",
  "onyxia-onnx",
- "onyxia-planner",
+ "onyxia-operators",
  "pollster",
  "thiserror",
  "wgpu",

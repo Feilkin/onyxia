@@ -1,0 +1,20 @@
+[package]
+name = "onyxia-compiler"
+description = "Execution plan compiler for Onyxia"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+half = "2.7"
+naga = "28"
+naga_oil = "0.21"
+onyxia-core.workspace = true
+onyxia-onnx.workspace = true
+petgraph = "0.8"
+thiserror = "2.0"
+tracing = "0.1.44"
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3.22", features = ["fmt", "env-filter"] }
+onyxia-operators.workspace = true

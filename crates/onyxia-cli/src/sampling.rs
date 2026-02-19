@@ -36,7 +36,7 @@ impl Default for SamplingConfig {
 /// Sample the next token from logits according to the configuration.
 ///
 /// # Arguments
-/// * `logits` - Raw logits from the model [vocab_size]
+/// * `logits` - Raw logits from the model \[vocab_size\]
 /// * `config` - Sampling configuration
 /// * `rng` - Random number generator (for reproducibility)
 ///
@@ -76,7 +76,7 @@ pub fn sample(logits: &[f32], config: &SamplingConfig, rng: &mut StdRng) -> u32 
 /// Greedy sampling: select the token with the highest logit value (argmax).
 ///
 /// # Arguments
-/// * `logits` - Raw logits from the model [vocab_size]
+/// * `logits` - Raw logits from the model \\[vocab_size\\]
 ///
 /// # Returns
 /// Token ID with highest probability
@@ -97,7 +97,7 @@ pub fn sample_greedy(logits: &[f32]) -> u32 {
 /// Top-K sampling: sample from the top K tokens by probability.
 ///
 /// # Arguments
-/// * `logits` - Temperature-scaled logits [vocab_size] (will be modified in-place)
+/// * `logits` - Temperature-scaled logits \\[vocab_size\\] (will be modified in-place)
 /// * `k` - Number of top tokens to keep
 /// * `rng` - Random number generator
 ///
@@ -129,7 +129,7 @@ pub fn sample_top_k(logits: &mut [f32], k: usize, rng: &mut StdRng) -> u32 {
 /// Top-P (nucleus) sampling: sample from the smallest set of tokens with cumulative probability >= p.
 ///
 /// # Arguments
-/// * `logits` - Temperature-scaled logits [vocab_size] (will be modified in-place)
+/// * `logits` - Temperature-scaled logits \\[vocab_size\\] (will be modified in-place)
 /// * `p` - Cumulative probability threshold (e.g., 0.9)
 /// * `rng` - Random number generator
 ///
@@ -182,7 +182,7 @@ pub fn sample_top_p(logits: &mut [f32], p: f32, rng: &mut StdRng) -> u32 {
 /// Applies softmax to logits and samples according to the resulting probabilities.
 ///
 /// # Arguments
-/// * `logits` - Temperature-scaled logits [vocab_size]
+/// * `logits` - Temperature-scaled logits \[vocab_size\]
 /// * `rng` - Random number generator
 ///
 /// # Returns

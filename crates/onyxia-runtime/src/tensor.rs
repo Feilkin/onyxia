@@ -80,6 +80,13 @@ impl Tensor {
         Ok(bytes)
     }
 
+    /// Get raw bytes of the tensor data.
+    ///
+    /// This is used by the dispatch executor to upload tensors to GPU.
+    pub fn as_bytes(&self) -> Result<&[u8]> {
+        self.raw_data()
+    }
+
     /// Get the shape of the tensor.
     pub fn shape(&self) -> &[usize] {
         &self.shape
