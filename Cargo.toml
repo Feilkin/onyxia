@@ -30,5 +30,3 @@ onyxia-onnx = { path = "crates/onyxia-onnx" }
 onyxia-operators = { path = "crates/onyxia-operators" }
 onyxia-compiler = { path = "crates/onyxia-compiler" }
 onyxia-runtime = { path = "crates/onyxia-runtime" }
-
-# External dependencies will be added here via `cargo add --workspace <crate>`

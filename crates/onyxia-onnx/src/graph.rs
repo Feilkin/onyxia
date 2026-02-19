@@ -196,6 +196,23 @@ impl Node {
     }
 }
 
+impl Node {
+    pub fn with_inputs(mut self, inputs: Vec<String>) -> Self {
+        self.inputs = inputs;
+        self
+    }
+
+    pub fn with_outputs(mut self, outputs: Vec<String>) -> Self {
+        self.outputs = outputs;
+        self
+    }
+
+    pub fn with_attributes(mut self, attributes: HashMap<String, AttributeValue>) -> Self {
+        self.attributes = attributes;
+        self
+    }
+}
+
 /// Attribute value types.
 #[derive(Debug, Clone)]
 pub enum AttributeValue {

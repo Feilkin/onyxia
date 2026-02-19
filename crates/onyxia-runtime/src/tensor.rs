@@ -45,6 +45,12 @@ impl Tensor {
         }
     }
 
+    pub fn new_1d_splat(value: f32, size: usize) -> Self {
+        let data = vec![value; size];
+
+        Tensor::from_vec(data, &[size])
+    }
+
     /// Create a tensor from raw bytes.
     pub(crate) fn from_raw(data: Vec<u8>, shape: &[usize], dtype: DataType) -> Self {
         Self {

@@ -18,3 +18,8 @@ wgpu = { version = "28", features = ["naga-ir"] }
 [dev-dependencies]
 onyxia-compiler.workspace = true
 onyxia-operators.workspace = true
+criterion = "0.8.2"
+
+[[bench]]
+name = "operator_benchmarks"
+harness = false
