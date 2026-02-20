@@ -5,7 +5,7 @@
 use onyxia_core::{CompileCtx, DispatchCtx, Error, OpDispatch, Operator, Result, RuntimeTensor};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{instrument, trace_span};
+use tracing::instrument;
 
 /// Shader sources
 const RESHAPE_QKV_SHADER: &str = include_str!("../../shaders/gqa_reshape_qkv.wgsl");
@@ -542,28 +542,13 @@ impl GroupQueryAttentionDispatch {
         let output = ctx.create_output_tensor(&scores.shape, scores.dtype)?;
 
         // Copy scores to output (we'll modify in-place)
-        let mut encoder = ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("softmax_copy"),
-            });
-        encoder.copy_buffer_to_buffer(
+        ctx.copy_buffer(
             &scores.buffer,
             0,
             &output.buffer,
             0,
             scores.size_bytes as u64,
-        );
-
-        let _span = trace_span!("softmax buffer copy").entered();
-        let sub_id = ctx.queue.submit([encoder.finish()]);
-        ctx.device
-            .poll(wgpu::wgt::PollType::Wait {
-                submission_index: Some(sub_id),
-                timeout: None,
-            })
-            .expect("gpu polling failed");
-        drop(_span);
+        )?;
 
         let total_rows = batch * self.num_heads * seq_q;
 

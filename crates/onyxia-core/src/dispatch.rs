@@ -36,6 +36,9 @@ pub struct RuntimeTensor {
 /// Passed to `OpDispatch::dispatch()` by the runtime. Provides access
 /// to the GPU device/queue and caches compute pipelines for reuse
 /// across dispatch calls.
+///
+/// Commands are batched by recording multiple compute passes into a single
+/// command encoder until `flush()` is called, reducing GPU submissions.
 pub struct DispatchCtx {
     /// GPU device for resource creation.
     pub device: Arc<wgpu::Device>,
@@ -46,6 +49,10 @@ pub struct DispatchCtx {
     /// Pipeline cache: maps naga module pointer to (pipeline, bind_group_layout).
     /// Pipelines are created lazily on first use and reused across dispatches.
     pipeline_cache: HashMap<PipelineCacheKey, CachedPipeline>,
+
+    /// Persistent command encoder for batching compute passes.
+    /// Created on first dispatch, taken and submitted on flush.
+    encoder: Option<wgpu::CommandEncoder>,
 }
 
 /// Key for pipeline cache lookups.
@@ -68,6 +75,7 @@ impl DispatchCtx {
             device,
             queue,
             pipeline_cache: HashMap::new(),
+            encoder: None,
         }
     }
 
@@ -286,10 +294,10 @@ impl DispatchCtx {
         }
     }
 
-    /// Submit a compute dispatch.
+    /// Record a compute dispatch to the command encoder.
     ///
-    /// Creates a command encoder, sets the pipeline and bind group, dispatches
-    /// the compute shader, and submits to the queue.
+    /// Creates or reuses the command encoder, adds a compute pass,
+    /// and records the dispatch. Commands accumulate until `flush()` is called.
     pub fn dispatch_compute(
         &mut self,
         pipeline: &wgpu::ComputePipeline,
@@ -297,11 +305,13 @@ impl DispatchCtx {
         workgroups: [u32; 3],
         immediates: Option<&[u8]>,
     ) -> Result<()> {
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("compute_dispatch"),
-            });
+        // Get or create the command encoder
+        let encoder = self.encoder.get_or_insert_with(|| {
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("batch_encoder"),
+                })
+        });
 
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -320,7 +330,21 @@ impl DispatchCtx {
             pass.dispatch_workgroups(workgroups[0], workgroups[1], workgroups[2]);
         }
 
-        // Submit and wait for GPU work to complete (measures actual GPU execution time)
+        // Commands are batched - no submission until submit_commands()
+        Ok(())
+    }
+
+    /// Submit all pending commands to the GPU and wait for completion.
+    ///
+    /// Takes the command encoder, finishes it, submits to the queue,
+    /// and polls until all work is complete.
+    pub fn submit_commands(&mut self) -> Result<()> {
+        // Take the encoder if it exists
+        let Some(encoder) = self.encoder.take() else {
+            // Nothing to submit
+            return Ok(());
+        };
+
         let _span = trace_span!("gpu_execute").entered();
         let submission_id = self.queue.submit([encoder.finish()]);
         self.device
@@ -329,14 +353,49 @@ impl DispatchCtx {
                 timeout: None,
             })
             .map_err(|e| Error::Runtime(format!("GPU poll failed: {e:?}")))?;
+        drop(_span);
+        Ok(())
+    }
+
+    /// Copy data from one buffer to another.
+    ///
+    /// Submits any pending commands first, then records the copy to the encoder
+    /// and submits. Buffer copies must complete before subsequent operations
+    /// can use the destination buffer.
+    pub fn copy_buffer(
+        &mut self,
+        src: &wgpu::Buffer,
+        src_offset: u64,
+        dst: &wgpu::Buffer,
+        dst_offset: u64,
+        size: u64,
+    ) -> Result<()> {
+        // Submit any pending compute operations first
+        self.submit_commands()?;
+
+        // Get or create encoder for the copy operation
+        let encoder = self.encoder.get_or_insert_with(|| {
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("buffer_copy"),
+                })
+        });
+        encoder.copy_buffer_to_buffer(src, src_offset, dst, dst_offset, size);
+
+        // Submit the copy immediately
+        self.submit_commands()?;
         Ok(())
     }
 
     /// Download a tensor from GPU to CPU.
     ///
-    /// Creates a staging buffer, copies data from GPU, and returns the bytes.
+    /// Submits any pending commands first, then creates a staging buffer,
+    /// copies data from GPU, and returns the bytes.
     /// This is a blocking operation that waits for GPU completion.
-    pub fn download_tensor(&self, tensor: &RuntimeTensor) -> Result<Vec<u8>> {
+    pub fn download_tensor(&mut self, tensor: &RuntimeTensor) -> Result<Vec<u8>> {
+        // Submit any pending compute operations first
+        self.submit_commands()?;
+
         // Create staging buffer
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("download_staging"),
@@ -345,17 +404,18 @@ impl DispatchCtx {
             mapped_at_creation: false,
         });
 
-        // Copy from GPU buffer to staging
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("download_copy"),
-            });
+        // Copy from GPU buffer to staging using the encoder
+        let encoder = self.encoder.get_or_insert_with(|| {
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("download_copy"),
+                })
+        });
         encoder.copy_buffer_to_buffer(&tensor.buffer, 0, &staging, 0, tensor.size_bytes as u64);
 
-        // Submit and wait for GPU work to complete (measures actual GPU download time)
+        // Submit the download copy and wait
         let _span = trace_span!("gpu_download").entered();
-        let sub_id = self.queue.submit([encoder.finish()]);
+        let sub_id = self.queue.submit([self.encoder.take().unwrap().finish()]);
 
         // Map and read
         let slice = staging.slice(..);

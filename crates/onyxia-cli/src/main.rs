@@ -227,7 +227,7 @@ fn main() -> Result<()> {
     #[cfg(not(feature = "tracy"))]
     {
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::TRACE)
+            .with_max_level(tracing::Level::WARN)
             .init();
     }
 

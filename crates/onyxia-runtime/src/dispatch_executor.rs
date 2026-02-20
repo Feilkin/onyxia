@@ -131,6 +131,13 @@ impl DispatchExecutor {
             }
         }
 
+        // Submit all pending GPU commands and wait for completion
+        let _flush_span = span!(Level::TRACE, "submit_commands").entered();
+        self.ctx.submit_commands().map_err(|e| {
+            RuntimeError::ExecutionError(format!("Failed to submit GPU commands: {e}"))
+        })?;
+        drop(_flush_span);
+
         // Download outputs
         let mut results = HashMap::new();
         for (name, reg) in &self.model.output_registers {
@@ -138,66 +145,14 @@ impl DispatchExecutor {
                 RuntimeError::TensorNotFound(format!("Output register {reg} for '{name}' is empty"))
             })?;
 
-            let data = self.download_tensor(runtime_tensor)?;
+            let data = self.ctx.download_tensor(runtime_tensor).map_err(|e| {
+                RuntimeError::ExecutionError(format!("Failed to download tensor '{name}': {e}"))
+            })?;
             let tensor = Tensor::from_raw(data, &runtime_tensor.shape, runtime_tensor.dtype);
             results.insert(name.clone(), tensor);
         }
 
         Ok(results)
-    }
-
-    /// Download tensor data from GPU to CPU.
-    #[instrument(name = "download_tensor", skip(self, tensor), fields(bytes = tensor.size_bytes))]
-    fn download_tensor(&self, tensor: &RuntimeTensor) -> Result<Vec<u8>> {
-        let buffer_size = tensor.size_bytes as u64;
-
-        // Create a staging buffer for readback
-        let staging = self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("download_staging"),
-            size: buffer_size,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // Copy from tensor buffer to staging
-        let mut encoder = self
-            .ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("download_copy"),
-            });
-        encoder.copy_buffer_to_buffer(&tensor.buffer, 0, &staging, 0, buffer_size);
-
-        // Submit and wait for GPU work to complete (measures actual GPU download time)
-        let _span = span!(Level::TRACE, "gpu_download").entered();
-        let sub_id = self.ctx.queue.submit([encoder.finish()]);
-
-        // Map and read
-        let slice = staging.slice(..);
-        let (sender, receiver) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
-        });
-        self.ctx
-            .device
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(sub_id),
-                timeout: None,
-            })
-            .map_err(|e| {
-                RuntimeError::ExecutionError(format!("GPU poll failed during download: {e:?}"))
-            })?;
-        drop(_span);
-
-        receiver
-            .recv()
-            .map_err(|e| RuntimeError::ExecutionError(format!("Map recv failed: {e}")))?
-            .map_err(|e| RuntimeError::ExecutionError(format!("Map failed: {e}")))?;
-
-        let data = slice.get_mapped_range().to_vec();
-        staging.unmap();
-
-        Ok(data)
     }
 
     /// Get the model's input register names.
