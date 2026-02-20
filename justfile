@@ -9,3 +9,7 @@ prompt PROMPT:
 # Run inference with tracy
 trace-prompt PROMPT:
     cargo run --release --features tracy -- run-model models/gemma-3-270m-it-ONNX/onnx/model.onnx --tokenizer models/gemma-3-270m-it-ONNX/ --max-seq-len 1024 --max-tokens 1024 --temperature 0.7 --prompt "{{PROMPT}}"
+
+# Run all benchmarks - this will take a while
+bench:
+    cargo bench

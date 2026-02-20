@@ -47,8 +47,30 @@ impl Tensor {
 
     pub fn new_1d_splat(value: f32, size: usize) -> Self {
         let data = vec![value; size];
-
         Tensor::from_vec(data, &[size])
+    }
+
+    pub fn new_2d_splat(value: f32, rows: usize, cols: usize) -> Self {
+        let size = rows * cols;
+        let data = vec![value; size];
+        Tensor::from_vec(data, &[rows, cols])
+    }
+
+    pub fn new_nd_splat(value: f32, shape: Vec<usize>) -> Self {
+        let size: usize = shape.iter().product();
+        let data = vec![value; size];
+        Tensor::from_vec(data, &shape)
+    }
+
+    pub fn new_bool_1d(data: Vec<bool>, size: usize) -> Self {
+        // Bool is stored as u32 (0 = false, 1 = true)
+        let u32_data: Vec<u32> = data.into_iter().map(|b| b as u32).collect();
+        let bytes = bytemuck::cast_slice(&u32_data).to_vec();
+        Self {
+            data: TensorData::Cpu(bytes),
+            shape: vec![size],
+            dtype: DataType::Bool,
+        }
     }
 
     /// Create a tensor from raw bytes.
