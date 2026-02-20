@@ -187,6 +187,20 @@ cargo nextest run --run-ignored=all --no-fail-fast  # All tests including GPU
 
 GPU-dependent tests are marked `#[ignore]` and require a GPU.
 
+## Profiling
+
+Onyxia includes built-in support for performance profiling with [Tracy](https://github.com/wolfpld/tracy). The runtime and all major operators are instrumented with tracing spans.
+
+```bash
+# Build with Tracy profiling enabled
+cargo build --release -p onyxia-cli --features tracy
+
+# Run with profiling (Tracy GUI must be running)
+cargo run --release -p onyxia-cli --features tracy -- run-model [args]
+```
+
+See [PROFILING.md](PROFILING.md) for detailed setup instructions and usage guide.
+
 ## Example Models
 
 The `models/` directory contains sample ONNX models for testing:

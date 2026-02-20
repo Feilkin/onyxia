@@ -6,6 +6,7 @@
 use onyxia_core::{CompileCtx, DispatchCtx, Error, OpDispatch, Operator, Result, RuntimeTensor};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::instrument;
 
 /// Shader sources for the Softmax operator (three-pass algorithm).
 const SOFTMAX_MAX_SHADER: &str = include_str!("../../shaders/softmax_max.wgsl");
@@ -85,6 +86,7 @@ struct SoftmaxDispatch {
 }
 
 impl OpDispatch for SoftmaxDispatch {
+    #[instrument(name = "Softmax::dispatch", skip_all)]
     fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,

@@ -214,6 +214,23 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    // Initialize tracing with Tracy profiler support
+    #[cfg(feature = "tracy")]
+    {
+        use tracing_subscriber::layer::SubscriberExt;
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::registry().with(tracing_tracy::TracyLayer::default()),
+        )
+        .expect("Failed to set tracing subscriber");
+    }
+
+    #[cfg(not(feature = "tracy"))]
+    {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .init();
+    }
+
     let cli = Cli::parse();
 
     match cli.command {

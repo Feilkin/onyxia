@@ -4,6 +4,7 @@
 
 use onyxia_core::{CompileCtx, DispatchCtx, Error, OpDispatch, Operator, Result, RuntimeTensor};
 use std::collections::HashMap;
+use tracing::instrument;
 
 /// Shader source for the ReduceMean operator.
 const REDUCE_MEAN_SHADER: &str = include_str!("../../shaders/reduce_mean.wgsl");
@@ -105,6 +106,7 @@ struct ReduceMeanDispatch {
 }
 
 impl OpDispatch for ReduceMeanDispatch {
+    #[instrument(name = "ReduceMean::dispatch", skip_all)]
     fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,

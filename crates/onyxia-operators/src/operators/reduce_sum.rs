@@ -4,6 +4,7 @@
 
 use onyxia_core::{CompileCtx, DispatchCtx, Error, OpDispatch, Operator, Result, RuntimeTensor};
 use std::collections::HashMap;
+use tracing::instrument;
 
 /// Shader source for the ReduceSum operator.
 const REDUCE_SUM_SHADER: &str = include_str!("../../shaders/reduce_sum.wgsl");
@@ -105,6 +106,7 @@ struct ReduceSumDispatch {
 }
 
 impl OpDispatch for ReduceSumDispatch {
+    #[instrument(name = "ReduceSum::dispatch", skip_all)]
     fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,

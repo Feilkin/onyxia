@@ -26,5 +26,12 @@ tokenizers = "0.22.2"
 minijinja = "2.15.1"
 rand = "0.10.0"
 regex = "1.12.3"
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-tracy = { workspace = true, optional = true }
+
+[features]
+default = []
+tracy = ["dep:tracing-tracy"]
 
 [dev-dependencies]

@@ -7,6 +7,7 @@ use onyxia_core::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::instrument;
 
 /// Shader source for rotary embeddings.
 const ROTARY_EMBEDDING_SHADER: &str = include_str!("../../shaders/rotary_embedding.wgsl");
@@ -83,6 +84,7 @@ struct RotaryEmbeddingDispatch {
 }
 
 impl OpDispatch for RotaryEmbeddingDispatch {
+    #[instrument(name = "RotaryEmbedding::dispatch", skip_all)]
     fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,

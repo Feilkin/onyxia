@@ -5,6 +5,7 @@
 use onyxia_core::{CompileCtx, DispatchCtx, Error, OpDispatch, Operator, Result, RuntimeTensor};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::{instrument, trace_span};
 
 /// Shader sources
 const RESHAPE_QKV_SHADER: &str = include_str!("../../shaders/gqa_reshape_qkv.wgsl");
@@ -167,6 +168,7 @@ struct GroupQueryAttentionDispatch {
 }
 
 impl OpDispatch for GroupQueryAttentionDispatch {
+    #[instrument(name = "GroupQueryAttention::dispatch", skip_all)]
     fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
@@ -552,7 +554,16 @@ impl GroupQueryAttentionDispatch {
             0,
             scores.size_bytes as u64,
         );
-        ctx.queue.submit(std::iter::once(encoder.finish()));
+
+        let _span = trace_span!("softmax buffer copy").entered();
+        let sub_id = ctx.queue.submit([encoder.finish()]);
+        ctx.device
+            .poll(wgpu::wgt::PollType::Wait {
+                submission_index: Some(sub_id),
+                timeout: None,
+            })
+            .expect("gpu polling failed");
+        drop(_span);
 
         let total_rows = batch * self.num_heads * seq_q;
 

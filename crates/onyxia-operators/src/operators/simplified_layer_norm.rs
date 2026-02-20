@@ -7,6 +7,7 @@
 use onyxia_core::{CompileCtx, DispatchCtx, Error, OpDispatch, Operator, Result, RuntimeTensor};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::instrument;
 
 /// Shader source for RMS computation pass.
 const RMS_SHADER: &str = include_str!("../../shaders/simplified_layernorm_rms.wgsl");
@@ -91,6 +92,7 @@ struct SimplifiedLayerNormDispatch {
 }
 
 impl OpDispatch for SimplifiedLayerNormDispatch {
+    #[instrument(name = "SimplifiedLayerNorm::dispatch", skip_all)]
     fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,

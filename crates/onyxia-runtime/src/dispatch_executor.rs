@@ -8,6 +8,7 @@ use crate::tensor::Tensor;
 use onyxia_core::dispatch::{CompiledModel, DispatchCtx, RuntimeTensor};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::{Level, instrument, span};
 
 /// Executes a compiled model using dispatch-based operation routing.
 ///
@@ -29,6 +30,7 @@ pub struct DispatchExecutor {
 
 impl DispatchExecutor {
     /// Create a new executor and upload weight data to GPU.
+    #[instrument(name = "DispatchExecutor::new", skip(device, queue, model))]
     pub fn new(
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
@@ -66,6 +68,7 @@ impl DispatchExecutor {
     }
 
     /// Execute the model with named inputs, returning named outputs.
+    #[instrument(name = "DispatchExecutor::run", skip(self, inputs))]
     pub fn run(&mut self, inputs: &[(&str, Tensor)]) -> Result<HashMap<String, Tensor>> {
         // Upload user inputs to registers
         for (name, tensor) in inputs {
@@ -91,6 +94,8 @@ impl DispatchExecutor {
 
         // Dispatch all operations in order
         for entry in &self.model.entries {
+            let _span = span!(Level::TRACE, "dispatch_op", op = %entry.name).entered();
+
             // Gather inputs from registers
             let op_inputs: Vec<RuntimeTensor> = entry
                 .input_regs
@@ -126,15 +131,6 @@ impl DispatchExecutor {
             }
         }
 
-        // Ensure GPU work completes
-        self.ctx
-            .device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            })
-            .map_err(|e| RuntimeError::ExecutionError(format!("GPU poll failed: {e:?}")))?;
-
         // Download outputs
         let mut results = HashMap::new();
         for (name, reg) in &self.model.output_registers {
@@ -151,6 +147,7 @@ impl DispatchExecutor {
     }
 
     /// Download tensor data from GPU to CPU.
+    #[instrument(name = "download_tensor", skip(self, tensor), fields(bytes = tensor.size_bytes))]
     fn download_tensor(&self, tensor: &RuntimeTensor) -> Result<Vec<u8>> {
         let buffer_size = tensor.size_bytes as u64;
 
@@ -170,7 +167,10 @@ impl DispatchExecutor {
                 label: Some("download_copy"),
             });
         encoder.copy_buffer_to_buffer(&tensor.buffer, 0, &staging, 0, buffer_size);
-        self.ctx.queue.submit(std::iter::once(encoder.finish()));
+
+        // Submit and wait for GPU work to complete (measures actual GPU download time)
+        let _span = span!(Level::TRACE, "gpu_download").entered();
+        let sub_id = self.ctx.queue.submit([encoder.finish()]);
 
         // Map and read
         let slice = staging.slice(..);
@@ -181,12 +181,13 @@ impl DispatchExecutor {
         self.ctx
             .device
             .poll(wgpu::PollType::Wait {
-                submission_index: None,
+                submission_index: Some(sub_id),
                 timeout: None,
             })
             .map_err(|e| {
                 RuntimeError::ExecutionError(format!("GPU poll failed during download: {e:?}"))
             })?;
+        drop(_span);
 
         receiver
             .recv()

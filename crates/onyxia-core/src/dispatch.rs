@@ -9,6 +9,7 @@ use crate::types::DataType;
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::trace_span;
 
 /// A fully materialized GPU tensor with known shape and data.
 ///
@@ -319,7 +320,15 @@ impl DispatchCtx {
             pass.dispatch_workgroups(workgroups[0], workgroups[1], workgroups[2]);
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        // Submit and wait for GPU work to complete (measures actual GPU execution time)
+        let _span = trace_span!("gpu_execute").entered();
+        let submission_id = self.queue.submit([encoder.finish()]);
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission_id),
+                timeout: None,
+            })
+            .map_err(|e| Error::Runtime(format!("GPU poll failed: {e:?}")))?;
         Ok(())
     }
 
@@ -343,7 +352,10 @@ impl DispatchCtx {
                 label: Some("download_copy"),
             });
         encoder.copy_buffer_to_buffer(&tensor.buffer, 0, &staging, 0, tensor.size_bytes as u64);
-        let sub_id = self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Submit and wait for GPU work to complete (measures actual GPU download time)
+        let _span = trace_span!("gpu_download").entered();
+        let sub_id = self.queue.submit([encoder.finish()]);
 
         // Map and read
         let slice = staging.slice(..);
@@ -358,6 +370,7 @@ impl DispatchCtx {
                 timeout: None,
             })
             .map_err(|e| Error::Runtime(format!("GPU poll failed: {e:?}")))?;
+        drop(_span);
 
         rx.recv()
             .map_err(|e| Error::Runtime(format!("Channel recv failed: {e}")))?

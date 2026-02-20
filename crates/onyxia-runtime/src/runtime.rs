@@ -4,6 +4,7 @@ use crate::dispatch_executor::DispatchExecutor;
 use crate::error::{Result, RuntimeError};
 use onyxia_core::dispatch::CompiledModel;
 use std::sync::Arc;
+use tracing::instrument;
 
 /// Main entry point for GPU runtime.
 ///
@@ -33,6 +34,7 @@ impl Runtime {
     ///
     /// # Errors
     /// Returns an error if no suitable GPU is found.
+    #[instrument(name = "Runtime::new")]
     pub async fn new() -> Result<Self> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
@@ -81,6 +83,7 @@ impl Runtime {
     /// # Ok(())
     /// # }
     /// ```
+    #[instrument(name = "Runtime::load_model", skip(self, model))]
     pub async fn load_model(&self, model: CompiledModel) -> Result<DispatchExecutor> {
         // Use adapter's limits, adjusting only what we need
         let adapter_limits = self.adapter.limits();

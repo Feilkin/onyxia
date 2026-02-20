@@ -11,6 +11,7 @@ use onyxia_core::{
     CompileCtx, DataType, DispatchCtx, Error, OpDispatch, Operator, Result, RuntimeTensor,
 };
 use std::collections::HashMap;
+use tracing::instrument;
 
 /// Shader source for the MatMulNBits operator.
 const MATMUL_NBITS_SHADER: &str = include_str!("../../shaders/matmul_nbits.wgsl");
@@ -43,6 +44,7 @@ struct MatMulNBitsDispatch {
 }
 
 impl OpDispatch for MatMulNBitsDispatch {
+    #[instrument(name = "MatMulNBits::dispatch", skip_all)]
     fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
