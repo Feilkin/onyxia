@@ -6,6 +6,7 @@ use onyxia_core::{
 use onyxia_onnx::AttributeValue;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::trace_span;
 
 /// Shader source for the Concat operator.
 const CONCAT_F32_SHADER: &str = include_str!("../../shaders/shape/concat.wgsl");
@@ -539,6 +540,7 @@ impl OpDispatch for TransposeDispatch {
         let input = &inputs[0];
         let rank = input.shape.len();
 
+        let _span = trace_span!("Transpose - Determine permuation").entered();
         // Determine permutation: use provided perm or default to reverse
         let perm: Vec<usize> = if let Some(ref p) = self.perm {
             if p.len() != rank {
@@ -553,7 +555,9 @@ impl OpDispatch for TransposeDispatch {
             // Default: reverse dimensions
             (0..rank).rev().collect()
         };
+        drop(_span);
 
+        let _span = trace_span!("Transpose - Validate permutation").entered();
         // Validate permutation
         let mut seen = vec![false; rank];
         for &p in &perm {
@@ -571,14 +575,18 @@ impl OpDispatch for TransposeDispatch {
             }
             seen[p] = true;
         }
+        drop(_span);
 
+        let _span = trace_span!("Transpose - Compute output shape").entered();
         // Compute output shape
         let output_shape: Vec<usize> = perm.iter().map(|&i| input.shape[i]).collect();
         let num_elements: usize = output_shape.iter().product();
+        drop(_span);
 
         // Allocate output buffer
         let output = ctx.create_output_tensor(&output_shape, input.dtype)?;
 
+        let _span = trace_span!("Transpose - Immediates").entered();
         // Encode immediates: input shape, permutation, rank
         let mut immediates = Vec::new();
 
@@ -603,6 +611,7 @@ impl OpDispatch for TransposeDispatch {
         for _ in rank..8 {
             immediates.extend_from_slice(&0u32.to_le_bytes());
         }
+        drop(_span);
 
         // Compute workgroup count with 2D dispatch support for large tensors
         let workgroup_size: u32 = 256;
@@ -633,8 +642,10 @@ impl OpDispatch for TransposeDispatch {
             ],
         });
 
+        let _span = trace_span!("Transpose - dispatch compute");
         // Dispatch compute shader
         ctx.dispatch_compute(&pipeline, &bind_group, dispatch_size, Some(&immediates))?;
+        drop(_span);
 
         Ok(vec![output])
     }

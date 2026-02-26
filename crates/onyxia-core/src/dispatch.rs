@@ -80,6 +80,7 @@ impl DispatchCtx {
     }
 
     /// Allocate a new GPU buffer for an output tensor.
+    #[tracing::instrument(skip(self))]
     pub fn create_output_tensor(&self, shape: &[usize], dtype: DataType) -> Result<RuntimeTensor> {
         let num_elements: usize = shape.iter().product();
         let size_bytes = num_elements * dtype.size();
@@ -140,6 +141,7 @@ impl DispatchCtx {
     /// label return the cached pipeline without recompilation.
     ///
     /// Returns Arc-wrapped pipeline and bind group layout for cheap cloning.
+    #[tracing::instrument(skip(self))]
     pub fn get_or_create_pipeline(
         &mut self,
         label: &str,

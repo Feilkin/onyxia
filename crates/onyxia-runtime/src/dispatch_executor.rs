@@ -8,7 +8,7 @@ use crate::tensor::Tensor;
 use onyxia_core::dispatch::{CompiledModel, DispatchCtx, RuntimeTensor};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{Level, instrument, span};
+use tracing::{Level, instrument, span, trace_span};
 
 /// Executes a compiled model using dispatch-based operation routing.
 ///
@@ -97,6 +97,7 @@ impl DispatchExecutor {
             let _span = span!(Level::TRACE, "dispatch_op", op = %entry.name).entered();
 
             // Gather inputs from registers
+            let _input_span = trace_span!("gather inputs").entered();
             let op_inputs: Vec<RuntimeTensor> = entry
                 .input_regs
                 .iter()
@@ -111,12 +112,14 @@ impl DispatchExecutor {
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
+            drop(_input_span);
 
             // Dispatch the operation
             let outputs = entry.op.dispatch(op_inputs, &mut self.ctx).map_err(|e| {
                 RuntimeError::ExecutionError(format!("Operation '{}' failed: {e}", entry.name))
             })?;
 
+            let _output_span = trace_span!("store outputs").entered();
             // Store outputs in registers
             if outputs.len() != entry.output_regs.len() {
                 return Err(RuntimeError::ExecutionError(format!(
@@ -129,6 +132,7 @@ impl DispatchExecutor {
             for (output, &reg) in outputs.into_iter().zip(&entry.output_regs) {
                 self.registers[reg] = Some(output);
             }
+            drop(_output_span);
         }
 
         // Submit all pending GPU commands and wait for completion
