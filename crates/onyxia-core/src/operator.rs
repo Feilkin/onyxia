@@ -53,6 +53,20 @@ pub trait Operator: Send + Sync {
         ctx: &mut crate::compile_ctx::CompileCtx,
     ) -> Result<Box<dyn crate::dispatch::OpDispatch>>;
 
+    /// Whether this operator can be folded at compile time.
+    ///
+    /// When all inputs to a node are compile-time constants, the compiler may
+    /// run this operator on the GPU during compilation and replace the node
+    /// with the resulting constant value, eliminating it from the runtime
+    /// dispatch sequence.
+    ///
+    /// Default: `true`. Override to return `false` for operators that have
+    /// side effects, require specific runtime state, or are too expensive
+    /// to evaluate during compilation.
+    fn is_foldable(&self) -> bool {
+        true
+    }
+
     /// Infer output shapes from input shapes.
     ///
     /// Called during compile-time shape propagation. Input shapes may contain

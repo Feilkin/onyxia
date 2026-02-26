@@ -3,11 +3,10 @@
 //! This crate takes ONNX graphs and compiles them into dispatch models with
 //! pre-compiled WGSL shaders that `onyxia-runtime` can execute on the GPU.
 //!
-//! The compiler runs two built-in passes:
+//! The compiler runs three built-in passes in stage order:
 //! 1. `InitializeConstants` (Resolution stage) — parses ONNX weight data.
-//! 2. `ShapePropagation` (Inference stage) — propagates symbolic shapes through operator nodes.
-//!
-//! Per-operator constant folding and memory planning are planned for future stages.
+//! 2. `ConstantFolding` (Folding stage) — GPU-executes all-constant subgraphs at compile time.
+//! 3. `ShapePropagation` (Inference stage) — propagates symbolic shapes through operator nodes.
 //!
 //! # Example
 //!
@@ -35,7 +34,7 @@ pub mod passes;
 pub mod scheduler;
 
 pub use error::{CodegenError, Result};
-pub use passes::{InitializeConstantsPass, ShapePropagationPass};
+pub use passes::{ConstantFoldingPass, InitializeConstantsPass, ShapePropagationPass};
 
 // Re-export commonly used types from onyxia-core
 pub use onyxia_core::{DispatchModel as CompiledModel, IrGraph, Pass, Stage};
@@ -121,9 +120,20 @@ impl CompilerPipeline {
         // Step 1: Convert ONNX graph to IR
         let mut ir_graph = IrGraph::from_onnx(graph)?;
 
-        // Step 2: Sort passes by stage and run them
-        self.passes.sort_by_key(|p| p.stage());
-        for pass in &self.passes {
+        // Step 2: Collect user-registered passes and add the GPU-aware
+        // constant-folding pass (Stage::Folding) so it participates in the
+        // sorted stage order alongside the built-in passes.
+        let folding_pass = ConstantFoldingPass::new(gpu);
+
+        // Build a combined, sorted pass list for this compilation.
+        // We store the folding pass locally so it isn't accumulated in
+        // `self.passes` across multiple `compile()` calls.
+        let mut all_passes: Vec<&dyn onyxia_core::Pass> =
+            self.passes.iter().map(|p| p.as_ref()).collect();
+        all_passes.push(&folding_pass);
+        all_passes.sort_by_key(|p| p.stage());
+
+        for pass in &all_passes {
             let _span =
                 tracing::debug_span!("pass", name = pass.name(), stage = ?pass.stage()).entered();
             pass.run(&mut ir_graph, registry)?;
