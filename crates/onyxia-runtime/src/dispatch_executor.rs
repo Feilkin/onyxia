@@ -114,23 +114,66 @@ impl DispatchExecutor {
                 .collect::<Result<Vec<_>>>()?;
             drop(_input_span);
 
-            // Dispatch the operation
-            let outputs = entry.op.dispatch(op_inputs, &mut self.ctx).map_err(|e| {
-                RuntimeError::ExecutionError(format!("Operation '{}' failed: {e}", entry.name))
+            // Dispatch the operation — try new pre-allocated path first.
+            let input_refs: Vec<&RuntimeTensor> = op_inputs.iter().collect();
+            let resolved = entry.op.resolve_shapes(&input_refs).map_err(|e| {
+                RuntimeError::ExecutionError(format!(
+                    "Operation '{}' resolve_shapes failed: {e}",
+                    entry.name
+                ))
             })?;
 
             let _output_span = trace_span!("store outputs").entered();
-            // Store outputs in registers
-            if outputs.len() != entry.output_regs.len() {
-                return Err(RuntimeError::ExecutionError(format!(
-                    "Operation '{}' returned {} outputs but expected {}",
-                    entry.name,
-                    outputs.len(),
-                    entry.output_regs.len()
-                )));
-            }
-            for (output, &reg) in outputs.into_iter().zip(&entry.output_regs) {
-                self.registers[reg] = Some(output);
+            if let Some(shapes) = resolved {
+                // New path: runtime pre-allocates output buffers.
+                if shapes.output_shapes.len() != entry.output_regs.len() {
+                    return Err(RuntimeError::ExecutionError(format!(
+                        "Operation '{}' resolve_shapes returned {} shapes but expected {}",
+                        entry.name,
+                        shapes.output_shapes.len(),
+                        entry.output_regs.len()
+                    )));
+                }
+                let outputs: Vec<RuntimeTensor> = shapes
+                    .output_shapes
+                    .iter()
+                    .zip(&shapes.output_dtypes)
+                    .map(|(shape, dtype)| self.ctx.create_output_tensor(shape, *dtype))
+                    .collect::<onyxia_core::Result<_>>()
+                    .map_err(|e| {
+                        RuntimeError::ExecutionError(format!(
+                            "Operation '{}' output allocation failed: {e}",
+                            entry.name
+                        ))
+                    })?;
+                entry
+                    .op
+                    .dispatch_with_outputs(op_inputs, outputs.clone(), &mut self.ctx)
+                    .map_err(|e| {
+                        RuntimeError::ExecutionError(format!(
+                            "Operation '{}' dispatch_with_outputs failed: {e}",
+                            entry.name
+                        ))
+                    })?;
+                for (output, &reg) in outputs.into_iter().zip(&entry.output_regs) {
+                    self.registers[reg] = Some(output);
+                }
+            } else {
+                // Legacy path: operator allocates its own output buffers.
+                let outputs = entry.op.dispatch(op_inputs, &mut self.ctx).map_err(|e| {
+                    RuntimeError::ExecutionError(format!("Operation '{}' failed: {e}", entry.name))
+                })?;
+                if outputs.len() != entry.output_regs.len() {
+                    return Err(RuntimeError::ExecutionError(format!(
+                        "Operation '{}' returned {} outputs but expected {}",
+                        entry.name,
+                        outputs.len(),
+                        entry.output_regs.len()
+                    )));
+                }
+                for (output, &reg) in outputs.into_iter().zip(&entry.output_regs) {
+                    self.registers[reg] = Some(output);
+                }
             }
             drop(_output_span);
         }
@@ -175,5 +218,255 @@ impl DispatchExecutor {
             .iter()
             .map(|(name, _)| name.as_str())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use onyxia_core::{
+        DataType, DispatchCtx, ModelMetadata, OpDispatch, ResolvedShapes, RuntimeTensor,
+        dispatch::{CompiledModel, DispatchEntry},
+    };
+
+    // ─── Mock operators ──────────────────────────────────────────────────────
+
+    /// Legacy op: only implements `dispatch()`.
+    /// Copies the first input buffer to a fresh output tensor.
+    struct LegacyPassthroughOp;
+
+    impl OpDispatch for LegacyPassthroughOp {
+        fn dispatch(
+            &self,
+            inputs: Vec<RuntimeTensor>,
+            ctx: &mut DispatchCtx,
+        ) -> onyxia_core::Result<Vec<RuntimeTensor>> {
+            let input = &inputs[0];
+            let output = ctx.create_output_tensor(&input.shape, input.dtype)?;
+            ctx.copy_buffer(&input.buffer, 0, &output.buffer, 0, input.size_bytes as u64)?;
+            Ok(vec![output])
+        }
+    }
+
+    /// New-path op: implements `resolve_shapes()` + `dispatch_with_outputs()`.
+    /// Copies the first input into the pre-allocated output buffer.
+    struct PreAllocPassthroughOp;
+
+    impl OpDispatch for PreAllocPassthroughOp {
+        fn resolve_shapes(
+            &self,
+            inputs: &[&RuntimeTensor],
+        ) -> onyxia_core::Result<Option<ResolvedShapes>> {
+            let input = inputs[0];
+            Ok(Some(ResolvedShapes {
+                output_shapes: vec![input.shape.clone()],
+                output_dtypes: vec![input.dtype],
+            }))
+        }
+
+        fn dispatch_with_outputs(
+            &self,
+            inputs: Vec<RuntimeTensor>,
+            outputs: Vec<RuntimeTensor>,
+            ctx: &mut DispatchCtx,
+        ) -> onyxia_core::Result<()> {
+            ctx.copy_buffer(
+                &inputs[0].buffer,
+                0,
+                &outputs[0].buffer,
+                0,
+                inputs[0].size_bytes as u64,
+            )
+        }
+
+        fn dispatch(
+            &self,
+            _inputs: Vec<RuntimeTensor>,
+            _ctx: &mut DispatchCtx,
+        ) -> onyxia_core::Result<Vec<RuntimeTensor>> {
+            panic!("Legacy dispatch() must not be called on PreAllocPassthroughOp");
+        }
+    }
+
+    /// Op whose `resolve_shapes()` returns a wrong number of shapes (more than
+    /// output registers), which should trigger a shape mismatch error.
+    struct BadShapeMockOp;
+
+    impl OpDispatch for BadShapeMockOp {
+        fn resolve_shapes(
+            &self,
+            inputs: &[&RuntimeTensor],
+        ) -> onyxia_core::Result<Option<ResolvedShapes>> {
+            let input = inputs[0];
+            // Return 2 shapes but there is only 1 output register in the test model.
+            Ok(Some(ResolvedShapes {
+                output_shapes: vec![input.shape.clone(), vec![1]],
+                output_dtypes: vec![input.dtype, input.dtype],
+            }))
+        }
+
+        fn dispatch_with_outputs(
+            &self,
+            _inputs: Vec<RuntimeTensor>,
+            _outputs: Vec<RuntimeTensor>,
+            _ctx: &mut DispatchCtx,
+        ) -> onyxia_core::Result<()> {
+            Ok(())
+        }
+
+        fn dispatch(
+            &self,
+            _inputs: Vec<RuntimeTensor>,
+            _ctx: &mut DispatchCtx,
+        ) -> onyxia_core::Result<Vec<RuntimeTensor>> {
+            unreachable!()
+        }
+    }
+
+    // ─── Helpers ─────────────────────────────────────────────────────────────
+
+    /// Build a trivial `CompiledModel` with a single passthrough op.
+    /// Register layout: 0 = input, 1 = output.
+    fn make_passthrough_model(op: Box<dyn OpDispatch>) -> CompiledModel {
+        CompiledModel {
+            entries: vec![DispatchEntry {
+                op,
+                input_regs: vec![0],
+                output_regs: vec![1],
+                name: "passthrough".to_string(),
+                node_name: String::new(),
+            }],
+            num_registers: 2,
+            input_registers: vec![("input".to_string(), 0)],
+            output_registers: vec![("output".to_string(), 1)],
+            weight_registers: vec![],
+            metadata: ModelMetadata::default(),
+        }
+    }
+
+    // ─── Tests ───────────────────────────────────────────────────────────────
+
+    #[pollster::test]
+    #[ignore] // Requires GPU
+    async fn test_legacy_dispatch_path() {
+        let gpu = onyxia_core::GpuContext::new()
+            .await
+            .expect("GPU required for this test");
+
+        let model = make_passthrough_model(Box::new(LegacyPassthroughOp));
+        let mut executor =
+            DispatchExecutor::new(Arc::clone(&gpu.device), Arc::clone(&gpu.queue), model)
+                .expect("Executor creation should succeed");
+
+        // Input: 4 × f32 values [1.0, 2.0, 3.0, 4.0]
+        let input_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+        let input_bytes: Vec<u8> = input_data.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let tensor = crate::tensor::Tensor::from_raw(input_bytes, &[4], DataType::F32);
+
+        let outputs = executor
+            .run(&[("input", tensor)])
+            .expect("Execution should succeed");
+
+        let output = outputs.get("output").expect("Output should be present");
+        let result: Vec<f32> = output
+            .as_bytes()
+            .expect("bytes")
+            .chunks(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        assert_eq!(result, input_data, "Legacy path should copy input → output");
+    }
+
+    #[pollster::test]
+    #[ignore] // Requires GPU
+    async fn test_pre_alloc_dispatch_path() {
+        let gpu = onyxia_core::GpuContext::new()
+            .await
+            .expect("GPU required for this test");
+
+        let model = make_passthrough_model(Box::new(PreAllocPassthroughOp));
+        let mut executor =
+            DispatchExecutor::new(Arc::clone(&gpu.device), Arc::clone(&gpu.queue), model)
+                .expect("Executor creation should succeed");
+
+        // Input: 4 × f32 values [5.0, 6.0, 7.0, 8.0]
+        let input_data: Vec<f32> = vec![5.0, 6.0, 7.0, 8.0];
+        let input_bytes: Vec<u8> = input_data.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let tensor = crate::tensor::Tensor::from_raw(input_bytes, &[4], DataType::F32);
+
+        let outputs = executor
+            .run(&[("input", tensor)])
+            .expect("Execution should succeed");
+
+        let output = outputs.get("output").expect("Output should be present");
+        let result: Vec<f32> = output
+            .as_bytes()
+            .expect("bytes")
+            .chunks(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        assert_eq!(
+            result, input_data,
+            "Pre-alloc path should copy input → output"
+        );
+    }
+
+    #[pollster::test]
+    #[ignore] // Requires GPU
+    async fn test_resolve_shapes_none_falls_back_to_legacy() {
+        // A mock with the default resolve_shapes (returns None) should use the
+        // legacy dispatch() path, same as LegacyPassthroughOp.
+        let gpu = onyxia_core::GpuContext::new()
+            .await
+            .expect("GPU required for this test");
+
+        let model = make_passthrough_model(Box::new(LegacyPassthroughOp));
+        let mut executor =
+            DispatchExecutor::new(Arc::clone(&gpu.device), Arc::clone(&gpu.queue), model)
+                .expect("Executor creation should succeed");
+
+        let input_data: Vec<f32> = vec![9.0, 10.0];
+        let input_bytes: Vec<u8> = input_data.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let tensor = crate::tensor::Tensor::from_raw(input_bytes, &[2], DataType::F32);
+
+        let outputs = executor
+            .run(&[("input", tensor)])
+            .expect("Execution should succeed");
+
+        let output = outputs.get("output").expect("Output should be present");
+        let result: Vec<f32> = output
+            .as_bytes()
+            .expect("bytes")
+            .chunks(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        assert_eq!(result, input_data, "Fallback to legacy path should work");
+    }
+
+    #[pollster::test]
+    #[ignore] // Requires GPU
+    async fn test_shape_mismatch_error() {
+        let gpu = onyxia_core::GpuContext::new()
+            .await
+            .expect("GPU required for this test");
+
+        let model = make_passthrough_model(Box::new(BadShapeMockOp));
+        let mut executor =
+            DispatchExecutor::new(Arc::clone(&gpu.device), Arc::clone(&gpu.queue), model)
+                .expect("Executor creation should succeed");
+
+        let input_bytes: Vec<u8> = 1.0f32.to_le_bytes().to_vec();
+        let tensor = crate::tensor::Tensor::from_raw(input_bytes, &[1], DataType::F32);
+
+        let result = executor.run(&[("input", tensor)]);
+        assert!(
+            result.is_err(),
+            "Should fail due to shape count mismatch from resolve_shapes"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("resolve_shapes returned"),
+            "Error should mention resolve_shapes mismatch, got: {err_msg}"
+        );
     }
 }
