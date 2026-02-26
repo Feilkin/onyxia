@@ -17,6 +17,7 @@ pub mod operator;
 pub mod pass;
 pub mod plan;
 pub mod registry;
+pub mod shape_inference;
 pub mod types;
 
 // Re-export commonly used types
@@ -32,6 +33,7 @@ pub use operator::Operator;
 pub use pass::{Pass, Stage};
 pub use plan::ModelMetadata;
 pub use registry::OperatorRegistry;
+pub use shape_inference::ShapeInferenceCtx;
 pub use types::{DataType, Dim, SymbolicShape, TensorData, TensorShape, TensorValue};
 
 /// Result type using the crate's error type.

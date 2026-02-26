@@ -52,11 +52,31 @@ pub trait Operator: Send + Sync {
         &self,
         ctx: &mut crate::compile_ctx::CompileCtx,
     ) -> Result<Box<dyn crate::dispatch::OpDispatch>>;
+
+    /// Infer output shapes from input shapes.
+    ///
+    /// Called during compile-time shape propagation. Input shapes may contain
+    /// symbolic dimensions. The operator should propagate symbolic dims
+    /// through its shape logic (e.g., broadcasting, axis computations).
+    ///
+    /// **Default implementation**: returns `Unranked` for all outputs.
+    /// Operators that can infer shapes at compile time should override this.
+    fn infer_shapes(
+        &self,
+        input_shapes: &[&crate::types::SymbolicShape],
+        ctx: &crate::shape_inference::ShapeInferenceCtx,
+    ) -> Result<Vec<crate::types::SymbolicShape>> {
+        let _ = (input_shapes, ctx);
+        Ok(vec![crate::types::SymbolicShape::Unranked])
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::{IrEdge, IrGraph, IrNode};
+    use crate::shape_inference::ShapeInferenceCtx;
+    use crate::types::{DataType, SymbolicShape, TensorShape};
 
     // Mock operator for testing
     struct MockOp;
@@ -78,5 +98,29 @@ mod tests {
     fn test_operator_trait_object() {
         let op: Box<dyn Operator> = Box::new(MockOp);
         assert_eq!(op.name(), "Mock");
+    }
+
+    #[test]
+    fn test_default_infer_shapes_returns_unranked() {
+        let mut graph = IrGraph::new();
+        let edge = IrEdge::new(
+            "x".to_string(),
+            DataType::F32,
+            TensorShape::Static(vec![2, 3]),
+        );
+        let edge_id = graph.add_edge(edge);
+        let mut node = IrNode::new("Mock".to_string());
+        node.add_input(edge_id);
+        let node_id = graph.add_node(node);
+        let node = graph.node(node_id).unwrap();
+        let ctx = ShapeInferenceCtx::new(node, &graph);
+
+        let op = MockOp;
+        let input_shape = SymbolicShape::Ranked(vec![
+            crate::types::Dim::Fixed(2),
+            crate::types::Dim::Fixed(3),
+        ]);
+        let result = op.infer_shapes(&[&input_shape], &ctx).unwrap();
+        assert_eq!(result, vec![SymbolicShape::Unranked]);
     }
 }
