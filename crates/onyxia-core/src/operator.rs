@@ -83,6 +83,22 @@ pub trait Operator: Send + Sync {
         let _ = (input_shapes, ctx);
         Ok(vec![crate::types::SymbolicShape::Unranked])
     }
+
+    /// Describe this operator's dispatch pattern for compile-time analysis.
+    ///
+    /// Returns an [`OpDescriptor`](crate::descriptor::OpDescriptor) with kernel count,
+    /// buffer access patterns, and output aliasing. Used by the memory planner to
+    /// determine buffer lifetimes and reuse opportunities.
+    ///
+    /// **Default**: returns `None` (opaque operator, no compile-time analysis).
+    /// Operators that can describe their resource usage should override this.
+    fn describe(
+        &self,
+        ctx: &crate::compile_ctx::CompileCtx,
+    ) -> Option<crate::descriptor::OpDescriptor> {
+        let _ = ctx;
+        None
+    }
 }
 
 #[cfg(test)]

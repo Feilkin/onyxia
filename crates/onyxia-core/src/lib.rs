@@ -9,6 +9,7 @@
 
 pub mod broadcast;
 pub mod compile_ctx;
+pub mod descriptor;
 pub mod dispatch;
 pub mod dispatch_dot;
 pub mod gpu_context;
@@ -24,6 +25,7 @@ pub mod types;
 // Re-export commonly used types
 pub use broadcast::broadcast_shape;
 pub use compile_ctx::CompileCtx;
+pub use descriptor::{BufferAccess, KernelDispatch, OpDescriptor};
 pub use gpu_context::GpuContext;
 pub use dispatch::{
     CompiledModel as DispatchModel, DispatchCtx, DispatchEntry, OpDispatch, RuntimeTensor,
