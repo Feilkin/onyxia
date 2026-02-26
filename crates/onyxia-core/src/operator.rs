@@ -76,7 +76,7 @@ mod tests {
     use super::*;
     use crate::ir::{IrEdge, IrGraph, IrNode};
     use crate::shape_inference::ShapeInferenceCtx;
-    use crate::types::{DataType, SymbolicShape, TensorShape};
+    use crate::types::{DataType, SymbolicShape};
 
     // Mock operator for testing
     struct MockOp;
@@ -106,7 +106,7 @@ mod tests {
         let edge = IrEdge::new(
             "x".to_string(),
             DataType::F32,
-            TensorShape::Static(vec![2, 3]),
+            SymbolicShape::fixed(&[2, 3]),
         );
         let edge_id = graph.add_edge(edge);
         let mut node = IrNode::new("Mock".to_string());

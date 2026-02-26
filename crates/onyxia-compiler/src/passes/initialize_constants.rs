@@ -6,7 +6,7 @@
 //! Runs in the `Resolution` stage before dispatch model construction.
 
 use onyxia_core::ir::EdgeData;
-use onyxia_core::{IrGraph, OperatorRegistry, Pass, Result, Stage, TensorShape, TensorValue};
+use onyxia_core::{IrGraph, OperatorRegistry, Pass, Result, Stage, TensorValue};
 
 /// Pass that parses initializer bytes into typed constant values.
 ///
@@ -48,12 +48,13 @@ impl Pass for InitializeConstantsPass {
             let edge_id = onyxia_core::IrEdgeId::new(idx);
             let edge = graph.edge(edge_id)?;
 
-            // Only process initializers with static shapes
-            let (bytes, dtype, shape) = match (&edge.data, &edge.shape) {
-                (EdgeData::Initializer(bytes), TensorShape::Static(dims)) => {
-                    (bytes.clone(), edge.dtype, dims.clone())
-                }
-                _ => continue,
+            // Only process initializers with a fully-static (all-fixed) shape
+            let (bytes, dtype, shape) = if let (EdgeData::Initializer(bytes), Some(dims)) =
+                (&edge.data, edge.shape.as_static())
+            {
+                (bytes.clone(), edge.dtype, dims)
+            } else {
+                continue;
             };
 
             let value = TensorValue::from_bytes(&bytes, dtype, &shape)?;
@@ -69,7 +70,7 @@ impl Pass for InitializeConstantsPass {
 mod tests {
     use super::*;
     use onyxia_core::ir::IrEdge;
-    use onyxia_core::{DataType, IrGraph, TensorShape};
+    use onyxia_core::{DataType, IrGraph, SymbolicShape};
 
     #[test]
     fn test_parses_f32_initializer() {
@@ -79,7 +80,7 @@ mod tests {
         let edge = IrEdge::with_initializer(
             "w".to_string(),
             DataType::F32,
-            TensorShape::Static(vec![2]),
+            SymbolicShape::fixed(&[2]),
             vec![0, 0, 128, 63, 0, 0, 0, 64],
         );
         let id = graph.add_edge(edge);
@@ -105,7 +106,7 @@ mod tests {
         let edge = IrEdge::with_initializer(
             "idx".to_string(),
             DataType::I64,
-            TensorShape::Static(vec![1]),
+            SymbolicShape::fixed(&[1]),
             bytes,
         );
         let id = graph.add_edge(edge);
@@ -126,7 +127,7 @@ mod tests {
         let edge = IrEdge::new(
             "input".to_string(),
             DataType::F32,
-            TensorShape::Static(vec![2, 3]),
+            SymbolicShape::fixed(&[2, 3]),
         );
         graph.add_edge(edge);
 
@@ -173,7 +174,7 @@ mod tests {
         let edge = IrEdge::with_constant(
             "c".to_string(),
             DataType::F32,
-            TensorShape::Static(vec![1]),
+            SymbolicShape::fixed(&[1]),
             val,
         );
         graph.add_edge(edge);

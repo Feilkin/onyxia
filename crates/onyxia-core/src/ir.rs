@@ -7,7 +7,7 @@
 //! Edges can contain initializer data (model weights) or represent
 //! runtime values computed during execution.
 
-use crate::types::{DataType, TensorShape, TensorValue};
+use crate::types::{DataType, Dim, SymbolicShape, TensorValue};
 use crate::{Error, Result};
 use onyxia_onnx::AttributeValue;
 use petgraph::graph::NodeIndex;
@@ -276,7 +276,7 @@ impl IrGraph {
 
         // Update dtype, shape, and data to match the folded value
         edge.dtype = value.dtype;
-        edge.shape = TensorShape::Static(value.shape.clone());
+        edge.shape = SymbolicShape::Ranked(value.shape.iter().map(|&d| Dim::Fixed(d)).collect());
         edge.data = EdgeData::Constant(value);
 
         // Remove the node (cleans up producer/consumer tables + petgraph)
@@ -513,7 +513,10 @@ pub enum EdgeData {
 /// Edges carry metadata about the tensor that flows along them:
 /// - `name` / `dtype` / `shape` describe the tensor.
 /// - `data` describes what compile-time data (if any) the edge holds.
-/// - `inferred_shape` is populated by the compile-time shape propagation pass.
+///
+/// The `shape` field starts as [`SymbolicShape::Unranked`] for runtime tensors
+/// and is populated by the compile-time shape propagation pass. Static weights
+/// have a fully-fixed `shape` set when the edge is created.
 #[derive(Debug, Clone)]
 pub struct IrEdge {
     /// Tensor name (must be unique within the graph).
@@ -522,15 +525,15 @@ pub struct IrEdge {
     /// Data type.
     pub dtype: DataType,
 
-    /// Shape (static, unknown, or absent).
-    pub shape: TensorShape,
+    /// Shape of this tensor.
+    ///
+    /// For weight/constant edges this is fully-static (all [`Dim::Fixed`]).
+    /// For runtime edges it starts as [`SymbolicShape::Unranked`] and is
+    /// refined by the compile-time shape propagation pass.
+    pub shape: SymbolicShape,
 
     /// Compile-time data carried by this edge.
     pub data: EdgeData,
-
-    /// Inferred shape from compile-time shape propagation.
-    /// `None` until the shape propagation pass runs.
-    pub inferred_shape: Option<crate::types::SymbolicShape>,
 }
 
 /// Backward-compatibility alias.
@@ -538,13 +541,16 @@ pub type TensorDef = IrEdge;
 
 impl IrEdge {
     /// Create a new runtime edge (no compile-time data).
-    pub fn new(name: String, dtype: DataType, shape: TensorShape) -> Self {
+    ///
+    /// The `shape` starts as [`SymbolicShape::Unranked`] until the shape
+    /// propagation pass fills it in, OR use this constructor with a specific
+    /// `SymbolicShape` if the shape is already known (e.g. for weights).
+    pub fn new(name: String, dtype: DataType, shape: SymbolicShape) -> Self {
         Self {
             name,
             dtype,
             shape,
             data: EdgeData::Runtime,
-            inferred_shape: None,
         }
     }
 
@@ -552,7 +558,7 @@ impl IrEdge {
     pub fn with_initializer(
         name: String,
         dtype: DataType,
-        shape: TensorShape,
+        shape: SymbolicShape,
         initializer: Vec<u8>,
     ) -> Self {
         Self {
@@ -560,7 +566,6 @@ impl IrEdge {
             dtype,
             shape,
             data: EdgeData::Initializer(initializer),
-            inferred_shape: None,
         }
     }
 
@@ -568,7 +573,7 @@ impl IrEdge {
     pub fn with_constant(
         name: String,
         dtype: DataType,
-        shape: TensorShape,
+        shape: SymbolicShape,
         value: TensorValue,
     ) -> Self {
         Self {
@@ -576,7 +581,6 @@ impl IrEdge {
             dtype,
             shape,
             data: EdgeData::Constant(value),
-            inferred_shape: None,
         }
     }
 
@@ -624,7 +628,7 @@ mod tests {
         let edge = IrEdge::new(
             "x".to_string(),
             DataType::F32,
-            TensorShape::Static(vec![1, 2, 3]),
+            SymbolicShape::fixed(&[1, 2, 3]),
         );
         let edge_id = graph.add_edge(edge);
 
@@ -640,12 +644,12 @@ mod tests {
         let input = IrEdge::new(
             "input".to_string(),
             DataType::F32,
-            TensorShape::Static(vec![1, 2]),
+            SymbolicShape::fixed(&[1, 2]),
         );
         let output = IrEdge::new(
             "output".to_string(),
             DataType::F32,
-            TensorShape::Static(vec![1, 2]),
+            SymbolicShape::fixed(&[1, 2]),
         );
 
         let input_id = graph.add_edge(input);
@@ -669,12 +673,12 @@ mod tests {
         let input_id = graph.add_edge(IrEdge::new(
             "input".to_string(),
             DataType::F32,
-            TensorShape::Static(vec![2, 2]),
+            SymbolicShape::fixed(&[2, 2]),
         ));
         let output_id = graph.add_edge(IrEdge::new(
             "output".to_string(),
             DataType::F32,
-            TensorShape::Static(vec![2, 2]),
+            SymbolicShape::fixed(&[2, 2]),
         ));
 
         let mut node = IrNode::new("Add".to_string());
@@ -696,22 +700,22 @@ mod tests {
         let t0 = graph.add_edge(IrEdge::new(
             "t0".to_string(),
             DataType::F32,
-            TensorShape::Static(vec![2]),
+            SymbolicShape::fixed(&[2]),
         ));
         let t1 = graph.add_edge(IrEdge::new(
             "t1".to_string(),
             DataType::F32,
-            TensorShape::Static(vec![2]),
+            SymbolicShape::fixed(&[2]),
         ));
         let t2 = graph.add_edge(IrEdge::new(
             "t2".to_string(),
             DataType::F32,
-            TensorShape::Static(vec![2]),
+            SymbolicShape::fixed(&[2]),
         ));
         let t3 = graph.add_edge(IrEdge::new(
             "t3".to_string(),
             DataType::F32,
-            TensorShape::Static(vec![2]),
+            SymbolicShape::fixed(&[2]),
         ));
 
         let mut node_a = IrNode::new("A".to_string());
@@ -740,17 +744,17 @@ mod tests {
         let t0 = graph.add_edge(IrEdge::new(
             "t0".to_string(),
             DataType::F32,
-            TensorShape::Static(vec![2]),
+            SymbolicShape::fixed(&[2]),
         ));
         let t1 = graph.add_edge(IrEdge::new(
             "t1".to_string(),
             DataType::F32,
-            TensorShape::Static(vec![2]),
+            SymbolicShape::fixed(&[2]),
         ));
         let t2 = graph.add_edge(IrEdge::new(
             "t2".to_string(),
             DataType::F32,
-            TensorShape::Static(vec![2]),
+            SymbolicShape::fixed(&[2]),
         ));
 
         let mut node_a = IrNode::new("A".to_string());
@@ -784,12 +788,12 @@ mod tests {
         let input_id = graph.add_edge(IrEdge::new(
             "input".to_string(),
             DataType::F32,
-            TensorShape::Static(vec![2, 3]),
+            SymbolicShape::fixed(&[2, 3]),
         ));
         let output_id = graph.add_edge(IrEdge::new(
             "output".to_string(),
             DataType::F32,
-            TensorShape::Static(vec![2, 3]),
+            SymbolicShape::fixed(&[2, 3]),
         ));
 
         let mut node = IrNode::new("Relu".to_string());
@@ -815,10 +819,11 @@ mod tests {
         assert!(graph.node(node_id).is_err());
         assert!(graph.is_fully_folded(node_id).unwrap());
 
-        // Output edge should have the constant value
+        // Output edge should have the constant value and fully-static shape
         let output_edge = graph.edge(output_id).unwrap();
         assert!(output_edge.is_constant());
         assert_eq!(output_edge.constant_value().unwrap().shape, vec![2, 3]);
+        assert_eq!(output_edge.shape.as_static(), Some(vec![2, 3]));
 
         // Consumer still references the edge (unchanged)
         let consumer_node = graph.node(consumer_id).unwrap();

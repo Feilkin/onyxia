@@ -98,7 +98,8 @@ impl<'a> ShapeInferenceCtx<'a> {
 mod tests {
     use super::*;
     use crate::ir::{EdgeData, IrEdge, IrGraph, IrNode};
-    use crate::types::{DataType, TensorData, TensorShape, TensorValue};
+    use crate::types::{DataType, TensorData, TensorValue};
+    use crate::SymbolicShape;
 
     fn build_simple_graph() -> (IrGraph, crate::ir::IrNodeId) {
         let mut graph = IrGraph::new();
@@ -106,12 +107,12 @@ mod tests {
         let input_edge = IrEdge::new(
             "x".to_string(),
             DataType::F32,
-            TensorShape::Static(vec![2, 3]),
+            SymbolicShape::fixed(&[2, 3]),
         );
         let input_id = graph.add_edge(input_edge);
         graph.inputs.push(input_id);
 
-        let out_edge = IrEdge::new("y".to_string(), DataType::F32, TensorShape::Unknown);
+        let out_edge = IrEdge::new("y".to_string(), DataType::F32, SymbolicShape::Unranked);
         let out_id = graph.add_edge(out_edge);
         graph.outputs.push(out_id);
 
@@ -132,12 +133,12 @@ mod tests {
         let mut const_edge = IrEdge::new(
             "shape_input".to_string(),
             DataType::I64,
-            TensorShape::Static(vec![2]),
+            SymbolicShape::fixed(&[2]),
         );
         const_edge.data = EdgeData::Constant(const_value);
         let const_id = graph.add_edge(const_edge);
 
-        let out_edge = IrEdge::new("out".to_string(), DataType::F32, TensorShape::Unknown);
+        let out_edge = IrEdge::new("out".to_string(), DataType::F32, SymbolicShape::Unranked);
         let out_id = graph.add_edge(out_edge);
 
         let mut node = IrNode::new("Reshape".to_string());

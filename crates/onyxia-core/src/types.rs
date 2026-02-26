@@ -5,81 +5,6 @@ use crate::{Error, Result};
 // Re-export types from onyxia-onnx
 pub use onyxia_onnx::DataType;
 
-/// Tensor shape for weights and constants.
-///
-/// With the dispatch model, runtime tensor shapes are computed from actual
-/// inputs. This enum only tracks compile-time known shapes for weights
-/// and constants from the ONNX model.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TensorShape {
-    /// All dimensions are known at compile time (for weights/constants).
-    Static(Vec<usize>),
-
-    /// Optional input that is absent (ONNX empty string).
-    Absent,
-
-    /// Shape is completely unknown (no dimension information).
-    Unknown,
-}
-
-impl TensorShape {
-    /// Check if the shape is fully static.
-    pub fn is_static(&self) -> bool {
-        matches!(self, TensorShape::Static(_))
-    }
-
-    /// Check if the shape is absent.
-    pub fn is_absent(&self) -> bool {
-        matches!(self, TensorShape::Absent)
-    }
-
-    /// Check if the shape is unknown.
-    pub fn is_unknown(&self) -> bool {
-        matches!(self, TensorShape::Unknown)
-    }
-
-    /// Get static dimensions if available.
-    pub fn as_static(&self) -> Option<&[usize]> {
-        match self {
-            TensorShape::Static(dims) => Some(dims),
-            _ => None,
-        }
-    }
-
-    /// Number of dimensions, if known.
-    pub fn ndim(&self) -> Option<usize> {
-        match self {
-            TensorShape::Static(dims) => Some(dims.len()),
-            TensorShape::Absent | TensorShape::Unknown => None,
-        }
-    }
-
-    /// Convert from ONNX TensorShape to core TensorShape.
-    ///
-    /// Maps ONNX shapes to core shapes. Dynamic shapes from ONNX (runtime inputs)
-    /// are mapped to Static with placeholder dimensions — these will be ignored
-    /// at runtime since shapes come from actual input tensors.
-    pub fn from_onnx(onnx_shape: &onyxia_onnx::TensorShape) -> Self {
-        match onnx_shape {
-            onyxia_onnx::TensorShape::Static(dims) => TensorShape::Static(dims.clone()),
-            onyxia_onnx::TensorShape::Dynamic(dims) => {
-                // Map dynamic dimensions to placeholder static dims
-                // Runtime shapes will be computed from actual inputs
-                let static_dims = dims
-                    .iter()
-                    .map(|dim| match dim {
-                        onyxia_onnx::Dimension::Static(n) => *n,
-                        onyxia_onnx::Dimension::Named(_) => 0, // Placeholder
-                    })
-                    .collect();
-                TensorShape::Static(static_dims)
-            }
-            onyxia_onnx::TensorShape::Absent => TensorShape::Absent,
-            onyxia_onnx::TensorShape::Unknown => TensorShape::Unknown,
-        }
-    }
-}
-
 /// Raw tensor data.
 ///
 /// A single dimension that may be symbolic.
@@ -121,17 +46,19 @@ pub enum SymbolicShape {
 }
 
 impl SymbolicShape {
-    /// Convert a [`TensorShape`] to a `SymbolicShape`.
+    /// Create a fully-static `Ranked` shape from concrete dimensions.
     ///
-    /// Static shapes become `Ranked` with all `Fixed` dimensions. Absent and
-    /// unknown shapes become `Unranked`.
-    pub fn from_tensor_shape(ts: &TensorShape) -> Self {
-        match ts {
-            TensorShape::Static(dims) => {
-                SymbolicShape::Ranked(dims.iter().map(|&d| Dim::Fixed(d)).collect())
-            }
-            TensorShape::Absent | TensorShape::Unknown => SymbolicShape::Unranked,
-        }
+    /// Convenience constructor for tests and places that have concrete
+    /// `usize` dimensions available.
+    ///
+    /// # Example
+    /// ```
+    /// use onyxia_core::SymbolicShape;
+    /// let shape = SymbolicShape::fixed(&[2, 3, 4]);
+    /// assert!(shape.is_fully_static());
+    /// ```
+    pub fn fixed(dims: &[usize]) -> Self {
+        SymbolicShape::Ranked(dims.iter().map(|&d| Dim::Fixed(d)).collect())
     }
 
     /// Convert an ONNX [`onyxia_onnx::TensorShape`] to a `SymbolicShape`,
@@ -605,30 +532,6 @@ mod tests {
     }
 
     #[test]
-    fn test_tensor_shape_variants() {
-        let static_shape = TensorShape::Static(vec![1, 2, 3]);
-        assert!(static_shape.is_static());
-        assert!(!static_shape.is_absent());
-        assert!(!static_shape.is_unknown());
-        assert_eq!(static_shape.ndim(), Some(3));
-        assert_eq!(static_shape.as_static(), Some(&[1, 2, 3][..]));
-
-        let absent_shape = TensorShape::Absent;
-        assert!(!absent_shape.is_static());
-        assert!(absent_shape.is_absent());
-        assert!(!absent_shape.is_unknown());
-        assert_eq!(absent_shape.ndim(), None);
-        assert_eq!(absent_shape.as_static(), None);
-
-        let unknown_shape = TensorShape::Unknown;
-        assert!(!unknown_shape.is_static());
-        assert!(!unknown_shape.is_absent());
-        assert!(unknown_shape.is_unknown());
-        assert_eq!(unknown_shape.ndim(), None);
-        assert_eq!(unknown_shape.as_static(), None);
-    }
-
-    #[test]
     fn test_dim_fixed_and_named() {
         let fixed = Dim::Fixed(42);
         let named = Dim::Named("batch_size".to_string());
@@ -651,9 +554,8 @@ mod tests {
     }
 
     #[test]
-    fn test_symbolic_shape_from_tensor_shape() {
-        let ts = TensorShape::Static(vec![2, 3, 4]);
-        let ss = SymbolicShape::from_tensor_shape(&ts);
+    fn test_symbolic_shape_fixed() {
+        let ss = SymbolicShape::fixed(&[2, 3, 4]);
         assert_eq!(
             ss,
             SymbolicShape::Ranked(vec![Dim::Fixed(2), Dim::Fixed(3), Dim::Fixed(4)])
@@ -661,14 +563,6 @@ mod tests {
         assert!(ss.is_fully_static());
         assert_eq!(ss.as_static(), Some(vec![2, 3, 4]));
         assert_eq!(ss.rank(), Some(3));
-
-        let ts_absent = TensorShape::Absent;
-        let ss_absent = SymbolicShape::from_tensor_shape(&ts_absent);
-        assert_eq!(ss_absent, SymbolicShape::Unranked);
-
-        let ts_unknown = TensorShape::Unknown;
-        let ss_unknown = SymbolicShape::from_tensor_shape(&ts_unknown);
-        assert_eq!(ss_unknown, SymbolicShape::Unranked);
     }
 
     #[test]

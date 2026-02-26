@@ -3,9 +3,11 @@
 //! This crate takes ONNX graphs and compiles them into dispatch models with
 //! pre-compiled WGSL shaders that `onyxia-runtime` can execute on the GPU.
 //!
-//! The compiler runs a single pass (InitializeConstants) followed by dispatch
-//! model construction. Shape inference and constant folding have been removed
-//! in favor of runtime shape computation from actual input tensors.
+//! The compiler runs two built-in passes:
+//! 1. `InitializeConstants` (Resolution stage) — parses ONNX weight data.
+//! 2. `ShapePropagation` (Inference stage) — propagates symbolic shapes through operator nodes.
+//!
+//! Per-operator constant folding and memory planning are planned for future stages.
 //!
 //! # Example
 //!
@@ -33,7 +35,7 @@ pub mod passes;
 pub mod scheduler;
 
 pub use error::{CodegenError, Result};
-pub use passes::InitializeConstantsPass;
+pub use passes::{InitializeConstantsPass, ShapePropagationPass};
 
 // Re-export commonly used types from onyxia-core
 pub use onyxia_core::{DispatchModel as CompiledModel, IrGraph, Pass, Stage};
@@ -60,8 +62,11 @@ impl CompilerPipeline {
     pub fn new() -> Self {
         let mut pipeline = Self { passes: Vec::new() };
 
-        // Register built-in pass
+        // Register built-in passes in stage order:
+        //  1. Resolution: parse ONNX initializers into typed constants
+        //  2. Inference:  propagate symbolic shapes through operator nodes
         pipeline.add_pass(InitializeConstantsPass::new());
+        pipeline.add_pass(ShapePropagationPass::new());
 
         pipeline
     }
@@ -292,8 +297,8 @@ mod tests {
         // Create pipeline
         let pipeline = CompilerPipeline::new();
 
-        // Verify pass was registered (1 built-in pass: InitializeConstants)
-        assert_eq!(pipeline.passes.len(), 1);
+        // Verify passes were registered (2 built-in passes: InitializeConstants + ShapePropagation)
+        assert_eq!(pipeline.passes.len(), 2);
     }
 
     #[test]
@@ -326,8 +331,8 @@ mod tests {
         // Add custom pass
         pipeline.add_pass(NoOpPass);
 
-        // Should now have 2 passes (1 built-in + 1 custom)
-        assert_eq!(pipeline.passes.len(), 2);
+        // Should now have 3 passes (2 built-in + 1 custom)
+        assert_eq!(pipeline.passes.len(), 3);
     }
 
     #[test]

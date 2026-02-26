@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use onyxia_compiler::CompilerPipeline;
-use onyxia_core::{IrGraph, OperatorRegistry, Stage, TensorShape};
+use onyxia_core::{IrGraph, OperatorRegistry, Stage};
 use onyxia_onnx::{AttributeValue, Graph};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
@@ -252,15 +252,15 @@ fn check_large_matmul(graph: &IrGraph, node_id: onyxia_core::IrNodeId) -> Result
     let input0 = graph.edge(node.inputs[0])?;
     let input1 = graph.edge(node.inputs[1])?;
 
-    // Check if shapes are static
-    let shape0 = match &input0.shape {
-        TensorShape::Static(s) => s,
-        _ => return Ok(None),
+    // Check if shapes are static (fully fixed)
+    let shape0 = match input0.shape.as_static() {
+        Some(s) => s,
+        None => return Ok(None),
     };
 
-    let shape1 = match &input1.shape {
-        TensorShape::Static(s) => s,
-        _ => return Ok(None),
+    let shape1 = match input1.shape.as_static() {
+        Some(s) => s,
+        None => return Ok(None),
     };
 
     // For matrix multiplication, calculate approximate memory usage

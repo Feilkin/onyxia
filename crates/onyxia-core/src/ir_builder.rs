@@ -2,7 +2,7 @@
 
 use crate::ir::EdgeData;
 use crate::ir::{IrGraph, IrNode, IrTensorId, TensorDef};
-use crate::types::TensorShape;
+use crate::types::SymbolicShape;
 use crate::{Error, Result};
 use onyxia_onnx::Graph;
 use std::collections::HashMap;
@@ -38,9 +38,8 @@ impl IrGraph {
                 Error::InvalidGraph(format!("Failed to get tensor {}: {}", tensor_name, e))
             })?;
 
-            // Convert ONNX shape to core TensorShape
-            // Unknown shapes are preserved until runtime dispatch
-            let shape = TensorShape::from_onnx(&onnx_tensor.shape);
+            // Convert ONNX shape to SymbolicShape, preserving named dimensions
+            let shape = SymbolicShape::from_onnx(&onnx_tensor.shape);
 
             let mut tensor_def = TensorDef::new(onnx_tensor.name.clone(), onnx_tensor.dtype, shape);
 
@@ -183,7 +182,7 @@ mod tests {
         let input_tensor = ir_graph.tensor(input_id).unwrap();
         assert_eq!(input_tensor.name, "input");
         assert_eq!(input_tensor.dtype, DataType::F32);
-        assert!(input_tensor.shape.is_static());
+        assert!(input_tensor.shape.is_fully_static());
 
         // Check node properties
         let nodes: Vec<_> = ir_graph.nodes().collect();
@@ -304,8 +303,8 @@ mod tests {
         let tensor_id = ir_graph.tensor_by_name("unknown").unwrap();
         let tensor = ir_graph.tensor(tensor_id).unwrap();
 
-        // Shape should be Unknown
-        assert!(tensor.shape.is_unknown());
+        // Shape should be Unranked (rank unknown)
+        assert!(tensor.shape.rank().is_none());
     }
 
     #[test]

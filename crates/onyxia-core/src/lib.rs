@@ -34,7 +34,7 @@ pub use pass::{Pass, Stage};
 pub use plan::ModelMetadata;
 pub use registry::OperatorRegistry;
 pub use shape_inference::ShapeInferenceCtx;
-pub use types::{DataType, Dim, SymbolicShape, TensorData, TensorShape, TensorValue};
+pub use types::{DataType, Dim, SymbolicShape, TensorData, TensorValue};
 
 /// Result type using the crate's error type.
 pub type Result<T> = std::result::Result<T, Error>;

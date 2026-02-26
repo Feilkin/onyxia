@@ -3,7 +3,7 @@
 use crate::{TraceDirection, TraceFormat};
 use anyhow::{Context, Result};
 use onyxia_compiler::CompilerPipeline;
-use onyxia_core::{DataType, EdgeData, IrGraph, IrNodeId, TensorShape, TensorValue};
+use onyxia_core::{DataType, EdgeData, IrGraph, IrNodeId, SymbolicShape, TensorValue};
 use onyxia_onnx::Graph;
 use regex::Regex;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -175,13 +175,13 @@ fn display_tensor_value(value: &TensorValue, full: bool) {
 }
 
 /// Parse raw initializer data into a TensorValue.
-fn parse_initializer(dtype: DataType, shape: &TensorShape, data: &[u8]) -> Result<TensorValue> {
+fn parse_initializer(dtype: DataType, shape: &SymbolicShape, data: &[u8]) -> Result<TensorValue> {
     use std::mem::size_of;
 
     // Get the static dimensions for parsing
-    let dims = match shape {
-        TensorShape::Static(dims) => dims.clone(),
-        _ => {
+    let dims = match shape.as_static() {
+        Some(dims) => dims,
+        None => {
             anyhow::bail!(
                 "Cannot parse initializer with non-static shape: {:?}",
                 shape
