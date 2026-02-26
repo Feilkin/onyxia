@@ -82,6 +82,110 @@ impl TensorShape {
 
 /// Raw tensor data.
 ///
+/// A single dimension that may be symbolic.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Dim {
+    /// Statically known at compile time.
+    Fixed(usize),
+    /// Symbolic — references an input dimension. Resolved before dispatch
+    /// from input tensor shapes. E.g., `"batch_size"` or `"seq_len"`.
+    Named(String),
+}
+
+impl Dim {
+    /// Returns `true` if this dimension is a known static value.
+    pub fn is_fixed(&self) -> bool {
+        matches!(self, Dim::Fixed(_))
+    }
+
+    /// Returns the static size if this dimension is [`Dim::Fixed`], otherwise `None`.
+    pub fn as_fixed(&self) -> Option<usize> {
+        match self {
+            Dim::Fixed(n) => Some(*n),
+            Dim::Named(_) => None,
+        }
+    }
+}
+
+/// A shape where some or all dimensions may be symbolic.
+///
+/// This is the result of compile-time shape inference. Some dimensions are
+/// known statically (e.g., weight shapes, constant shapes), others are
+/// symbolic references resolved from runtime input shapes before dispatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SymbolicShape {
+    /// All dimensions are known or symbolic (but rank is known).
+    Ranked(Vec<Dim>),
+    /// Rank is unknown — shape inference could not determine anything.
+    Unranked,
+}
+
+impl SymbolicShape {
+    /// Convert a [`TensorShape`] to a `SymbolicShape`.
+    ///
+    /// Static shapes become `Ranked` with all `Fixed` dimensions. Absent and
+    /// unknown shapes become `Unranked`.
+    pub fn from_tensor_shape(ts: &TensorShape) -> Self {
+        match ts {
+            TensorShape::Static(dims) => {
+                SymbolicShape::Ranked(dims.iter().map(|&d| Dim::Fixed(d)).collect())
+            }
+            TensorShape::Absent | TensorShape::Unknown => SymbolicShape::Unranked,
+        }
+    }
+
+    /// Convert an ONNX [`onyxia_onnx::TensorShape`] to a `SymbolicShape`,
+    /// preserving named (symbolic) dimensions.
+    pub fn from_onnx(onnx: &onyxia_onnx::TensorShape) -> Self {
+        match onnx {
+            onyxia_onnx::TensorShape::Static(dims) => {
+                SymbolicShape::Ranked(dims.iter().map(|&d| Dim::Fixed(d)).collect())
+            }
+            onyxia_onnx::TensorShape::Dynamic(dims) => SymbolicShape::Ranked(
+                dims.iter()
+                    .map(|d| match d {
+                        onyxia_onnx::Dimension::Static(n) => Dim::Fixed(*n),
+                        onyxia_onnx::Dimension::Named(name) => Dim::Named(name.clone()),
+                    })
+                    .collect(),
+            ),
+            onyxia_onnx::TensorShape::Absent | onyxia_onnx::TensorShape::Unknown => {
+                SymbolicShape::Unranked
+            }
+        }
+    }
+
+    /// Returns `true` if every dimension in a `Ranked` shape is [`Dim::Fixed`].
+    ///
+    /// Returns `false` for `Unranked` shapes.
+    pub fn is_fully_static(&self) -> bool {
+        match self {
+            SymbolicShape::Ranked(dims) => dims.iter().all(Dim::is_fixed),
+            SymbolicShape::Unranked => false,
+        }
+    }
+
+    /// Returns the static dimensions if this shape is fully static, otherwise `None`.
+    pub fn as_static(&self) -> Option<Vec<usize>> {
+        match self {
+            SymbolicShape::Ranked(dims) => {
+                dims.iter().map(Dim::as_fixed).collect::<Option<Vec<_>>>()
+            }
+            SymbolicShape::Unranked => None,
+        }
+    }
+
+    /// Returns the rank (number of dimensions) if known, otherwise `None`.
+    pub fn rank(&self) -> Option<usize> {
+        match self {
+            SymbolicShape::Ranked(dims) => Some(dims.len()),
+            SymbolicShape::Unranked => None,
+        }
+    }
+}
+
+/// Raw tensor data.
+///
 /// Separated from metadata (shape, dtype) to enable flexible tensor operations.
 /// Used for compile-time constants and initializer data.
 #[derive(Debug, Clone, PartialEq)]
@@ -522,5 +626,81 @@ mod tests {
         assert!(unknown_shape.is_unknown());
         assert_eq!(unknown_shape.ndim(), None);
         assert_eq!(unknown_shape.as_static(), None);
+    }
+
+    #[test]
+    fn test_dim_fixed_and_named() {
+        let fixed = Dim::Fixed(42);
+        let named = Dim::Named("batch_size".to_string());
+
+        assert!(fixed.is_fixed());
+        assert_eq!(fixed.as_fixed(), Some(42));
+
+        assert!(!named.is_fixed());
+        assert_eq!(named.as_fixed(), None);
+
+        // Equality / hash
+        assert_eq!(fixed, Dim::Fixed(42));
+        assert_ne!(fixed, named);
+
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(Dim::Fixed(1));
+        set.insert(Dim::Named("seq".to_string()));
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn test_symbolic_shape_from_tensor_shape() {
+        let ts = TensorShape::Static(vec![2, 3, 4]);
+        let ss = SymbolicShape::from_tensor_shape(&ts);
+        assert_eq!(
+            ss,
+            SymbolicShape::Ranked(vec![Dim::Fixed(2), Dim::Fixed(3), Dim::Fixed(4)])
+        );
+        assert!(ss.is_fully_static());
+        assert_eq!(ss.as_static(), Some(vec![2, 3, 4]));
+        assert_eq!(ss.rank(), Some(3));
+
+        let ts_absent = TensorShape::Absent;
+        let ss_absent = SymbolicShape::from_tensor_shape(&ts_absent);
+        assert_eq!(ss_absent, SymbolicShape::Unranked);
+
+        let ts_unknown = TensorShape::Unknown;
+        let ss_unknown = SymbolicShape::from_tensor_shape(&ts_unknown);
+        assert_eq!(ss_unknown, SymbolicShape::Unranked);
+    }
+
+    #[test]
+    fn test_symbolic_shape_from_onnx_preserves_named() {
+        let onnx_shape = onyxia_onnx::TensorShape::Dynamic(vec![
+            onyxia_onnx::Dimension::Named("batch_size".to_string()),
+            onyxia_onnx::Dimension::Static(128),
+            onyxia_onnx::Dimension::Named("seq_len".to_string()),
+        ]);
+        let ss = SymbolicShape::from_onnx(&onnx_shape);
+        assert_eq!(
+            ss,
+            SymbolicShape::Ranked(vec![
+                Dim::Named("batch_size".to_string()),
+                Dim::Fixed(128),
+                Dim::Named("seq_len".to_string()),
+            ])
+        );
+        assert!(!ss.is_fully_static());
+        assert_eq!(ss.as_static(), None);
+        assert_eq!(ss.rank(), Some(3));
+    }
+
+    #[test]
+    fn test_symbolic_shape_is_fully_static() {
+        let fully_static = SymbolicShape::Ranked(vec![Dim::Fixed(1), Dim::Fixed(2)]);
+        assert!(fully_static.is_fully_static());
+
+        let mixed = SymbolicShape::Ranked(vec![Dim::Fixed(1), Dim::Named("n".to_string())]);
+        assert!(!mixed.is_fully_static());
+
+        let unranked = SymbolicShape::Unranked;
+        assert!(!unranked.is_fully_static());
     }
 }

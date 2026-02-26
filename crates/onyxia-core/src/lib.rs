@@ -32,7 +32,7 @@ pub use operator::Operator;
 pub use pass::{Pass, Stage};
 pub use plan::ModelMetadata;
 pub use registry::OperatorRegistry;
-pub use types::{DataType, TensorData, TensorShape, TensorValue};
+pub use types::{DataType, Dim, SymbolicShape, TensorData, TensorShape, TensorValue};
 
 /// Result type using the crate's error type.
 pub type Result<T> = std::result::Result<T, Error>;

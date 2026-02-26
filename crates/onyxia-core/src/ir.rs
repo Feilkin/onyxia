@@ -513,6 +513,7 @@ pub enum EdgeData {
 /// Edges carry metadata about the tensor that flows along them:
 /// - `name` / `dtype` / `shape` describe the tensor.
 /// - `data` describes what compile-time data (if any) the edge holds.
+/// - `inferred_shape` is populated by the compile-time shape propagation pass.
 #[derive(Debug, Clone)]
 pub struct IrEdge {
     /// Tensor name (must be unique within the graph).
@@ -526,6 +527,10 @@ pub struct IrEdge {
 
     /// Compile-time data carried by this edge.
     pub data: EdgeData,
+
+    /// Inferred shape from compile-time shape propagation.
+    /// `None` until the shape propagation pass runs.
+    pub inferred_shape: Option<crate::types::SymbolicShape>,
 }
 
 /// Backward-compatibility alias.
@@ -539,6 +544,7 @@ impl IrEdge {
             dtype,
             shape,
             data: EdgeData::Runtime,
+            inferred_shape: None,
         }
     }
 
@@ -554,6 +560,7 @@ impl IrEdge {
             dtype,
             shape,
             data: EdgeData::Initializer(initializer),
+            inferred_shape: None,
         }
     }
 
@@ -569,6 +576,7 @@ impl IrEdge {
             dtype,
             shape,
             data: EdgeData::Constant(value),
+            inferred_shape: None,
         }
     }
 
