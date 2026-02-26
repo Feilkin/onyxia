@@ -94,12 +94,11 @@ async fn test_softmax_1d() {
 
     let graph = make_softmax_graph(&[3], -1);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], &[3]);
     let outputs = executor.run(&[("input", input)]).unwrap();
@@ -124,12 +123,11 @@ async fn test_softmax_2d_axis_1() {
 
     let graph = make_softmax_graph(&[2, 3], 1);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
     let outputs = executor.run(&[("input", input)]).unwrap();
@@ -159,12 +157,11 @@ async fn test_softmax_2d_axis_0() {
 
     let graph = make_softmax_graph(&[2, 2], 0);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[2, 2]);
     let outputs = executor.run(&[("input", input)]).unwrap();
@@ -197,12 +194,11 @@ async fn test_softmax_negative_axis() {
 
     let graph = make_softmax_graph(&[2, 2], -1);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[2, 2]);
     let outputs = executor.run(&[("input", input)]).unwrap();
@@ -233,12 +229,11 @@ async fn test_softmax_numerical_stability() {
 
     let graph = make_softmax_graph(&[3], -1);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1000.0f32, 1000.0, 1000.0], &[3]);
     let outputs = executor.run(&[("input", input)]).unwrap();
@@ -264,12 +259,11 @@ async fn test_softmax_large_values() {
 
     let graph = make_softmax_graph(&[3], -1);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![100.0f32, 200.0, 300.0], &[3]);
     let outputs = executor.run(&[("input", input)]).unwrap();
@@ -303,12 +297,11 @@ async fn test_softmax_3d_tensor() {
 
     let graph = make_softmax_graph(&[2, 2, 3], 2);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     // Input data: 2x2x3 tensor
     let input = Tensor::from_vec(
@@ -345,12 +338,11 @@ async fn test_softmax_3d_middle_axis() {
 
     let graph = make_softmax_graph(&[2, 3, 2], 1);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     // Input data: 2x3x2 tensor
     let input = Tensor::from_vec(

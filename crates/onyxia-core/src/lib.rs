@@ -11,6 +11,7 @@ pub mod broadcast;
 pub mod compile_ctx;
 pub mod dispatch;
 pub mod dispatch_dot;
+pub mod gpu_context;
 pub mod ir;
 pub mod ir_builder;
 pub mod operator;
@@ -23,6 +24,7 @@ pub mod types;
 // Re-export commonly used types
 pub use broadcast::broadcast_shape;
 pub use compile_ctx::CompileCtx;
+pub use gpu_context::GpuContext;
 pub use dispatch::{
     CompiledModel as DispatchModel, DispatchCtx, DispatchEntry, OpDispatch, RuntimeTensor,
     WeightRegister,

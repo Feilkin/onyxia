@@ -2,13 +2,15 @@
 
 use crate::dispatch_executor::DispatchExecutor;
 use crate::error::{Result, RuntimeError};
+use onyxia_core::GpuContext;
 use onyxia_core::dispatch::CompiledModel;
-use std::sync::Arc;
 use tracing::instrument;
 
 /// Main entry point for GPU runtime.
 ///
 /// Manages GPU device initialization and provides methods to load and execute models.
+/// Internally holds a [`GpuContext`] that can be shared with the compiler for
+/// constant folding and feature-dependent optimizations.
 ///
 /// # Example
 /// ```no_run
@@ -21,55 +23,43 @@ use tracing::instrument;
 /// }
 /// ```
 pub struct Runtime {
-    _instance: wgpu::Instance,
-    adapter: wgpu::Adapter,
-    adapter_info: wgpu::AdapterInfo,
+    gpu: GpuContext,
 }
 
 impl Runtime {
-    /// Initialize the runtime with the default GPU adapter.
+    /// Initialize the runtime, creating a shared GPU context.
     ///
-    /// This will automatically select the best available GPU.
-    /// Device creation is deferred until `load_model()` when buffer requirements are known.
+    /// This selects the best available GPU and creates a device with
+    /// `IMMEDIATES` feature support.
     ///
     /// # Errors
-    /// Returns an error if no suitable GPU is found.
+    /// Returns an error if no suitable GPU is found or device creation fails.
     #[instrument(name = "Runtime::new")]
     pub async fn new() -> Result<Self> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
-
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            })
+        let gpu = GpuContext::new()
             .await
-            .map_err(|e| {
-                RuntimeError::InitError(format!("Failed to find suitable GPU adapter: {e}"))
-            })?;
+            .map_err(|e| RuntimeError::InitError(format!("{e}")))?;
+        Ok(Self { gpu })
+    }
 
-        let adapter_info = adapter.get_info();
-
-        Ok(Self {
-            _instance: instance,
-            adapter,
-            adapter_info,
-        })
+    /// Get the shared GPU context.
+    ///
+    /// The returned context can be passed to the compiler for compile-time GPU
+    /// operations such as constant folding, avoiding a second device creation.
+    pub fn gpu(&self) -> &GpuContext {
+        &self.gpu
     }
 
     /// Load a compiled model for execution.
     ///
-    /// Creates a GPU device and initializes the dispatch executor with weight data.
+    /// Reuses the shared GPU device/queue from this runtime — no additional
+    /// device is created.
     ///
     /// # Arguments
     /// * `model` - Compiled model with dispatch entries and routing
     ///
     /// # Errors
-    /// Returns an error if device creation or resource initialization fails.
+    /// Returns an error if resource initialization fails.
     ///
     /// # Example
     /// ```no_run
@@ -79,38 +69,18 @@ impl Runtime {
     /// # async fn main() -> anyhow::Result<()> {
     /// let runtime = Runtime::new().await?;
     /// # let model: CompiledModel = todo!();
-    /// let executor = runtime.load_model(model).await?;
+    /// let executor = runtime.load_model(model)?;
     /// # Ok(())
     /// # }
     /// ```
     #[instrument(name = "Runtime::load_model", skip(self, model))]
-    pub async fn load_model(&self, model: CompiledModel) -> Result<DispatchExecutor> {
-        // Use adapter's limits, adjusting only what we need
-        let adapter_limits = self.adapter.limits();
-        let mut limits = adapter_limits.clone();
-
-        // Only increase immediate size if supported
-        limits.max_immediate_size = limits.max_immediate_size.max(128);
-
-        // Create device with adapter-compatible limits
-        let (device, queue) = self
-            .adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("Onyxia Device"),
-                required_features: wgpu::Features::IMMEDIATES,
-                required_limits: limits,
-                memory_hints: wgpu::MemoryHints::default(),
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| RuntimeError::InitError(format!("Failed to create device: {}", e)))?;
-
-        DispatchExecutor::new(Arc::new(device), Arc::new(queue), model)
+    pub fn load_model(&self, model: CompiledModel) -> Result<DispatchExecutor> {
+        DispatchExecutor::new(self.gpu.device.clone(), self.gpu.queue.clone(), model)
     }
 
     /// Get information about the GPU adapter.
     pub fn adapter_info(&self) -> &wgpu::AdapterInfo {
-        &self.adapter_info
+        &self.gpu.adapter_info
     }
 }
 

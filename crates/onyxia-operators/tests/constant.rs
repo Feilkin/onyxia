@@ -55,15 +55,14 @@ async fn test_constant_f32() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline
-        .compile(&graph, &registry)
-        .expect("Compilation should succeed");
 
     // Execute (no inputs needed)
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
+    let model = pipeline
+        .compile(&graph, &registry, runtime.gpu())
+        .expect("Compilation should succeed");
     let mut executor = runtime
         .load_model(model)
-        .await
         .expect("Model loading should succeed");
 
     let outputs = executor.run(&[]).expect("Execution should succeed");
@@ -90,15 +89,14 @@ async fn test_constant_i64() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline
-        .compile(&graph, &registry)
-        .expect("Compilation should succeed");
 
     // Execute
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
+    let model = pipeline
+        .compile(&graph, &registry, runtime.gpu())
+        .expect("Compilation should succeed");
     let mut executor = runtime
         .load_model(model)
-        .await
         .expect("Model loading should succeed");
 
     let outputs = executor.run(&[]).expect("Execution should succeed");
@@ -122,15 +120,14 @@ async fn test_constant_scalar() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline
-        .compile(&graph, &registry)
-        .expect("Compilation should succeed");
 
     // Execute
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
+    let model = pipeline
+        .compile(&graph, &registry, runtime.gpu())
+        .expect("Compilation should succeed");
     let mut executor = runtime
         .load_model(model)
-        .await
         .expect("Model loading should succeed");
 
     let outputs = executor.run(&[]).expect("Execution should succeed");
@@ -157,15 +154,14 @@ async fn test_constant_multidimensional() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline
-        .compile(&graph, &registry)
-        .expect("Compilation should succeed");
 
     // Execute
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
+    let model = pipeline
+        .compile(&graph, &registry, runtime.gpu())
+        .expect("Compilation should succeed");
     let mut executor = runtime
         .load_model(model)
-        .await
         .expect("Model loading should succeed");
 
     let outputs = executor.run(&[]).expect("Execution should succeed");

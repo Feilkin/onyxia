@@ -40,7 +40,10 @@ pub use passes::{InitializeConstantsPass, ShapePropagationPass};
 // Re-export commonly used types from onyxia-core
 pub use onyxia_core::{DispatchModel as CompiledModel, IrGraph, Pass, Stage};
 
-use onyxia_core::{CompileCtx, DispatchEntry, DispatchModel, EdgeData, IrTensorId, WeightRegister};
+use onyxia_core::{
+    CompileCtx, DispatchCtx, DispatchEntry, DispatchModel, EdgeData, GpuContext, IrTensorId,
+    WeightRegister,
+};
 use onyxia_core::{Error, ModelMetadata};
 use onyxia_onnx::Graph;
 use std::collections::HashMap;
@@ -113,6 +116,7 @@ impl CompilerPipeline {
         &mut self,
         graph: &Graph,
         registry: &onyxia_core::OperatorRegistry,
+        gpu: &GpuContext,
     ) -> onyxia_core::Result<DispatchModel> {
         // Step 1: Convert ONNX graph to IR
         let mut ir_graph = IrGraph::from_onnx(graph)?;
@@ -126,7 +130,8 @@ impl CompilerPipeline {
         }
 
         // Step 3: Build dispatch model
-        self.build_dispatch_model(&ir_graph, registry)
+        let mut dispatch_ctx = DispatchCtx::new(gpu.device.clone(), gpu.queue.clone());
+        self.build_dispatch_model(&ir_graph, registry, &mut dispatch_ctx)
     }
 
     /// Build the final dispatch model from the IR graph.
@@ -137,6 +142,7 @@ impl CompilerPipeline {
         &self,
         graph: &IrGraph,
         registry: &onyxia_core::OperatorRegistry,
+        dispatch_ctx: &mut DispatchCtx,
     ) -> onyxia_core::Result<DispatchModel> {
         let mut entries = Vec::new();
         let mut shader_cache = HashMap::new();
@@ -151,7 +157,7 @@ impl CompilerPipeline {
                 Error::Compilation(format!("No operator registered for type: {op_type}"))
             })?;
 
-            let mut ctx = CompileCtx::new(node_id, node, graph, &mut shader_cache);
+            let mut ctx = CompileCtx::new(node_id, node, graph, &mut shader_cache, dispatch_ctx);
             let dispatch = operator.create_dispatch(&mut ctx)?;
 
             // Register routing: input/output tensor IDs map directly to register indices
@@ -251,6 +257,7 @@ impl Default for CompilerPipeline {
 ///
 /// * `graph` - The ONNX graph to compile
 /// * `registry` - Operator registry mapping op_types to implementations
+/// * `gpu` - Shared GPU context for device access during compilation
 ///
 /// # Returns
 ///
@@ -267,13 +274,15 @@ impl Default for CompilerPipeline {
 ///
 /// ```no_run
 /// use onyxia_compiler::compile;
-/// use onyxia_core::OperatorRegistry;
+/// use onyxia_core::{GpuContext, OperatorRegistry};
 /// use onyxia_onnx::Graph;
 ///
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # #[pollster::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// # let graph = onyxia_onnx::Graph::new();
+/// let gpu = GpuContext::new().await?;
 /// let registry = OperatorRegistry::new();
-/// let model = compile(&graph, &registry)?;
+/// let model = compile(&graph, &registry, &gpu)?;
 ///
 /// println!("Compiled {} operations", model.entries.len());
 /// # Ok(())
@@ -283,9 +292,10 @@ impl Default for CompilerPipeline {
 pub fn compile(
     graph: &Graph,
     registry: &onyxia_core::OperatorRegistry,
+    gpu: &GpuContext,
 ) -> onyxia_core::Result<DispatchModel> {
     let mut pipeline = CompilerPipeline::new();
-    pipeline.compile(graph, registry)
+    pipeline.compile(graph, registry, gpu)
 }
 
 #[cfg(test)]
@@ -342,9 +352,11 @@ mod tests {
 
         let graph = onyxia_onnx::Graph::new();
         let registry = onyxia_core::OperatorRegistry::new();
+        let gpu = pollster::block_on(onyxia_core::GpuContext::new())
+            .expect("GpuContext should initialize");
 
         // This should not panic (though it may return an error for empty graph)
-        let _result = compile(&graph, &registry);
+        let _result = compile(&graph, &registry, &gpu);
         // We don't assert Ok because an empty graph may fail
     }
 
@@ -389,9 +401,11 @@ mod tests {
 
         // Compile with core registry (includes Add operator)
         let registry = onyxia_operators::core_operator_registry();
+        let gpu = pollster::block_on(onyxia_core::GpuContext::new())
+            .expect("GpuContext should initialize");
 
         let mut pipeline = CompilerPipeline::new();
-        let model = pipeline.compile(&graph, &registry).unwrap();
+        let model = pipeline.compile(&graph, &registry, &gpu).unwrap();
 
         // Verify structure
         assert!(!model.entries.is_empty(), "Model should have operations");
@@ -446,8 +460,10 @@ mod tests {
         graph.outputs = vec!["c".to_string()];
 
         let registry = onyxia_operators::core_operator_registry();
+        let gpu = pollster::block_on(onyxia_core::GpuContext::new())
+            .expect("GpuContext should initialize");
         let mut pipeline = CompilerPipeline::new();
-        let model = pipeline.compile(&graph, &registry).unwrap();
+        let model = pipeline.compile(&graph, &registry, &gpu).unwrap();
 
         // The Add entry should read from input registers and write to output register
         assert_eq!(model.entries.len(), 1, "Should have one operation");

@@ -15,15 +15,13 @@ async fn test_gelu_e2e() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let compiled = pipeline
-        .compile(&graph, &registry)
-        .expect("Compilation should succeed");
-
     // Execute
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
+    let compiled = pipeline
+        .compile(&graph, &registry, runtime.gpu())
+        .expect("Compilation should succeed");
     let mut executor = runtime
         .load_model(compiled)
-        .await
         .expect("Model loading should succeed");
 
     // Test inputs: [-2.0, -1.0, 0.0, 1.0, 2.0, 3.0]

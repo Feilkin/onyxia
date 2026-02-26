@@ -93,12 +93,11 @@ fn make_range_graph(start: f32, limit: f32, delta: f32, output_len: usize) -> Gr
 async fn test_range_basic() {
     let graph = make_range_graph(0.0, 5.0, 1.0, 5);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let outputs = executor.run(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
@@ -111,12 +110,11 @@ async fn test_range_basic() {
 async fn test_range_float_step() {
     let graph = make_range_graph(0.0, 1.0, 0.25, 4);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let outputs = executor.run(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
@@ -129,12 +127,11 @@ async fn test_range_float_step() {
 async fn test_range_negative_step() {
     let graph = make_range_graph(5.0, 0.0, -1.0, 5);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let outputs = executor.run(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
@@ -213,12 +210,11 @@ async fn test_trilu_upper() {
     let input_data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
     let graph = make_trilu_graph(&input_data, &[3, 3], true, None);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let outputs = executor.run(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
@@ -233,12 +229,11 @@ async fn test_trilu_lower() {
     let input_data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
     let graph = make_trilu_graph(&input_data, &[3, 3], false, None);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let outputs = executor.run(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
@@ -253,12 +248,11 @@ async fn test_trilu_upper_offset() {
     let input_data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
     let graph = make_trilu_graph(&input_data, &[3, 3], true, Some(1));
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let outputs = executor.run(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
@@ -349,12 +343,11 @@ async fn test_where_basic() {
 
     let graph = make_where_graph(&cond_data, &[3], &x_data, &[3], &y_data, &[3], &[3]);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let outputs = executor.run(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
@@ -374,12 +367,11 @@ async fn test_where_broadcast() {
 
     let graph = make_where_graph(&cond_data, &[4], &x_data, &[4], &y_data, &[4], &[4]);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let outputs = executor.run(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
@@ -398,12 +390,11 @@ async fn test_where_scalar_broadcast() {
 
     let graph = make_where_graph(&cond_data, &[], &x_data, &[4], &y_data, &[4], &[4]);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let outputs = executor.run(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
@@ -441,12 +432,11 @@ async fn test_where_trailing_dim_expansion() {
         &out_shape,
     );
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let outputs = executor.run(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
@@ -495,12 +485,11 @@ async fn test_where_leading_and_multi_dimensional_broadcast() {
         &out_shape,
     );
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let outputs = executor.run(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();

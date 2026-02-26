@@ -518,9 +518,9 @@ fn reshape_graph(count: usize, base_shape: Vec<usize>) -> Graph {
 
 fn executor(graph: &Graph) -> DispatchExecutor {
     let registry = core_operator_registry();
-    let model = compile(graph, &registry).expect("graph should compile");
     let runtime = block_on(Runtime::new()).expect("should get a runtime");
-    block_on(runtime.load_model(model)).expect("should get executor")
+    let model = compile(graph, &registry, runtime.gpu()).expect("graph should compile");
+    runtime.load_model(model).expect("should get executor")
 }
 
 struct BenchCtx {

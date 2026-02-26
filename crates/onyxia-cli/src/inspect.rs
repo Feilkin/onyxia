@@ -3,7 +3,7 @@
 use crate::{TraceDirection, TraceFormat};
 use anyhow::{Context, Result};
 use onyxia_compiler::CompilerPipeline;
-use onyxia_core::{DataType, EdgeData, IrGraph, IrNodeId, SymbolicShape, TensorValue};
+use onyxia_core::{DataType, EdgeData, GpuContext, IrGraph, IrNodeId, SymbolicShape, TensorValue};
 use onyxia_onnx::Graph;
 use regex::Regex;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -28,8 +28,10 @@ pub fn inspect_nodes(
     let _ = dynamic_dims; // Suppress unused warning
 
     // Compile model to dispatch model (validates operators and builds execution plan)
+    let gpu = pollster::block_on(GpuContext::new())
+        .context("Failed to initialize GPU context")?;
     pipeline
-        .compile(model, &registry)
+        .compile(model, &registry, &gpu)
         .context("Failed to compile model for inspection")?;
 
     // Find and display each requested node

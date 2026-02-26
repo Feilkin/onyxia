@@ -74,12 +74,11 @@ fn create_matmul_graph(
 async fn test_matmul_2d_basic() {
     let graph = create_matmul_graph(vec![2, 3], vec![3, 2], vec![2, 2]);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     // A = [[1, 2, 3],
     //      [4, 5, 6]]
@@ -120,12 +119,11 @@ async fn test_matmul_2d_basic() {
 async fn test_matmul_square() {
     let graph = create_matmul_graph(vec![3, 3], vec![3, 3], vec![3, 3]);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     // Identity matrix × arbitrary matrix = arbitrary matrix
     let a = Tensor::from_vec(
@@ -166,12 +164,11 @@ async fn test_matmul_square() {
 async fn test_matmul_matrix_vector() {
     let graph = create_matmul_graph(vec![2, 3], vec![3, 1], vec![2, 1]);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     // A = [[1, 2, 3],
     //      [4, 5, 6]]
@@ -207,12 +204,11 @@ async fn test_matmul_matrix_vector() {
 async fn test_matmul_vector_matrix() {
     let graph = create_matmul_graph(vec![1, 3], vec![3, 2], vec![1, 2]);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     // A = [[1, 2, 3]]
     let a = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], &[1, 3]);
@@ -246,12 +242,11 @@ async fn test_matmul_vector_matrix() {
 async fn test_matmul_batched() {
     let graph = create_matmul_graph(vec![2, 2, 3], vec![2, 3, 2], vec![2, 2, 2]);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     // A = batch 0: [[1, 2, 3], [4, 5, 6]]
     //     batch 1: [[7, 8, 9], [10, 11, 12]]
@@ -306,12 +301,11 @@ async fn test_matmul_batched() {
 async fn test_matmul_broadcast() {
     let graph = create_matmul_graph(vec![2, 3], vec![5, 3, 4], vec![5, 2, 4]);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     // A = [[1, 2, 3],
     //      [4, 5, 6]]
@@ -363,12 +357,11 @@ async fn test_matmul_large() {
     let size = 64;
     let graph = create_matmul_graph(vec![size, size], vec![size, size], vec![size, size]);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     // Create 64×64 × 64×64 matrix multiplication
     let a_data: Vec<f32> = (0..size * size).map(|i| (i % 10) as f32).collect();

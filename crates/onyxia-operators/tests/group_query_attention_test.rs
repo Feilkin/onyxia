@@ -100,13 +100,12 @@ async fn test_group_query_attention_basic() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let compiled = pipeline
-        .compile(&graph, &registry)
-        .expect("Compilation should succeed");
-
     // Execute
     let runtime = Runtime::new().await.expect("Runtime init");
-    let mut executor = runtime.load_model(compiled).await.expect("Load model");
+    let compiled = pipeline
+        .compile(&graph, &registry, runtime.gpu())
+        .expect("Compilation should succeed");
+    let mut executor = runtime.load_model(compiled).expect("Load model");
 
     // Create test inputs (simple uniform values)
     let query = Tensor::from_vec(
@@ -301,13 +300,12 @@ async fn test_group_query_attention_kv_cache() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let compiled = pipeline
-        .compile(&graph, &registry)
-        .expect("Compilation should succeed");
-
     // Execute
     let runtime = Runtime::new().await.expect("Runtime init");
-    let mut executor = runtime.load_model(compiled).await.expect("Load model");
+    let compiled = pipeline
+        .compile(&graph, &registry, runtime.gpu())
+        .expect("Compilation should succeed");
+    let mut executor = runtime.load_model(compiled).expect("Load model");
 
     // Step 1: Prefill with empty past cache
     let query_prefill = Tensor::from_vec(
@@ -562,14 +560,13 @@ async fn test_group_query_attention_decode_masks_with_past_offset() {
         "present_value".into(),
     ];
 
+    let runtime = Runtime::new().await.expect("Runtime init");
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
     let compiled = pipeline
-        .compile(&graph, &registry)
+        .compile(&graph, &registry, runtime.gpu())
         .expect("Compilation should succeed");
-
-    let runtime = Runtime::new().await.expect("Runtime init");
-    let mut executor = runtime.load_model(compiled).await.expect("Load model");
+    let mut executor = runtime.load_model(compiled).expect("Load model");
 
     let query = Tensor::from_vec(vec![1.0f32], &[batch, seq_len, num_heads * head_size]);
     let key = Tensor::from_vec(vec![1.0f32], &[batch, seq_len, kv_num_heads * head_size]);

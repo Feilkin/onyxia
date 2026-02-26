@@ -1318,6 +1318,7 @@ dependencies = [
  "onyxia-onnx",
  "onyxia-operators",
  "petgraph",
+ "pollster",
  "thiserror",
  "tracing",
  "tracing-subscriber",

@@ -160,18 +160,18 @@ pub async fn compile_and_run_f32(
     // Compile graph
     let registry = onyxia_operators::core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline
-        .compile(graph, &registry)
-        .expect("Compilation should succeed");
 
-    // Initialize runtime
+    // Initialize runtime first so we can share its GPU context with the compiler
     let runtime = Runtime::new()
         .await
         .expect("Runtime initialization should succeed");
 
+    let model = pipeline
+        .compile(graph, &registry, runtime.gpu())
+        .expect("Compilation should succeed");
+
     let mut executor = runtime
         .load_model(model)
-        .await
         .expect("Model loading should succeed");
 
     // Run with inputs

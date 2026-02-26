@@ -63,12 +63,11 @@ async fn test_gather_1d_axis_0() {
     graph.outputs = vec!["output".to_string()];
 
     // Compile and execute
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0], &[5]);
     let indices = Tensor::from_vec(vec![0i32, 2, 4], &[3]);
@@ -129,12 +128,11 @@ async fn test_gather_2d_axis_0() {
     graph.outputs = vec!["output".to_string()];
 
     // Compile and execute
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
     let indices = Tensor::from_vec(vec![2i32, 0], &[2]);
@@ -196,12 +194,11 @@ async fn test_gather_2d_axis_1() {
     graph.outputs = vec!["output".to_string()];
 
     // Compile and execute
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
     let indices = Tensor::from_vec(vec![0i32, 2, 1, 0], &[2, 2]);
@@ -264,12 +261,11 @@ async fn test_gather_negative_indices() {
     graph.outputs = vec!["output".to_string()];
 
     // Compile and execute
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0], &[5]);
     let indices = Tensor::from_vec(vec![0i32, -1, -2], &[3]);
@@ -320,12 +316,11 @@ async fn test_gather_f32_with_i64_indices() {
     graph.inputs = vec!["data".to_string(), "indices".to_string()];
     graph.outputs = vec!["output".to_string()];
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![10.0f32, 11.0, 12.0, 13.0, 14.0, 15.0], &[6]);
     let indices = Tensor::from_vec(vec![5i64, 0, 3], &[3]);
@@ -376,12 +371,11 @@ async fn test_gather_i64_data_cpu_fallback() {
     graph.inputs = vec!["data".to_string(), "indices".to_string()];
     graph.outputs = vec!["output".to_string()];
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![1i64, 2, 3, 4, 5, 6], &[2, 3]);
     let indices = Tensor::from_vec(vec![2i64, 0], &[2]);
@@ -462,12 +456,11 @@ async fn test_scatter_nd_1d() {
     graph.outputs = vec!["output".to_string()];
 
     // Compile and execute
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0], &[5]);
     let indices = Tensor::from_vec(vec![1i32, 3], &[2, 1]);
@@ -545,12 +538,11 @@ async fn test_scatter_nd_2d_point_updates() {
     graph.outputs = vec!["output".to_string()];
 
     // Compile and execute
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(
         vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
@@ -635,12 +627,11 @@ async fn test_scatter_nd_2d_slice_updates() {
     graph.outputs = vec!["output".to_string()];
 
     // Compile and execute
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
     let indices = Tensor::from_vec(vec![1i32], &[1, 1]);

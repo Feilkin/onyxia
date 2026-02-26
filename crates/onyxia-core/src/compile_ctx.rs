@@ -5,6 +5,7 @@
 //! metadata, and shader compilation.
 
 use crate::Result;
+use crate::dispatch::DispatchCtx;
 use crate::ir::{EdgeData, IrEdge, IrGraph, IrNode, IrNodeId};
 use crate::types::TensorValue;
 use onyxia_onnx::AttributeValue;
@@ -12,9 +13,9 @@ use std::collections::HashMap;
 
 /// Compile-time context passed to `Operator::create_dispatch()`.
 ///
-/// Provides access to node attributes, weight/initializer values, and
-/// shader compilation. Does NOT provide tensor shapes (those are only
-/// known at runtime).
+/// Provides access to node attributes, weight/initializer values,
+/// shader compilation, and the GPU dispatch context. The dispatch context
+/// can be used for compile-time GPU work such as constant folding.
 pub struct CompileCtx<'a> {
     /// The IR node being compiled.
     pub node: &'a IrNode,
@@ -27,6 +28,12 @@ pub struct CompileCtx<'a> {
 
     /// Shader compilation cache (WGSL source → naga module).
     shader_cache: &'a mut HashMap<String, naga::Module>,
+
+    /// GPU dispatch context, available during compilation.
+    ///
+    /// Used for constant folding (running operators on GPU at compile time)
+    /// and for querying device features/limits for progressive optimizations.
+    pub dispatch_ctx: &'a mut DispatchCtx,
 }
 
 impl<'a> CompileCtx<'a> {
@@ -36,12 +43,14 @@ impl<'a> CompileCtx<'a> {
         node: &'a IrNode,
         graph: &'a IrGraph,
         shader_cache: &'a mut HashMap<String, naga::Module>,
+        dispatch_ctx: &'a mut DispatchCtx,
     ) -> Self {
         Self {
             node,
             node_id,
             graph,
             shader_cache,
+            dispatch_ctx,
         }
     }
 

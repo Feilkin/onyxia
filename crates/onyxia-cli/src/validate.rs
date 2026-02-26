@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use onyxia_compiler::CompilerPipeline;
-use onyxia_core::{IrGraph, OperatorRegistry, Stage};
+use onyxia_core::{GpuContext, IrGraph, OperatorRegistry, Stage};
 use onyxia_onnx::{AttributeValue, Graph};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
@@ -48,8 +48,10 @@ pub fn validate_model(
     let _ = (dynamic_dims, until_stage); // Suppress unused warnings
     // TODO: Re-evaluate validation workflow when dispatch model is complete
 
+    let gpu =
+        pollster::block_on(GpuContext::new()).context("Failed to initialize GPU context")?;
     let _compiled = pipeline
-        .compile(&model, &registry)
+        .compile(&model, &registry, &gpu)
         .context("Failed to compile model")?;
     print_success();
 

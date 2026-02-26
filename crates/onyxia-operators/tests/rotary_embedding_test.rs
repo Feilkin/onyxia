@@ -83,13 +83,12 @@ async fn test_rotary_embedding_basic() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let compiled = pipeline
-        .compile(&graph, &registry)
-        .expect("Compilation should succeed");
-
     // Execute
     let runtime = Runtime::new().await.expect("Runtime init");
-    let mut executor = runtime.load_model(compiled).await.expect("Load model");
+    let compiled = pipeline
+        .compile(&graph, &registry, runtime.gpu())
+        .expect("Compilation should succeed");
+    let mut executor = runtime.load_model(compiled).expect("Load model");
 
     // Create test inputs
     let input = Tensor::from_vec(vec![1.0f32; 1 * 4 * 64], &[1, 4, 64]);
@@ -184,14 +183,13 @@ async fn test_rotary_embedding_applies_per_head() {
     ];
     graph.outputs = vec!["output".into()];
 
+    let runtime = Runtime::new().await.expect("Runtime init");
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
     let compiled = pipeline
-        .compile(&graph, &registry)
+        .compile(&graph, &registry, runtime.gpu())
         .expect("Compilation should succeed");
-
-    let runtime = Runtime::new().await.expect("Runtime init");
-    let mut executor = runtime.load_model(compiled).await.expect("Load model");
+    let mut executor = runtime.load_model(compiled).expect("Load model");
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[1, 1, 8]);
     let position_ids = Tensor::from_vec(vec![0i64], &[1, 1]);

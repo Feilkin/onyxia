@@ -112,12 +112,11 @@ async fn test_reduce_mean_single_axis() {
     // Input shape: (2, 3), output shape: (3,)
     let graph = make_reduce_mean_graph(&[2, 3], &[3], &[0], false);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
     let outputs = executor.run(&[("data", input)]).unwrap();
@@ -134,12 +133,11 @@ async fn test_reduce_mean_last_axis() {
     // Input shape: (2, 3), output shape: (2,)
     let graph = make_reduce_mean_graph(&[2, 3], &[2], &[1], false);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
     let outputs = executor.run(&[("data", input)]).unwrap();
@@ -156,12 +154,11 @@ async fn test_reduce_mean_all_axes() {
     // Input shape: (4,), output shape: (1,) (scalar)
     let graph = make_reduce_mean_graph(&[4], &[1], &[0], false);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[4]);
     let outputs = executor.run(&[("data", input)]).unwrap();
@@ -177,12 +174,11 @@ async fn test_reduce_mean_keepdims() {
     // Input shape: (1, 3), output shape: (1, 1)
     let graph = make_reduce_mean_graph(&[1, 3], &[1, 1], &[1], true);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], &[1, 3]);
     let outputs = executor.run(&[("data", input)]).unwrap();
@@ -199,12 +195,11 @@ async fn test_reduce_mean_3d_tensor() {
     // Expected: [[(1+3)/2, (2+4)/2], [(5+7)/2, (6+8)/2]] = [[2, 3], [6, 7]]
     let graph = make_reduce_mean_graph(&[2, 2, 2], &[2, 2], &[1], false);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 2, 2]);
     let outputs = executor.run(&[("data", input)]).unwrap();
@@ -287,12 +282,11 @@ async fn test_reduce_sum_single_axis() {
     // Input shape: (2, 3), output shape: (3,)
     let graph = make_reduce_sum_graph(&[2, 3], &[3], &[0], false);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
     let outputs = executor.run(&[("data", input)]).unwrap();
@@ -309,12 +303,11 @@ async fn test_reduce_sum_last_axis() {
     // Input shape: (2, 3), output shape: (2,)
     let graph = make_reduce_sum_graph(&[2, 3], &[2], &[1], false);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
     let outputs = executor.run(&[("data", input)]).unwrap();
@@ -331,12 +324,11 @@ async fn test_reduce_sum_all_axes() {
     // Input shape: (4,), output shape: (1,) (scalar)
     let graph = make_reduce_sum_graph(&[4], &[1], &[0], false);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[4]);
     let outputs = executor.run(&[("data", input)]).unwrap();
@@ -352,12 +344,11 @@ async fn test_reduce_sum_keepdims() {
     // Input shape: (1, 3), output shape: (1, 1)
     let graph = make_reduce_sum_graph(&[1, 3], &[1, 1], &[1], true);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], &[1, 3]);
     let outputs = executor.run(&[("data", input)]).unwrap();
@@ -374,12 +365,11 @@ async fn test_reduce_sum_3d_tensor() {
     // Expected: [[(1+3), (2+4)], [(5+7), (6+8)]] = [[4, 6], [12, 14]]
     let graph = make_reduce_sum_graph(&[2, 2, 2], &[2, 2], &[1], false);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 2, 2]);
     let outputs = executor.run(&[("data", input)]).unwrap();
@@ -447,12 +437,11 @@ async fn test_max_two_inputs() {
     // Max of two vectors: [1, 5, 3] and [4, 2, 6] -> [4, 5, 6]
     let graph = make_max_graph(&[&[3], &[3]], &[3]);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input_0 = Tensor::from_vec(vec![1.0f32, 5.0, 3.0], &[3]);
     let input_1 = Tensor::from_vec(vec![4.0f32, 2.0, 6.0], &[3]);
@@ -470,12 +459,11 @@ async fn test_max_three_inputs() {
     // Max of three vectors: [1, 5, 3], [4, 2, 6], [3, 7, 1] -> [4, 7, 6]
     let graph = make_max_graph(&[&[3], &[3], &[3]], &[3]);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input_0 = Tensor::from_vec(vec![1.0f32, 5.0, 3.0], &[3]);
     let input_1 = Tensor::from_vec(vec![4.0f32, 2.0, 6.0], &[3]);
@@ -498,12 +486,11 @@ async fn test_max_broadcasting_scalar() {
     // Max with scalar: [1, 2, 3] and [5] -> [5, 5, 5]
     let graph = make_max_graph(&[&[3], &[1]], &[3]);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input_0 = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], &[3]);
     let input_1 = Tensor::from_vec(vec![5.0f32], &[1]);
@@ -523,12 +510,11 @@ async fn test_max_broadcasting_matrix_vector() {
     // Vector broadcasts to each row
     let graph = make_max_graph(&[&[2, 2], &[2]], &[2, 2]);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input_0 = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[2, 2]);
     let input_1 = Tensor::from_vec(vec![5.0f32, 1.0], &[2]);
@@ -546,12 +532,11 @@ async fn test_max_negative_values() {
     // Max with negative values: [-5, -2, -8] and [-3, -4, -1] -> [-3, -2, -1]
     let graph = make_max_graph(&[&[3], &[3]], &[3]);
 
+    let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry).unwrap();
-
-    let runtime = Runtime::new().await.unwrap();
-    let mut executor = runtime.load_model(model).await.unwrap();
+    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let mut executor = runtime.load_model(model).unwrap();
 
     let input_0 = Tensor::from_vec(vec![-5.0f32, -2.0, -8.0], &[3]);
     let input_1 = Tensor::from_vec(vec![-3.0f32, -4.0, -1.0], &[3]);

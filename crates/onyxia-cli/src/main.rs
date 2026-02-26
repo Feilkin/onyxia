@@ -438,8 +438,10 @@ fn cmd_dispatch_dot(model_path: PathBuf, output_path: Option<PathBuf>) -> Result
 
     // Compile to dispatch model
     let registry = onyxia_operators::core_operator_registry();
+    let gpu = pollster::block_on(onyxia_core::GpuContext::new())
+        .with_context(|| "Failed to initialize GPU")?;
     let compiled_model =
-        onyxia_compiler::compile(&graph, &registry).with_context(|| "Failed to compile model")?;
+        onyxia_compiler::compile(&graph, &registry, &gpu).with_context(|| "Failed to compile model")?;
 
     eprintln!(
         "Compiled {} operations, {} registers",
@@ -606,13 +608,15 @@ fn cmd_inspect(model_path: PathBuf, dynamic_dim_args: Vec<String>) -> Result<()>
     // Resolve dimensions and infer shapes using the compiler pipeline
     let registry = onyxia_operators::core_operator_registry();
     let mut pipeline = onyxia_compiler::CompilerPipeline::new();
+    let gpu = pollster::block_on(onyxia_core::GpuContext::new())
+        .with_context(|| "Failed to initialize GPU")?;
 
     // Note: Dynamic dimensions no longer passed at compile time
     let _ = dynamic_dims; // Suppress unused warning
 
     // Just run up to inference stage to get shapes, don't need full compilation
     pipeline
-        .compile(&model, &registry)
+        .compile(&model, &registry, &gpu)
         .with_context(|| "Failed to compile model for analysis")?;
 
     println!("Model: {}", model.metadata.name);
@@ -736,24 +740,25 @@ async fn cmd_run_model(
     let model = onyxia_onnx::load_and_parse_model(&model_path)
         .with_context(|| format!("Failed to load model from {}", model_path.display()))?;
 
-    // Compile to dispatch model (no dynamic dimensions needed - shapes determined at runtime)
+    println!("Initializing GPU runtime...");
+
+    // Create runtime first so we can share its GPU context with the compiler
+    let runtime = onyxia_runtime::Runtime::new()
+        .await
+        .with_context(|| "Failed to create GPU runtime")?;
+
+    // Compile to dispatch model, sharing the runtime's GPU context
     let registry = onyxia_operators::core_operator_registry();
     let mut pipeline = onyxia_compiler::CompilerPipeline::new();
 
     println!("Compiling execution plan...");
     let compiled_model = pipeline
-        .compile(&model, &registry)
+        .compile(&model, &registry, runtime.gpu())
         .with_context(|| "Failed to compile model")?;
 
-    println!("Initializing GPU runtime...");
-
-    // Create runtime and load model
-    let runtime = onyxia_runtime::Runtime::new()
-        .await
-        .with_context(|| "Failed to create GPU runtime")?;
+    // Load model (reuses device/queue from runtime — no new device created)
     let executor = runtime
         .load_model(compiled_model)
-        .await
         .with_context(|| "Failed to load compiled model")?;
 
     // Create LLM session
