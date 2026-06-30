@@ -241,14 +241,21 @@ impl CompilerPipeline {
             })
             .collect();
 
-        Ok(DispatchModel {
+        let mut model = DispatchModel {
             entries,
             num_registers: graph.tensor_count(),
             input_registers,
             output_registers,
             weight_registers,
             metadata: ModelMetadata::default(),
-        })
+            liveness: None,
+        };
+
+        // Compute liveness analysis for memory planning (buffer pool reuse).
+        let liveness = onyxia_core::memory::analyze_liveness(&model);
+        model.liveness = Some(liveness);
+
+        Ok(model)
     }
 }
 

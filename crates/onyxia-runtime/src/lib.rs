@@ -47,6 +47,7 @@
 //! }
 //! ```
 
+mod buffer_pool;
 mod dispatch_executor;
 mod error;
 mod runtime;

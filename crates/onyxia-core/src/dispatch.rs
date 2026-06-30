@@ -567,6 +567,12 @@ pub struct CompiledModel {
 
     /// Model metadata.
     pub metadata: ModelMetadata,
+
+    /// Liveness information for memory planning.
+    ///
+    /// Computed by the compiler after building the dispatch sequence.
+    /// `None` if liveness analysis has not been run.
+    pub liveness: Option<crate::memory::LivenessInfo>,
 }
 
 /// A single operation in the dispatch sequence.

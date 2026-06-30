@@ -15,6 +15,7 @@ pub mod dispatch_dot;
 pub mod gpu_context;
 pub mod ir;
 pub mod ir_builder;
+pub mod memory;
 pub mod operator;
 pub mod pass;
 pub mod plan;

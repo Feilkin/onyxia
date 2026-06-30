@@ -227,6 +227,7 @@ mod tests {
                 dtype: DataType::F32,
             }],
             metadata: Default::default(),
+            liveness: None,
         };
 
         let dot = to_dispatch_dot(&model);
