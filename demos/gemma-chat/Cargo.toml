@@ -1,0 +1,22 @@
+[package]
+name = "gemma-chat"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "gemma-chat"
+path = "src/main.rs"
+
+[dependencies]
+onyxia-core.workspace = true
+onyxia-onnx = { path = "../../crates/onyxia-onnx" }
+onyxia-compiler = { path = "../../crates/onyxia-compiler" }
+onyxia-runtime = { path = "../../crates/onyxia-runtime" }
+onyxia-operators = { path = "../../crates/onyxia-operators" }
+
+eframe = "0.31"
+tokenizers = "0.22.2"
+minijinja = "2.15.1"
+anyhow = "1.0"
+rand = "0.10"
+pollster = "0.4"

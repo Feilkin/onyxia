@@ -7,6 +7,7 @@ members = [
     "crates/onyxia-compiler",
     "crates/onyxia-runtime",
     "crates/onyxia-cli",
+    "demos/gemma-chat",
 ]
 
 # Enable a small amount of optimization in the dev profile.
