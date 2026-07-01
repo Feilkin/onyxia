@@ -8,8 +8,8 @@ license.workspace = true
 [dependencies]
 async-trait = "0.1"
 half = "2.7"
-naga = "28"
-naga_oil = "0.21"
+naga = "29"
+naga_oil = "0.22"
 onyxia-core.workspace = true
 onyxia-onnx.workspace = true
 petgraph = "0.8"

@@ -23,6 +23,21 @@ pub mod registry;
 pub mod shape_inference;
 pub mod types;
 
+/// Marker for "`Send + Sync` on native, unconstrained on wasm".
+///
+/// Used as the supertrait bound on [`OpDispatch`](dispatch::OpDispatch) and
+/// [`Pass`](pass::Pass): native builds move compiled models across threads (so
+/// they must be `Send + Sync`), but on the web everything runs single-threaded
+/// and wgpu handles are `!Send`/`!Sync`, so the bound must be relaxed there.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSendSync: Send + Sync {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + Sync + ?Sized> MaybeSendSync for T {}
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSendSync {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> MaybeSendSync for T {}
+
 // Re-export commonly used types
 pub use broadcast::broadcast_shape;
 pub use compile_ctx::CompileCtx;

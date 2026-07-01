@@ -52,8 +52,13 @@ pub struct ConstantFoldingPass {
     /// Factory that creates a fresh [`DispatchCtx`] per compilation run.
     ///
     /// Stored as a boxed closure that captures device + queue Arcs internally,
-    /// avoiding a direct `wgpu` dependency on this crate.
+    /// avoiding a direct `wgpu` dependency on this crate. The closure is
+    /// `Send + Sync` on native (passes may cross threads) but unconstrained on
+    /// wasm, where wgpu handles are `!Send`/`!Sync`.
+    #[cfg(not(target_arch = "wasm32"))]
     dispatch_factory: Box<dyn Fn() -> DispatchCtx + Send + Sync>,
+    #[cfg(target_arch = "wasm32")]
+    dispatch_factory: Box<dyn Fn() -> DispatchCtx>,
 }
 
 impl ConstantFoldingPass {

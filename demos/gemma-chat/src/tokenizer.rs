@@ -77,6 +77,27 @@ impl Tokenizer {
         })
     }
 
+    /// Load a tokenizer from an in-memory `tokenizer.json` byte buffer.
+    ///
+    /// Used on the web, where the file is fetched over HTTP rather than read
+    /// from disk.
+    #[allow(dead_code)] // used on wasm; native uses `from_file`
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let inner = HfTokenizer::from_bytes(bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
+
+        let end_of_turn = inner.token_to_id("<end_of_turn>");
+
+        Ok(Self {
+            inner,
+            special_tokens: SpecialTokens {
+                end_of_turn,
+                ..SpecialTokens::default()
+            },
+            chat_template: None,
+        })
+    }
+
     /// Load a chat template from a Jinja file.
     ///
     /// # Example
