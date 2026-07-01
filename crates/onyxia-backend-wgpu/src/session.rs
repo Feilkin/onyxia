@@ -1,11 +1,11 @@
 //! The wgpu session: prepare (legalize → order → liveness → upload
 //! weights) and run (bind symbols → evaluate shapes → dispatch kernels).
 //!
-//! v1 executes **primitives only** — the kernel registry for fused
-//! composites is empty, so preparation inlines every composite through its
-//! decomposition. Correctness-first: every kernel is one thread per output
-//! element. Fused kernels (GQA, softmax, RMS-norm, quantized matmul) are
-//! the designated follow-up and slot in via `Backend::supports`.
+//! Composites with a kernel in the [`crate::fused`] registry survive
+//! legalization and execute fused; everything else inlines through its
+//! decomposition down to primitives, which run as generated
+//! one-thread-per-element kernels (correctness-first). Remaining fused
+//! ports: GQA, RotaryEmbedding, MatMulNBits — see `fused.rs`.
 
 use crate::gpu::{BufferPool, GpuContext, PipelineCache, WORKGROUP_SIZE, dispatch_size};
 use crate::kernels::{self, Imm, MAX_RANK};
@@ -102,14 +102,28 @@ fn from_phys(dtype: DataType, shape: &[usize], bytes: &[u8]) -> Result<Tensor> {
 pub struct WgpuBackend {
     ctx: GpuContext,
     decompositions: onyxia_ir::DecompositionRegistry,
+    kernels: crate::fused::KernelRegistry,
 }
 
 impl WgpuBackend {
-    /// Create over an initialized GPU context.
+    /// Create over an initialized GPU context, with the standard fused
+    /// kernels registered.
     pub fn new(ctx: GpuContext) -> Self {
         Self {
             ctx,
             decompositions: onyxia_ir::standard_decompositions(),
+            kernels: crate::fused::standard_kernels(),
+        }
+    }
+
+    /// Same, but executing *only* primitive kernels — every composite runs
+    /// through its decomposition. Used by differential tests to compare
+    /// fused kernels against their decompositions on the same device.
+    pub fn without_fused_kernels(ctx: GpuContext) -> Self {
+        Self {
+            ctx,
+            decompositions: onyxia_ir::standard_decompositions(),
+            kernels: crate::fused::KernelRegistry::default(),
         }
     }
 }
@@ -117,12 +131,15 @@ impl WgpuBackend {
 impl onyxia_ir::Backend for WgpuBackend {
     type Session = WgpuSession;
 
-    fn supports(&self, _composite: &str) -> bool {
-        false // v1: no fused kernels; everything legalizes to primitives
+    fn supports(&self, composite: &str) -> bool {
+        self.kernels.contains(composite)
     }
 
     fn prepare(&self, module: Module) -> Result<Self::Session> {
-        let module = onyxia_ir::inline_composites(module, &self.decompositions, &|_| false)?;
+        let kernels = self.kernels.clone();
+        let module = onyxia_ir::inline_composites(module, &self.decompositions, &|name| {
+            kernels.contains(name)
+        })?;
         onyxia_ir::validate::validate(&module)?;
         let order = module.topo_order()?;
 
@@ -174,6 +191,7 @@ impl onyxia_ir::Backend for WgpuBackend {
             order,
             last_use,
             consts,
+            kernels: self.kernels.clone(),
             pipelines: PipelineCache::default(),
             pool: BufferPool::default(),
             encoder: None,
@@ -189,6 +207,7 @@ pub struct WgpuSession {
     order: Vec<NodeId>,
     last_use: Vec<Option<usize>>,
     consts: HashMap<ValueId, GpuTensor>,
+    kernels: crate::fused::KernelRegistry,
     pipelines: PipelineCache,
     pool: BufferPool,
     encoder: Option<wgpu::CommandEncoder>,
@@ -200,7 +219,7 @@ impl WgpuSession {
         (self.pool.allocations, self.pool.reuses)
     }
 
-    fn dispatch(
+    pub(crate) fn dispatch(
         &mut self,
         label: &str,
         wgsl: &str,
@@ -224,6 +243,51 @@ impl WgpuSession {
         });
         let linear = (size as u32).div_ceil(WORKGROUP_SIZE);
         let (wg, _x_stride) = dispatch_size(linear);
+        self.encode_pass(label, &pipeline, &bind_group, imm, wg);
+        Ok(())
+    }
+
+    /// Dispatch a row-reduction kernel: exactly `rows` workgroups.
+    pub(crate) fn dispatch_rows(
+        &mut self,
+        label: &str,
+        wgsl: &str,
+        buffers: &[&wgpu::Buffer],
+        imm: &Imm,
+        rows: usize,
+    ) -> Result<()> {
+        let (pipeline, layout) = self.pipelines.get_or_create(&self.device, label, wgsl)?;
+        let entries: Vec<wgpu::BindGroupEntry> = buffers
+            .iter()
+            .enumerate()
+            .map(|(i, b)| wgpu::BindGroupEntry {
+                binding: i as u32,
+                resource: b.as_entire_binding(),
+            })
+            .collect();
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(label),
+            layout: &layout,
+            entries: &entries,
+        });
+        self.encode_pass(
+            label,
+            &pipeline,
+            &bind_group,
+            imm,
+            [rows.max(1) as u32, 1, 1],
+        );
+        Ok(())
+    }
+
+    fn encode_pass(
+        &mut self,
+        label: &str,
+        pipeline: &wgpu::ComputePipeline,
+        bind_group: &wgpu::BindGroup,
+        imm: &Imm,
+        wg: [u32; 3],
+    ) {
         let encoder = self.encoder.get_or_insert_with(|| {
             self.device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -234,11 +298,10 @@ impl WgpuSession {
             label: Some(label),
             timestamp_writes: None,
         });
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bind_group, &[]);
         pass.set_immediates(0, imm.bytes());
         pass.dispatch_workgroups(wg[0], wg[1], wg[2]);
-        Ok(())
     }
 
     fn submit(&mut self) {
@@ -247,7 +310,7 @@ impl WgpuSession {
         }
     }
 
-    fn alloc_out(&mut self, dtype: DataType, shape: Vec<usize>) -> GpuTensor {
+    pub(crate) fn alloc_out(&mut self, dtype: DataType, shape: Vec<usize>) -> GpuTensor {
         let buffer = self
             .pool
             .acquire(&self.device, phys_bytes(shape.iter().product()));
@@ -340,9 +403,10 @@ impl onyxia_ir::Session for WgpuSession {
         for step in 0..self.order.len() {
             let node_id = self.order[step];
             self.run_node(node_id, &regs, &shapes, &bindings)
-                .map(|out| {
-                    let out_id = self.module.node(node_id).outputs[0];
-                    regs[out_id.index()] = Some(out);
+                .map(|outs| {
+                    for (out, &out_id) in outs.into_iter().zip(&self.module.node(node_id).outputs) {
+                        regs[out_id.index()] = Some(out);
+                    }
                 })
                 .map_err(|e| {
                     let node = self.module.node(node_id);
@@ -422,21 +486,57 @@ fn kind_name(node: &onyxia_ir::Node) -> &str {
 }
 
 impl WgpuSession {
-    /// Execute one primitive node, returning its output tensor.
+    /// Execute one node, returning its output tensors.
     fn run_node(
         &mut self,
         node_id: NodeId,
         regs: &[Option<GpuTensor>],
         shapes: &[Vec<usize>],
         bindings: &onyxia_ir::Bindings,
-    ) -> Result<GpuTensor> {
+    ) -> Result<Vec<GpuTensor>> {
         let node = self.module.node(node_id).clone();
+        match &node.kind {
+            NodeKind::Prim(_) => self
+                .run_prim(&node, regs, shapes, bindings)
+                .map(|t| vec![t]),
+            NodeKind::Composite(c) => {
+                let kernels = self.kernels.clone();
+                let kernel = kernels.get(&c.name).ok_or_else(|| {
+                    Error::Unsupported(format!(
+                        "composite '{}' reached the executor without a registered \
+                         kernel (legalization should have inlined it)",
+                        c.name
+                    ))
+                })?;
+                let inputs: Vec<GpuTensor> = node
+                    .inputs
+                    .iter()
+                    .map(|&v| {
+                        regs[v.index()]
+                            .clone()
+                            .ok_or_else(|| Error::Runtime("input not materialized".into()))
+                    })
+                    .collect::<Result<_>>()?;
+                let outs_meta: Vec<(DataType, Vec<usize>)> = node
+                    .outputs
+                    .iter()
+                    .map(|&o| (self.module.value(o).ty.dtype, shapes[o.index()].clone()))
+                    .collect();
+                kernel.execute(self, &c.attrs, &inputs, &outs_meta)
+            }
+        }
+    }
+
+    /// Execute one primitive node, returning its output tensor.
+    fn run_prim(
+        &mut self,
+        node: &onyxia_ir::Node,
+        regs: &[Option<GpuTensor>],
+        shapes: &[Vec<usize>],
+        bindings: &onyxia_ir::Bindings,
+    ) -> Result<GpuTensor> {
         let NodeKind::Prim(prim) = &node.kind else {
-            return Err(Error::Unsupported(format!(
-                "composite '{}' reached the executor (no kernel registered and \
-                 legalization failed to inline it)",
-                kind_name(&node)
-            )));
+            unreachable!("run_prim called on a composite");
         };
         let input = |i: usize| -> Result<&GpuTensor> {
             regs[node.inputs[i].index()]

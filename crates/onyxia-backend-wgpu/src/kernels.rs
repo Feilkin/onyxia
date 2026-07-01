@@ -35,6 +35,10 @@ impl Imm {
         self.0.extend(v.to_le_bytes());
         self
     }
+    pub fn f(mut self, v: f32) -> Self {
+        self.0.extend(v.to_le_bytes());
+        self
+    }
     /// A shape (or similar) as a fixed `array<u32, 8>`, zero-padded.
     pub fn arr8(mut self, dims: &[usize]) -> Self {
         for i in 0..MAX_RANK {

@@ -357,3 +357,87 @@ fn buffer_pool_reuses_on_second_run() {
         );
     });
 }
+
+/// Fused kernels vs their decompositions, on the same device: build a
+/// module exercising Softmax, RMS-norm, and Gelu (both forms), prepare it
+/// once with the fused registry and once without, and require agreement.
+#[test]
+#[ignore = "requires GPU"]
+fn fused_kernels_match_decompositions() {
+    let mut b = GraphBuilder::new();
+    let x = b.input("x", TensorType::of(DataType::F32, &[3, 16]));
+    let w = b.input("w", TensorType::of(DataType::F32, &[16]));
+    let ty = TensorType::of(DataType::F32, &[3, 16]);
+    let normed = b
+        .composite(
+            "SimplifiedLayerNormalization",
+            Attrs::new().with("epsilon", AttrValue::Float(1e-6)),
+            &[x, w],
+            vec![ty.clone()],
+        )
+        .unwrap()[0];
+    let g1 = b
+        .composite("Gelu", Attrs::new(), &[normed], vec![ty.clone()])
+        .unwrap()[0];
+    let g2 = b
+        .composite(
+            "Gelu",
+            Attrs::new().with("approximate", AttrValue::Str("tanh".into())),
+            &[g1],
+            vec![ty.clone()],
+        )
+        .unwrap()[0];
+    let soft = b
+        .composite(
+            "Softmax",
+            Attrs::new().with("axis", AttrValue::Int(1)),
+            &[g2],
+            vec![ty],
+        )
+        .unwrap()[0];
+    b.output("out", soft);
+    let module = b.finish().unwrap();
+
+    let inputs = vec![
+        (
+            "x",
+            Tensor::from_f32(&f32s(48, |i| (i as f32 * 0.37).sin() * 3.0), &[3, 16]).unwrap(),
+        ),
+        (
+            "w",
+            Tensor::from_f32(&f32s(16, |i| 0.8 + i as f32 * 0.05), &[16]).unwrap(),
+        ),
+    ];
+
+    let run = |backend: WgpuBackend, module: Module| -> Vec<f32> {
+        pollster::block_on(async {
+            let mut session = backend.prepare(module).unwrap();
+            let dev: Vec<(&str, _)> = inputs
+                .iter()
+                .map(|(n, t)| (*n, session.upload(t).unwrap()))
+                .collect();
+            let outs = session.run(&dev).await.unwrap();
+            session
+                .download(&outs[0].1)
+                .await
+                .unwrap()
+                .to_f32()
+                .unwrap()
+        })
+    };
+
+    let fused = run(
+        WgpuBackend::new(pollster::block_on(GpuContext::new()).unwrap()),
+        module.clone(),
+    );
+    let decomposed = run(
+        WgpuBackend::without_fused_kernels(pollster::block_on(GpuContext::new()).unwrap()),
+        module,
+    );
+    for (i, (a, b)) in fused.iter().zip(&decomposed).enumerate() {
+        assert!(
+            (a - b).abs() <= ATOL + RTOL * b.abs(),
+            "fused[{i}]={a} vs decomposed[{i}]={b}"
+        );
+    }
+}

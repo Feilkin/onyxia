@@ -12,7 +12,9 @@ use onyxia_ir::{Backend, DataType, Module, Session};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    let path = args.get(1).ok_or("usage: forward-check <model.onnx> [--seq N] [--skip-ref]")?;
+    let path = args
+        .get(1)
+        .ok_or("usage: forward-check <model.onnx> [--seq N] [--skip-ref]")?;
     let seq: usize = args
         .iter()
         .position(|a| a == "--seq")
@@ -27,8 +29,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let module = onyxia_lower::lower(graph, &onyxia_lower::standard_registry())?;
 
     let inputs = build_inputs(&module, seq)?;
-    let input_refs: Vec<(&str, Tensor)> =
-        inputs.iter().map(|(n, t)| (n.as_str(), t.clone())).collect();
+    let input_refs: Vec<(&str, Tensor)> = inputs
+        .iter()
+        .map(|(n, t)| (n.as_str(), t.clone()))
+        .collect();
 
     eprintln!("preparing wgpu session …");
     let started = std::time::Instant::now();
@@ -44,14 +48,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .map(|(n, t)| Ok((*n, session.upload(t)?)))
             .collect::<onyxia_ir::Result<_>>()?;
+        // Cold pass (includes pipeline compilation) …
         let outs = session.run(&dev).await?;
         let (_, logits) = outs
             .iter()
             .find(|(n, _)| n == "logits")
             .ok_or_else(|| onyxia_ir::Error::Runtime("no 'logits' output".into()))?;
-        session.download(logits).await
+        let result = session.download(logits).await?;
+        eprintln!("GPU forward pass (cold) in {:.2?}", started.elapsed());
+        // … then a warm pass: the number that matters for decode.
+        let warm = std::time::Instant::now();
+        let outs = session.run(&dev).await?;
+        let (_, logits) = outs
+            .iter()
+            .find(|(n, _)| n == "logits")
+            .ok_or_else(|| onyxia_ir::Error::Runtime("no 'logits' output".into()))?;
+        let _ = session.download(logits).await?;
+        eprintln!("GPU forward pass (warm) in {:.2?}", warm.elapsed());
+        Ok::<_, onyxia_ir::Error>(result)
     })?;
-    eprintln!("GPU forward pass in {:.2?}", started.elapsed());
     let gpu_last = last_position(&logits_gpu, seq)?;
     print_top5("gpu", &gpu_last);
 
@@ -86,7 +101,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "argmax: gpu={} ref={} {}",
         argmax(&gpu_last),
         argmax(&ref_last),
-        if argmax(&gpu_last) == argmax(&ref_last) { "✓ MATCH" } else { "✗ MISMATCH" }
+        if argmax(&gpu_last) == argmax(&ref_last) {
+            "✓ MATCH"
+        } else {
+            "✗ MISMATCH"
+        }
     );
     Ok(())
 }
@@ -122,8 +141,9 @@ fn build_inputs(module: &Module, seq: usize) -> Result<Vec<(String, Tensor)>, on
             let tensor = match (name.as_str(), ty.dtype) {
                 ("input_ids", DataType::I64) => {
                     // Arbitrary but fixed token ids (2 = Gemma BOS).
-                    let ids: Vec<i64> =
-                        (0..numel).map(|i| if i == 0 { 2 } else { 651 + i as i64 }).collect();
+                    let ids: Vec<i64> = (0..numel)
+                        .map(|i| if i == 0 { 2 } else { 651 + i as i64 })
+                        .collect();
                     Tensor::from_i64(&ids, &dims)?
                 }
                 ("position_ids", DataType::I64) => {

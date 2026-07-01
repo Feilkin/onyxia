@@ -12,9 +12,11 @@
 //! reflecting shader bindings from the naga module (the wgpu-29 immediates
 //! fix — see `gpu.rs`).
 
+pub mod fused;
 pub mod gpu;
 pub mod kernels;
 pub mod session;
 
+pub use fused::{CompositeKernel, KernelRegistry};
 pub use gpu::GpuContext;
 pub use session::{GpuTensor, WgpuBackend, WgpuSession};

@@ -180,11 +180,17 @@ exists; keep it `#[ignore]`d + a CLI subcommand (`onyxia lower-stats`).
 ## backend-private layout). Gate: Gemma 3 270m fp32 prefill on GPU matches
 ## the reference interpreter (max |Δlogit| 4.6e-5, argmax identical);
 ## 7 GPU differential tests incl. GQA with symbolic dims + sliding window.
-## **Remaining for C4/C5 (unchanged below):** fused composite kernels (port
-## old WGSL via the kernel registry — currently empty, so decode speed is
-## far from the old pipeline), token-identical parity + tokens/sec gate vs
-## old pipeline, then cutover + purge. Also not yet done: Dequantize kernel
-## (q4 models), f16, late-bound reshape dims on GPU.
+## **Fused-kernel registry landed** (`fused.rs`: CompositeKernel trait +
+## KernelRegistry consulted by supports/legalization) with Softmax and
+## RMS-norm as one-workgroup-per-row reduction kernels and Gelu as a single
+## pass — full-model prefill went 482 ms → 141 ms warm; every fused kernel
+## differential-tests against its decomposition on-device
+## (`fused_kernels_match_decompositions`). **Remaining for C4/C5:** fused
+## GQA / RotaryEmbedding / MatMulNBits (follow the SoftmaxKernel pattern;
+## port math from the old gqa_*.wgsl), a tiled/vectorized MatMul primitive,
+## token-identical parity + tokens/sec gate vs the old pipeline, then
+## cutover + purge. Also not yet done: Dequantize kernel (q4 models), f16,
+## late-bound reshape dims on GPU, >65535-row fused reductions.
 
 ### C1. Traits + legalization **[M]**
 `Backend`/`Session`/`DeviceTensor` traits in `onyxia-ir` (pinned decision
