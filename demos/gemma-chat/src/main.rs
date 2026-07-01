@@ -14,6 +14,8 @@
 //!   chat_template.jinja      — Jinja2 chat template (optional)
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Instant;
 
@@ -71,6 +73,9 @@ struct ChatApp {
 
     request_tx: mpsc::Sender<InferenceRequest>,
     event_rx: mpsc::Receiver<InferenceEvent>,
+    /// Set by the UI to ask the inference thread to stop generating early.
+    /// Shared with the inference thread, which polls it between decode steps.
+    stop_flag: Arc<AtomicBool>,
 }
 
 impl ChatApp {
@@ -78,9 +83,11 @@ impl ChatApp {
         let (request_tx, request_rx) = mpsc::channel::<InferenceRequest>();
         let (event_tx, event_rx) = mpsc::channel::<InferenceEvent>();
         let egui_ctx = cc.egui_ctx.clone();
+        let stop_flag = Arc::new(AtomicBool::new(false));
 
+        let thread_stop_flag = Arc::clone(&stop_flag);
         std::thread::spawn(move || {
-            inference_thread(model_dir, request_rx, event_tx, egui_ctx);
+            inference_thread(model_dir, request_rx, event_tx, egui_ctx, thread_stop_flag);
         });
 
         Self {
@@ -92,6 +99,7 @@ impl ChatApp {
             last_tokens_per_sec: None,
             request_tx,
             event_rx,
+            stop_flag,
         }
     }
 
@@ -197,7 +205,12 @@ impl eframe::App for ChatApp {
                     input_resp.request_focus();
                 }
 
-                if ui
+                let is_generating = matches!(self.status, AppStatus::Generating);
+                if is_generating {
+                    if ui.button("Stop").clicked() {
+                        self.stop_flag.store(true, Ordering::Relaxed);
+                    }
+                } else if ui
                     .add_enabled(is_ready && !self.history.is_empty(), egui::Button::new("New"))
                     .clicked()
                 {
@@ -252,6 +265,7 @@ fn inference_thread(
     request_rx: mpsc::Receiver<InferenceRequest>,
     event_tx: mpsc::Sender<InferenceEvent>,
     egui_ctx: egui::Context,
+    stop_flag: Arc<AtomicBool>,
 ) {
     let send = |event: InferenceEvent| {
         let _ = event_tx.send(event);
@@ -287,6 +301,9 @@ fn inference_thread(
             }
 
             InferenceRequest::Generate(user_msg) => {
+                // Clear any stop request left over from a previous generation.
+                stop_flag.store(false, Ordering::Relaxed);
+
                 conversation.push(ChatMessage {
                     role: "user".to_string(),
                     content: user_msg,
@@ -337,6 +354,12 @@ fn inference_thread(
 
                 for _ in 1..MAX_TOKENS {
                     if tokenizer.is_eos(token as i64) {
+                        break;
+                    }
+
+                    // Honor a stop request from the UI, finalizing the partial
+                    // response generated so far.
+                    if stop_flag.load(Ordering::Relaxed) {
                         break;
                     }
 
