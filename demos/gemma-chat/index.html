@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>Gemma 3 · Onyxia</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #1e1e1e;
+      }
+      canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      #loading {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #aaa;
+        font-family: sans-serif;
+      }
+    </style>
+    <!-- Build this crate to wasm. wasm-opt disabled for faster iteration. -->
+    <link data-trunk rel="rust" data-bin="gemma-chat" data-wasm-opt="0" />
+  </head>
+  <body>
+    <div id="loading">Loading…</div>
+    <canvas id="canvas"></canvas>
+  </body>
+</html>
