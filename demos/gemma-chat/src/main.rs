@@ -343,16 +343,14 @@ fn inference_thread(
 
                 let mut rng = StdRng::from_seed(rand::random());
                 let mut token = sample(&logits, &sampling, &mut rng);
-                let mut response_tokens: Vec<i64> = vec![token as i64];
-
-                if let Ok(text) = tokenizer.decode(&[token as i64], false) {
-                    send(InferenceEvent::Token(text));
-                }
+                let mut response_tokens: Vec<i64> = Vec::new();
 
                 let decode_start = Instant::now();
                 let mut errored = false;
 
-                for _ in 1..MAX_TOKENS {
+                for _ in 0..MAX_TOKENS {
+                    // Stop *before* emitting a terminator (EOS or Gemma's
+                    // <end_of_turn>) so it is never shown or stored.
                     if tokenizer.is_eos(token as i64) {
                         break;
                     }
@@ -363,6 +361,12 @@ fn inference_thread(
                         break;
                     }
 
+                    response_tokens.push(token as i64);
+                    if let Ok(text) = tokenizer.decode(&[token as i64], false) {
+                        send(InferenceEvent::Token(text));
+                    }
+
+                    // Generate the next token conditioned on the one just emitted.
                     let logits = match pollster::block_on(session.decode(token as i64)) {
                         Ok(l) => l,
                         Err(e) => {
@@ -371,17 +375,7 @@ fn inference_thread(
                             break;
                         }
                     };
-
                     token = sample(&logits, &sampling, &mut rng);
-                    response_tokens.push(token as i64);
-
-                    if let Ok(text) = tokenizer.decode(&[token as i64], false) {
-                        send(InferenceEvent::Token(text));
-                    }
-
-                    if tokenizer.is_eos(token as i64) {
-                        break;
-                    }
                 }
 
                 if errored {
@@ -390,8 +384,7 @@ fn inference_thread(
                 }
 
                 let decode_time = decode_start.elapsed().as_secs_f64();
-                let decode_tokens = response_tokens.len().saturating_sub(1);
-                let tokens_per_sec = decode_tokens as f64 / decode_time.max(1e-9);
+                let tokens_per_sec = response_tokens.len() as f64 / decode_time.max(1e-9);
 
                 // Store the assistant turn in the conversation history.
                 let response_text = tokenizer

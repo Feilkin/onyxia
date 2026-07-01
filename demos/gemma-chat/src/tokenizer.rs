@@ -15,6 +15,10 @@ pub struct SpecialTokens {
     pub bos: u32,
     pub eos: u32,
     pub pad: u32,
+    /// Gemma's turn terminator `<end_of_turn>`. Instruction-tuned chat models
+    /// end each turn with this token rather than `<eos>`, so generation must
+    /// stop on it. `None` for base models that don't define it.
+    pub end_of_turn: Option<u32>,
 }
 
 impl Default for SpecialTokens {
@@ -23,6 +27,7 @@ impl Default for SpecialTokens {
             bos: 2, // <bos> token
             eos: 1, // <eos> token
             pad: 0, // <pad> token
+            end_of_turn: None,
         }
     }
 }
@@ -59,9 +64,15 @@ impl Tokenizer {
         let inner = HfTokenizer::from_file(path)
             .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
 
+        // Discover Gemma's turn terminator so chat generation stops on it.
+        let end_of_turn = inner.token_to_id("<end_of_turn>");
+
         Ok(Self {
             inner,
-            special_tokens: SpecialTokens::default(),
+            special_tokens: SpecialTokens {
+                end_of_turn,
+                ..SpecialTokens::default()
+            },
             chat_template: None,
         })
     }
@@ -153,6 +164,7 @@ impl Tokenizer {
     /// Check if a token ID is the EOS (end-of-sequence) token.
     pub fn is_eos(&self, token_id: i64) -> bool {
         token_id == self.special_tokens.eos as i64
+            || self.special_tokens.end_of_turn == Some(token_id as u32)
     }
 
     /// Get the EOS token ID.
