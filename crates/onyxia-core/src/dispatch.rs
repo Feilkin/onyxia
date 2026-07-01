@@ -160,24 +160,67 @@ impl DispatchCtx {
                     source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module.clone())),
                 });
 
-            // Use an auto-inferred layout: wgpu derives both the bind group
-            // layout and the immediate-data block from the shader. (wgpu 29
-            // makes auto-derived bind group layouts *exclusive* to their
-            // pipeline, so we can't feed one into an explicit PipelineLayout —
-            // hence we take the layout straight off this pipeline and only use
-            // it to build bind groups.)
+            // Build the bind group layout explicitly by reflecting the shader's
+            // group-0 buffer bindings from the naga module. We can't use an
+            // auto layout (layout: None) because wgpu 29's auto/derived pipeline
+            // layout hardcodes `immediate_size: 0`, so `set_immediates` would
+            // overrun; and we can't extract the layout from an auto pipeline
+            // either, since wgpu 29 marks those exclusive and refuses to reuse
+            // them in an explicit PipelineLayout. So we reflect and build our
+            // own — which is also what lets us reserve immediate space below.
+            let mut entries: Vec<wgpu::BindGroupLayoutEntry> = Vec::new();
+            for (_handle, var) in module.global_variables.iter() {
+                let Some(binding) = &var.binding else {
+                    continue; // skip non-bound globals (immediates, private, …)
+                };
+                if binding.group != 0 {
+                    continue; // onyxia operators use a single bind group (0)
+                }
+                let ty = match &var.space {
+                    naga::AddressSpace::Uniform => wgpu::BufferBindingType::Uniform,
+                    naga::AddressSpace::Storage { access } => wgpu::BufferBindingType::Storage {
+                        read_only: !access.contains(naga::StorageAccess::STORE),
+                    },
+                    _ => continue, // only uniform/storage buffers are bound
+                };
+                entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: binding.binding,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                });
+            }
+            entries.sort_by_key(|e| e.binding);
+
+            let bind_group_layout =
+                self.device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some(&format!("{label}_bgl")),
+                        entries: &entries,
+                    });
+
+            let pipeline_layout =
+                self.device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some(&format!("{label}_layout")),
+                        bind_group_layouts: &[Some(&bind_group_layout)],
+                        immediate_size: 256, // Support up to 256 bytes of immediate data
+                    });
+
             let pipeline = self
                 .device
                 .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                     label: Some(label),
-                    layout: None,
+                    layout: Some(&pipeline_layout),
                     module: &shader_module,
                     entry_point: Some(entry_point),
                     compilation_options: Default::default(),
                     cache: None,
                 });
-
-            let bind_group_layout = pipeline.get_bind_group_layout(0);
 
             self.pipeline_cache.insert(
                 key.clone(),
