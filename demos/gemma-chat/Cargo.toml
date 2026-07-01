@@ -14,8 +14,15 @@ onyxia-compiler = { path = "../../crates/onyxia-compiler" }
 onyxia-runtime = { path = "../../crates/onyxia-runtime" }
 onyxia-operators = { path = "../../crates/onyxia-operators" }
 
-eframe = "0.31"
-egui = "0.31"
+# Render egui via wgpu/WebGPU (not glow/WebGL). egui 0.35 uses wgpu 29, matching
+# onyxia, so there's a single wgpu in the tree.
+eframe = { version = "0.34", default-features = false, features = [
+    "default_fonts",
+    "wgpu",
+    "x11",
+    "wayland",
+] }
+egui = "0.34"
 minijinja = "2.15.1"
 anyhow = "1.0"
 rand = "0.10"

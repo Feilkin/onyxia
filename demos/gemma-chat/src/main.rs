@@ -159,7 +159,7 @@ impl ChatApp {
 }
 
 impl eframe::App for ChatApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // Once egui is painting, remove the HTML placeholder overlay (it sits
         // above the canvas and would otherwise cover the UI and swallow clicks).
         #[cfg(target_arch = "wasm32")]
@@ -200,7 +200,7 @@ impl eframe::App for ChatApp {
         let is_ready = matches!(self.status, AppStatus::Ready);
 
         // ── header ──────────────────────────────────────────────────────────
-        egui::TopBottomPanel::top("header").show(ctx, |ui| {
+        egui::TopBottomPanel::top("header").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Gemma 3 270M · Onyxia");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -229,7 +229,7 @@ impl eframe::App for ChatApp {
         });
 
         // ── input panel ─────────────────────────────────────────────────────
-        egui::TopBottomPanel::bottom("input_panel").show(ctx, |ui| {
+        egui::TopBottomPanel::bottom("input_panel").show_inside(ui, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 let input_resp = ui.add_enabled(
@@ -247,7 +247,7 @@ impl eframe::App for ChatApp {
                     .clicked();
 
                 let enter_pressed = input_resp.lost_focus()
-                    && ctx.input(|i| i.key_pressed(egui::Key::Enter));
+                    && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter));
 
                 if (send_clicked || enter_pressed) && is_ready && !self.input.is_empty() {
                     self.submit();
@@ -271,7 +271,7 @@ impl eframe::App for ChatApp {
         });
 
         // ── chat history ────────────────────────────────────────────────────
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
             let is_empty = self.history.is_empty() && self.current_response.is_empty();
 
             if matches!(self.status, AppStatus::Loading) && is_empty {
@@ -306,7 +306,7 @@ impl eframe::App for ChatApp {
 
         // Keep repainting while the inference thread is active.
         if matches!(self.status, AppStatus::Generating | AppStatus::Loading) {
-            ctx.request_repaint();
+            ui.ctx().request_repaint();
         }
     }
 }
