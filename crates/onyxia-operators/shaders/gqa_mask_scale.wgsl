@@ -7,6 +7,8 @@ struct Params {
     seq_k: u32,
     past_seq_len: u32,
     scale: f32,
+    // Sliding-window size for local attention; 0 = full causal (no window).
+    window: u32,
 }
 
 @group(0) @binding(0) var<storage, read> params: Params;
@@ -36,7 +38,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let effective_q_pos = params.past_seq_len + q_pos;
     if k_pos > effective_q_pos {
         val = -1e10;  // Large negative value → softmax ≈ 0
+    } else if params.window != 0u && (effective_q_pos - k_pos) >= params.window {
+        // Sliding-window (local) attention: mask keys older than `window`
+        // positions back, so each query attends to at most `window` keys.
+        val = -1e10;
     }
-    
+
     scores[idx] = val;
 }
