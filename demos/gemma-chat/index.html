@@ -25,6 +25,8 @@
         justify-content: center;
         color: #aaa;
         font-family: sans-serif;
+        /* Must not intercept clicks meant for the egui canvas below. */
+        pointer-events: none;
       }
     </style>
     <!-- Build this crate to wasm. wasm-opt disabled for faster iteration. -->

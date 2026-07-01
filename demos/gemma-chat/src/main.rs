@@ -160,6 +160,16 @@ impl ChatApp {
 
 impl eframe::App for ChatApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Once egui is painting, remove the HTML placeholder overlay (it sits
+        // above the canvas and would otherwise cover the UI and swallow clicks).
+        #[cfg(target_arch = "wasm32")]
+        if let Some(el) = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.get_element_by_id("loading"))
+        {
+            el.remove();
+        }
+
         // Drain all pending events from the inference thread.
         while let Ok(event) = self.event_rx.try_recv() {
             match event {
