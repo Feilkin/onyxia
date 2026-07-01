@@ -123,8 +123,9 @@ impl MaxDispatch {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for MaxDispatch {
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,

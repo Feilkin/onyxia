@@ -86,8 +86,9 @@ mod tests {
         model_outputs: &[usize],
     ) -> CompiledModel {
         struct DummyOp;
+        #[async_trait::async_trait(?Send)]
         impl OpDispatch for DummyOp {
-            fn dispatch(
+            async fn dispatch(
                 &self,
                 _inputs: Vec<RuntimeTensor>,
                 _ctx: &mut DispatchCtx,

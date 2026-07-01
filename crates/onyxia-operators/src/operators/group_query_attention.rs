@@ -107,6 +107,14 @@ impl Operator for GroupQueryAttentionOp {
             _ => None,
         });
 
+        // Sliding-window (local) attention size. Gemma 3 sets this on its local
+        // layers (global layers use -1). `-1`/`0` mean full causal attention;
+        // a positive value limits each query to the most recent `n` keys.
+        let local_window_size = match ctx.attr("local_window_size") {
+            Some(onyxia_onnx::AttributeValue::Int(v)) => *v,
+            _ => -1,
+        };
+
         // Compile all shaders
         let shader_defs = HashMap::new();
 
@@ -147,6 +155,7 @@ impl Operator for GroupQueryAttentionOp {
             num_heads,
             kv_num_heads,
             scale_override,
+            local_window_size,
         }))
     }
 }
@@ -165,11 +174,14 @@ struct GroupQueryAttentionDispatch {
     num_heads: usize,
     kv_num_heads: usize,
     scale_override: Option<f32>,
+    /// Sliding-window size for local attention; `<= 0` means full causal.
+    local_window_size: i64,
 }
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for GroupQueryAttentionDispatch {
     #[instrument(name = "GroupQueryAttention::dispatch", skip_all)]
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,
@@ -494,6 +506,13 @@ impl GroupQueryAttentionDispatch {
         past_seq_len: usize,
         scale: f32,
     ) -> Result<()> {
+        // A window of 0 disables the sliding-window mask (full causal).
+        let window: u32 = if self.local_window_size > 0 {
+            self.local_window_size as u32
+        } else {
+            0
+        };
+
         let mut params = Vec::new();
         params.extend_from_slice(&(batch as u32).to_le_bytes());
         params.extend_from_slice(&(self.num_heads as u32).to_le_bytes());
@@ -501,6 +520,7 @@ impl GroupQueryAttentionDispatch {
         params.extend_from_slice(&(seq_k as u32).to_le_bytes());
         params.extend_from_slice(&(past_seq_len as u32).to_le_bytes());
         params.extend_from_slice(&scale.to_le_bytes());
+        params.extend_from_slice(&window.to_le_bytes());
 
         let (pipeline, bind_group_layout) =
             ctx.get_or_create_pipeline("GQA_MaskScale", &self.mask_scale_module, "main")?;

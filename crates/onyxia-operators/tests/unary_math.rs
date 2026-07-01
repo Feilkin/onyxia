@@ -53,11 +53,11 @@ async fn test_neg_basic() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![-1.0f32, 0.0, 1.0, 2.5], &[4]);
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     assert_eq!(result, vec![1.0, 0.0, -1.0, -2.5]);
@@ -72,11 +72,11 @@ async fn test_neg_multidimensional() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, -4.0, -5.0, -6.0], &[2, 3]);
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     assert_eq!(result, vec![-1.0, -2.0, -3.0, 4.0, 5.0, 6.0]);
@@ -95,11 +95,11 @@ async fn test_sqrt_basic() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![0.0f32, 1.0, 4.0, 9.0, 16.0], &[5]);
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     let expected = vec![0.0, 1.0, 2.0, 3.0, 4.0];
@@ -115,11 +115,11 @@ async fn test_sqrt_negative() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![-1.0f32, -4.0], &[2]);
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Both results should be NaN
@@ -141,11 +141,11 @@ async fn test_cos_basic() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![0.0f32, PI / 4.0, PI / 2.0, PI], &[4]);
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     let expected = vec![1.0, 0.707106781, 0.0, -1.0];
@@ -162,11 +162,11 @@ async fn test_cos_full_circle() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![0.0f32, PI / 2.0, PI, 3.0 * PI / 2.0, 2.0 * PI], &[5]);
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     let expected = vec![1.0, 0.0, -1.0, 0.0, 1.0];
@@ -187,11 +187,11 @@ async fn test_sin_basic() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![0.0f32, PI / 4.0, PI / 2.0, PI], &[4]);
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     let expected = vec![0.0, 0.707106781, 1.0, 0.0];
@@ -208,11 +208,11 @@ async fn test_sin_full_circle() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![0.0f32, PI / 2.0, PI, 3.0 * PI / 2.0, 2.0 * PI], &[5]);
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     let expected = vec![0.0, 1.0, 0.0, -1.0, 0.0];
@@ -233,11 +233,11 @@ async fn test_tanh_basic() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![-1.0f32, 0.0, 1.0], &[3]);
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     let expected = vec![-0.7615941559, 0.0, 0.7615941559];
@@ -254,11 +254,11 @@ async fn test_tanh_saturation() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![-100.0f32, -10.0, 0.0, 10.0, 100.0], &[5]);
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // At ±100, tanh should saturate very close to ±1
@@ -278,11 +278,11 @@ async fn test_tanh_multidimensional() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![-2.0f32, -1.0, 1.0, 2.0], &[2, 2]);
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     let expected = vec![-0.9640275801, -0.7615941559, 0.7615941559, 0.9640275801];

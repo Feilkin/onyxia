@@ -38,8 +38,9 @@ pub struct ReshapeOp;
 /// Runtime dispatch for Reshape — reinterprets buffer with new shape.
 struct ReshapeDispatch;
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for ReshapeDispatch {
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,
@@ -53,7 +54,7 @@ impl OpDispatch for ReshapeDispatch {
         let shape_tensor = &inputs[1];
 
         // Download shape values from GPU (small tensor, so roundtrip is okay)
-        let shape_data = ctx.download_tensor(shape_tensor)?;
+        let shape_data = ctx.download_tensor(shape_tensor).await?;
 
         let target_shape =
             parse_reshape_shape(&shape_data, shape_tensor.dtype, &data_tensor.shape)?;
@@ -160,8 +161,9 @@ struct ConcatDispatch {
     axis: i64,
 }
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for ConcatDispatch {
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,
@@ -383,8 +385,9 @@ struct ExpandDispatch {
     module: naga::Module,
 }
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for ExpandDispatch {
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,
@@ -393,7 +396,7 @@ impl OpDispatch for ExpandDispatch {
 
         // Read target shape from second input (similar to Reshape)
         let shape_tensor = &inputs[1];
-        let shape_data = ctx.download_tensor(shape_tensor)?;
+        let shape_data = ctx.download_tensor(shape_tensor).await?;
         let target_shape = parse_shape_tensor(&shape_data, shape_tensor.dtype)?;
 
         // Validate broadcastability
@@ -531,8 +534,9 @@ struct TransposeDispatch {
     perm: Option<Vec<i64>>,
 }
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for TransposeDispatch {
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,
@@ -688,8 +692,9 @@ pub struct UnsqueezeOp;
 /// Runtime dispatch for Unsqueeze — zero-copy shape change.
 struct UnsqueezeDispatch;
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for UnsqueezeDispatch {
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,
@@ -698,7 +703,7 @@ impl OpDispatch for UnsqueezeDispatch {
 
         // Read axes from second input
         let axes_tensor = &inputs[1];
-        let axes_data = ctx.download_tensor(axes_tensor)?;
+        let axes_data = ctx.download_tensor(axes_tensor).await?;
         let mut axes = parse_axes_tensor(&axes_data, axes_tensor.dtype)?;
 
         // Sort axes for processing
@@ -793,8 +798,9 @@ struct SliceDispatch {
     module: naga::Module,
 }
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for SliceDispatch {
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,
@@ -804,8 +810,8 @@ impl OpDispatch for SliceDispatch {
         let ends_tensor = &inputs[2];
 
         // Download slice parameters from GPU
-        let starts_data = ctx.download_tensor(starts_tensor)?;
-        let ends_data = ctx.download_tensor(ends_tensor)?;
+        let starts_data = ctx.download_tensor(starts_tensor).await?;
+        let ends_data = ctx.download_tensor(ends_tensor).await?;
 
         let starts_raw = parse_slice_indices(&starts_data, starts_tensor.dtype)?;
         let ends_raw = parse_slice_indices(&ends_data, ends_tensor.dtype)?;
@@ -820,7 +826,7 @@ impl OpDispatch for SliceDispatch {
 
         // Parse optional axes tensor
         let axes: Vec<i64> = if inputs.len() > 3 && inputs[3].shape.iter().product::<usize>() > 0 {
-            let axes_data = ctx.download_tensor(&inputs[3])?;
+            let axes_data = ctx.download_tensor(&inputs[3]).await?;
             parse_slice_indices(&axes_data, inputs[3].dtype)?
         } else {
             // Default: [0, 1, 2, ..., len(starts)-1]
@@ -829,7 +835,7 @@ impl OpDispatch for SliceDispatch {
 
         // Parse optional steps tensor
         let steps: Vec<i64> = if inputs.len() > 4 && inputs[4].shape.iter().product::<usize>() > 0 {
-            let steps_data = ctx.download_tensor(&inputs[4])?;
+            let steps_data = ctx.download_tensor(&inputs[4]).await?;
             parse_slice_indices(&steps_data, inputs[4].dtype)?
         } else {
             // Default: [1, 1, 1, ...]
@@ -1104,8 +1110,9 @@ pub struct ShapeOp;
 /// Runtime dispatch for Shape — extracts shape metadata.
 struct ShapeDispatch;
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for ShapeDispatch {
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,
@@ -1172,8 +1179,9 @@ struct ConstantOfShapeDispatch {
     fill_value: f32,
 }
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for ConstantOfShapeDispatch {
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,
@@ -1182,7 +1190,7 @@ impl OpDispatch for ConstantOfShapeDispatch {
         let shape_tensor = &inputs[0];
 
         // Download shape values from GPU
-        let shape_data = ctx.download_tensor(shape_tensor)?;
+        let shape_data = ctx.download_tensor(shape_tensor).await?;
         let output_shape = parse_shape_tensor(&shape_data, shape_tensor.dtype)?;
 
         // Validate output shape

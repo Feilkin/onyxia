@@ -71,12 +71,12 @@ async fn run_cast_f32(
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
     let runtime = Runtime::new().await.unwrap();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Create runtime and execute
     let mut executor = runtime.load_model(model).unwrap();
     let input_tensor = Tensor::from_vec(input_data, input_shape);
-    let outputs = executor.run(&[("input", input_tensor)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input_tensor)]).unwrap();
 
     // Read output
     outputs["output"].as_bytes().unwrap().to_vec()
@@ -94,12 +94,12 @@ async fn run_cast_i32(
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
     let runtime = Runtime::new().await.unwrap();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Create runtime and execute
     let mut executor = runtime.load_model(model).unwrap();
     let input_tensor = Tensor::from_vec(input_data, input_shape);
-    let outputs = executor.run(&[("input", input_tensor)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input_tensor)]).unwrap();
 
     outputs["output"].as_bytes().unwrap().to_vec()
 }

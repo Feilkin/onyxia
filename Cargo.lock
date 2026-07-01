@@ -2969,6 +2969,7 @@ dependencies = [
 name = "onyxia-compiler"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "half",
  "naga 28.0.0",
  "naga_oil",
@@ -2986,11 +2987,14 @@ dependencies = [
 name = "onyxia-core"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "futures-channel",
  "half",
  "naga 28.0.0",
  "naga_oil",
  "onyxia-onnx",
  "petgraph",
+ "pollster",
  "thiserror 2.0.18",
  "tracing",
  "wgpu 28.0.0",
@@ -3010,6 +3014,7 @@ dependencies = [
 name = "onyxia-operators"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytemuck",
  "naga 28.0.0",
  "onyxia-compiler",
@@ -3026,6 +3031,7 @@ dependencies = [
 name = "onyxia-runtime"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytemuck",
  "criterion",
  "futures",

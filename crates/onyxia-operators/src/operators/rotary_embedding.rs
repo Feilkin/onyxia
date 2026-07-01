@@ -83,9 +83,10 @@ struct RotaryEmbeddingDispatch {
     rotary_embedding_dim: Option<usize>,
 }
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for RotaryEmbeddingDispatch {
     #[instrument(name = "RotaryEmbedding::dispatch", skip_all)]
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,
@@ -103,7 +104,7 @@ impl OpDispatch for RotaryEmbeddingDispatch {
         }
 
         // Convert position_ids from i64 to u32 for GPU (WGSL doesn't support i64)
-        let position_ids_data = ctx.download_tensor(position_ids)?;
+        let position_ids_data = ctx.download_tensor(position_ids).await?;
         let position_ids_i64: &[i64] = bytemuck::cast_slice(&position_ids_data);
         let position_ids_u32: Vec<u32> = position_ids_i64.iter().map(|&x| x as u32).collect();
         let position_ids_u32_bytes: &[u8] = bytemuck::cast_slice(&position_ids_u32);

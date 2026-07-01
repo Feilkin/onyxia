@@ -103,7 +103,7 @@ async fn test_group_query_attention_basic() {
     // Execute
     let runtime = Runtime::new().await.expect("Runtime init");
     let compiled = pipeline
-        .compile(&graph, &registry, runtime.gpu())
+        .compile_blocking(&graph, &registry, runtime.gpu())
         .expect("Compilation should succeed");
     let mut executor = runtime.load_model(compiled).expect("Load model");
 
@@ -122,7 +122,7 @@ async fn test_group_query_attention_basic() {
     );
 
     let outputs = executor
-        .run(&[("query", query), ("key", key), ("value", value)])
+        .run_blocking(&[("query", query), ("key", key), ("value", value)])
         .expect("Execution");
 
     let result: Vec<f32> = outputs["output"].to_vec().expect("Convert to f32");
@@ -303,7 +303,7 @@ async fn test_group_query_attention_kv_cache() {
     // Execute
     let runtime = Runtime::new().await.expect("Runtime init");
     let compiled = pipeline
-        .compile(&graph, &registry, runtime.gpu())
+        .compile_blocking(&graph, &registry, runtime.gpu())
         .expect("Compilation should succeed");
     let mut executor = runtime.load_model(compiled).expect("Load model");
 
@@ -326,7 +326,7 @@ async fn test_group_query_attention_kv_cache() {
         Tensor::from_vec(vec![] as Vec<f32>, &[batch, kv_num_heads, 0, head_size]);
 
     let outputs_prefill = executor
-        .run(&[
+        .run_blocking(&[
             ("query", query_prefill),
             ("key", key_prefill),
             ("value", value_prefill),
@@ -375,7 +375,7 @@ async fn test_group_query_attention_kv_cache() {
     );
 
     let outputs_decode = executor
-        .run(&[
+        .run_blocking(&[
             ("query", query_decode),
             ("key", key_decode),
             ("value", value_decode),
@@ -425,7 +425,7 @@ async fn test_group_query_attention_kv_cache() {
     );
 
     let outputs_decode2 = executor
-        .run(&[
+        .run_blocking(&[
             ("query", query_decode2),
             ("key", key_decode2),
             ("value", value_decode2),
@@ -564,7 +564,7 @@ async fn test_group_query_attention_decode_masks_with_past_offset() {
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
     let compiled = pipeline
-        .compile(&graph, &registry, runtime.gpu())
+        .compile_blocking(&graph, &registry, runtime.gpu())
         .expect("Compilation should succeed");
     let mut executor = runtime.load_model(compiled).expect("Load model");
 
@@ -582,7 +582,7 @@ async fn test_group_query_attention_decode_masks_with_past_offset() {
     );
 
     let outputs = executor
-        .run(&[
+        .run_blocking(&[
             ("query", query),
             ("key", key),
             ("value", value),

@@ -85,9 +85,10 @@ struct SoftmaxDispatch {
     axis: i64,
 }
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for SoftmaxDispatch {
     #[instrument(name = "Softmax::dispatch", skip_all)]
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,

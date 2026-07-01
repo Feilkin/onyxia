@@ -97,11 +97,11 @@ async fn test_softmax_1d() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], &[3]);
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Verify output sums to 1.0
@@ -126,11 +126,11 @@ async fn test_softmax_2d_axis_1() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Each row should sum to 1.0
@@ -160,11 +160,11 @@ async fn test_softmax_2d_axis_0() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[2, 2]);
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Each column should sum to 1.0
@@ -197,11 +197,11 @@ async fn test_softmax_negative_axis() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[2, 2]);
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Each row should sum to 1.0
@@ -232,11 +232,11 @@ async fn test_softmax_numerical_stability() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![1000.0f32, 1000.0, 1000.0], &[3]);
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Verify no NaN or Inf
@@ -262,11 +262,11 @@ async fn test_softmax_large_values() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec(vec![100.0f32, 200.0, 300.0], &[3]);
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Verify no NaN or Inf
@@ -300,7 +300,7 @@ async fn test_softmax_3d_tensor() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     // Input data: 2x2x3 tensor
@@ -310,7 +310,7 @@ async fn test_softmax_3d_tensor() {
         ],
         &[2, 2, 3],
     );
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Each vector along last dimension should sum to 1
@@ -341,7 +341,7 @@ async fn test_softmax_3d_middle_axis() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     // Input data: 2x3x2 tensor
@@ -351,7 +351,7 @@ async fn test_softmax_3d_middle_axis() {
         ],
         &[2, 3, 2],
     );
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // For each (outer, inner) pair, the middle dimension should sum to 1

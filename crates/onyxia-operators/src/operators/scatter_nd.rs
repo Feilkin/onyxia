@@ -32,8 +32,9 @@ struct ScatterNDDispatch {
     reduction_mode: u32,
 }
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for ScatterNDDispatch {
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,

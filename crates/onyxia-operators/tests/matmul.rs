@@ -77,7 +77,7 @@ async fn test_matmul_2d_basic() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     // A = [[1, 2, 3],
@@ -89,7 +89,7 @@ async fn test_matmul_2d_basic() {
     //      [11, 12]]
     let b = Tensor::from_vec(vec![7.0f32, 8.0, 9.0, 10.0, 11.0, 12.0], &[3, 2]);
 
-    let outputs = executor.run(&[("A", a), ("B", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("A", a), ("B", b)]).unwrap();
     let result: Vec<f32> = outputs["Y"].to_vec().unwrap();
 
     // Expected: [[58, 64],
@@ -122,7 +122,7 @@ async fn test_matmul_square() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     // Identity matrix × arbitrary matrix = arbitrary matrix
@@ -142,7 +142,7 @@ async fn test_matmul_square() {
     ];
     let b = Tensor::from_vec(b_data.clone(), &[3, 3]);
 
-    let outputs = executor.run(&[("A", a), ("B", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("A", a), ("B", b)]).unwrap();
     let result: Vec<f32> = outputs["Y"].to_vec().unwrap();
     let expected = b_data;
 
@@ -167,7 +167,7 @@ async fn test_matmul_matrix_vector() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     // A = [[1, 2, 3],
@@ -179,7 +179,7 @@ async fn test_matmul_matrix_vector() {
     //      [4]]
     let b = Tensor::from_vec(vec![2.0f32, 3.0, 4.0], &[3, 1]);
 
-    let outputs = executor.run(&[("A", a), ("B", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("A", a), ("B", b)]).unwrap();
     let result: Vec<f32> = outputs["Y"].to_vec().unwrap();
 
     // Expected: [[20],  (1*2 + 2*3 + 3*4)
@@ -207,7 +207,7 @@ async fn test_matmul_vector_matrix() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     // A = [[1, 2, 3]]
@@ -218,7 +218,7 @@ async fn test_matmul_vector_matrix() {
     //      [8, 9]]
     let b = Tensor::from_vec(vec![4.0f32, 5.0, 6.0, 7.0, 8.0, 9.0], &[3, 2]);
 
-    let outputs = executor.run(&[("A", a), ("B", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("A", a), ("B", b)]).unwrap();
     let result: Vec<f32> = outputs["Y"].to_vec().unwrap();
 
     // Expected: [[40, 46]]  (1*4 + 2*6 + 3*8, 1*5 + 2*7 + 3*9)
@@ -245,7 +245,7 @@ async fn test_matmul_batched() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     // A = batch 0: [[1, 2, 3], [4, 5, 6]]
@@ -268,7 +268,7 @@ async fn test_matmul_batched() {
         &[2, 3, 2],
     );
 
-    let outputs = executor.run(&[("A", a), ("B", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("A", a), ("B", b)]).unwrap();
     let result: Vec<f32> = outputs["Y"].to_vec().unwrap();
 
     // Expected batch 0: [[22, 28], [49, 64]]
@@ -304,7 +304,7 @@ async fn test_matmul_broadcast() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     // A = [[1, 2, 3],
@@ -320,7 +320,7 @@ async fn test_matmul_broadcast() {
     }
     let b = Tensor::from_vec(b_data, &[5, 3, 4]);
 
-    let outputs = executor.run(&[("A", a), ("B", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("A", a), ("B", b)]).unwrap();
     let result: Vec<f32> = outputs["Y"].to_vec().unwrap();
 
     // A should be broadcast across all 5 batches
@@ -360,7 +360,7 @@ async fn test_matmul_large() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     // Create 64×64 × 64×64 matrix multiplication
@@ -370,7 +370,7 @@ async fn test_matmul_large() {
     let b_data: Vec<f32> = (0..size * size).map(|i| ((i + 1) % 10) as f32).collect();
     let b = Tensor::from_vec(b_data, &[size, size]);
 
-    let outputs = executor.run(&[("A", a), ("B", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("A", a), ("B", b)]).unwrap();
     let _result: Vec<f32> = outputs["Y"].to_vec().unwrap();
 
     // Just verify it runs without errors; exact result checking is complex

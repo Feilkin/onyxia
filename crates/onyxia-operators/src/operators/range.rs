@@ -57,8 +57,9 @@ struct RangeDispatch {
     label: String,
 }
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for RangeDispatch {
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,
@@ -94,9 +95,9 @@ impl OpDispatch for RangeDispatch {
         let dtype = start_tensor.dtype;
 
         // Download scalar values from GPU
-        let start_data = ctx.download_tensor(start_tensor)?;
-        let limit_data = ctx.download_tensor(limit_tensor)?;
-        let delta_data = ctx.download_tensor(delta_tensor)?;
+        let start_data = ctx.download_tensor(start_tensor).await?;
+        let limit_data = ctx.download_tensor(limit_tensor).await?;
+        let delta_data = ctx.download_tensor(delta_tensor).await?;
 
         // Parse scalars based on dtype
         let (start, _limit, delta, length) = match dtype {

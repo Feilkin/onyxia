@@ -9,11 +9,13 @@
 //!   gemma-chat <model-dir>
 //!
 //! Where <model-dir> contains:
-//!   onnx/model_q4.onnx      — quantised ONNX model
+//!   onnx/model.onnx          — full-precision ONNX model (+ .onnx_data)
 //!   tokenizer.json           — HuggingFace tokenizer
 //!   chat_template.jinja      — Jinja2 chat template (optional)
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Instant;
 
@@ -71,6 +73,9 @@ struct ChatApp {
 
     request_tx: mpsc::Sender<InferenceRequest>,
     event_rx: mpsc::Receiver<InferenceEvent>,
+    /// Set by the UI to ask the inference thread to stop generating early.
+    /// Shared with the inference thread, which polls it between decode steps.
+    stop_flag: Arc<AtomicBool>,
 }
 
 impl ChatApp {
@@ -78,9 +83,11 @@ impl ChatApp {
         let (request_tx, request_rx) = mpsc::channel::<InferenceRequest>();
         let (event_tx, event_rx) = mpsc::channel::<InferenceEvent>();
         let egui_ctx = cc.egui_ctx.clone();
+        let stop_flag = Arc::new(AtomicBool::new(false));
 
+        let thread_stop_flag = Arc::clone(&stop_flag);
         std::thread::spawn(move || {
-            inference_thread(model_dir, request_rx, event_tx, egui_ctx);
+            inference_thread(model_dir, request_rx, event_tx, egui_ctx, thread_stop_flag);
         });
 
         Self {
@@ -92,6 +99,7 @@ impl ChatApp {
             last_tokens_per_sec: None,
             request_tx,
             event_rx,
+            stop_flag,
         }
     }
 
@@ -197,7 +205,12 @@ impl eframe::App for ChatApp {
                     input_resp.request_focus();
                 }
 
-                if ui
+                let is_generating = matches!(self.status, AppStatus::Generating);
+                if is_generating {
+                    if ui.button("Stop").clicked() {
+                        self.stop_flag.store(true, Ordering::Relaxed);
+                    }
+                } else if ui
                     .add_enabled(is_ready && !self.history.is_empty(), egui::Button::new("New"))
                     .clicked()
                 {
@@ -252,6 +265,7 @@ fn inference_thread(
     request_rx: mpsc::Receiver<InferenceRequest>,
     event_tx: mpsc::Sender<InferenceEvent>,
     egui_ctx: egui::Context,
+    stop_flag: Arc<AtomicBool>,
 ) {
     let send = |event: InferenceEvent| {
         let _ = event_tx.send(event);
@@ -287,6 +301,9 @@ fn inference_thread(
             }
 
             InferenceRequest::Generate(user_msg) => {
+                // Clear any stop request left over from a previous generation.
+                stop_flag.store(false, Ordering::Relaxed);
+
                 conversation.push(ChatMessage {
                     role: "user".to_string(),
                     content: user_msg,
@@ -315,7 +332,7 @@ fn inference_thread(
                     }
                 };
 
-                let logits = match session.prefill(&input_ids) {
+                let logits = match pollster::block_on(session.prefill(&input_ids)) {
                     Ok(l) => l,
                     Err(e) => {
                         send(InferenceEvent::Error(format!("Prefill failed: {e}")));
@@ -326,21 +343,31 @@ fn inference_thread(
 
                 let mut rng = StdRng::from_seed(rand::random());
                 let mut token = sample(&logits, &sampling, &mut rng);
-                let mut response_tokens: Vec<i64> = vec![token as i64];
-
-                if let Ok(text) = tokenizer.decode(&[token as i64], false) {
-                    send(InferenceEvent::Token(text));
-                }
+                let mut response_tokens: Vec<i64> = Vec::new();
 
                 let decode_start = Instant::now();
                 let mut errored = false;
 
-                for _ in 1..MAX_TOKENS {
+                for _ in 0..MAX_TOKENS {
+                    // Stop *before* emitting a terminator (EOS or Gemma's
+                    // <end_of_turn>) so it is never shown or stored.
                     if tokenizer.is_eos(token as i64) {
                         break;
                     }
 
-                    let logits = match session.decode(token as i64) {
+                    // Honor a stop request from the UI, finalizing the partial
+                    // response generated so far.
+                    if stop_flag.load(Ordering::Relaxed) {
+                        break;
+                    }
+
+                    response_tokens.push(token as i64);
+                    if let Ok(text) = tokenizer.decode(&[token as i64], false) {
+                        send(InferenceEvent::Token(text));
+                    }
+
+                    // Generate the next token conditioned on the one just emitted.
+                    let logits = match pollster::block_on(session.decode(token as i64)) {
                         Ok(l) => l,
                         Err(e) => {
                             send(InferenceEvent::Error(format!("Decode failed: {e}")));
@@ -348,17 +375,7 @@ fn inference_thread(
                             break;
                         }
                     };
-
                     token = sample(&logits, &sampling, &mut rng);
-                    response_tokens.push(token as i64);
-
-                    if let Ok(text) = tokenizer.decode(&[token as i64], false) {
-                        send(InferenceEvent::Token(text));
-                    }
-
-                    if tokenizer.is_eos(token as i64) {
-                        break;
-                    }
                 }
 
                 if errored {
@@ -367,8 +384,7 @@ fn inference_thread(
                 }
 
                 let decode_time = decode_start.elapsed().as_secs_f64();
-                let decode_tokens = response_tokens.len().saturating_sub(1);
-                let tokens_per_sec = decode_tokens as f64 / decode_time.max(1e-9);
+                let tokens_per_sec = response_tokens.len() as f64 / decode_time.max(1e-9);
 
                 // Store the assistant turn in the conversation history.
                 let response_text = tokenizer
@@ -388,7 +404,11 @@ fn inference_thread(
 // ── model loading ────────────────────────────────────────────────────────────
 
 fn load(model_dir: PathBuf) -> Result<(LlmSession, Tokenizer, String)> {
-    let onnx_path = model_dir.join("onnx/model_q4.onnx");
+    // Full-precision model. The community `model_q4.onnx` 4-bit quantization
+    // badly degrades this small model (verified against onnxruntime: fp32
+    // recalls long-context facts, q4 collapses into garbage), so the demo uses
+    // fp32 for coherent output.
+    let onnx_path = model_dir.join("onnx/model.onnx");
 
     let graph = onyxia_onnx::load_and_parse_model(&onnx_path)
         .with_context(|| format!("Failed to parse ONNX from {}", onnx_path.display()))?;

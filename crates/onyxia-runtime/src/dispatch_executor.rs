@@ -78,7 +78,7 @@ impl DispatchExecutor {
 
     /// Execute the model with named inputs, returning named outputs.
     #[instrument(name = "DispatchExecutor::run", skip(self, inputs))]
-    pub fn run(&mut self, inputs: &[(&str, Tensor)]) -> Result<HashMap<String, Tensor>> {
+    pub async fn run(&mut self, inputs: &[(&str, Tensor)]) -> Result<HashMap<String, Tensor>> {
         // Upload user inputs to registers
         for (name, tensor) in inputs {
             let register = self
@@ -186,6 +186,7 @@ impl DispatchExecutor {
                     entry
                         .op
                         .dispatch_with_outputs(op_inputs, outputs.clone(), &mut self.ctx)
+                        .await
                         .map_err(|e| {
                             RuntimeError::ExecutionError(format!(
                                 "Operation '{}' dispatch_with_outputs failed: {e}",
@@ -202,7 +203,7 @@ impl DispatchExecutor {
                 let output_regs = self.model.entries[entry_idx].output_regs.clone();
                 let outputs = {
                     let entry = &self.model.entries[entry_idx];
-                    entry.op.dispatch(op_inputs, &mut self.ctx).map_err(|e| {
+                    entry.op.dispatch(op_inputs, &mut self.ctx).await.map_err(|e| {
                         RuntimeError::ExecutionError(format!(
                             "Operation '{}' failed: {e}",
                             entry.name
@@ -243,7 +244,7 @@ impl DispatchExecutor {
                 RuntimeError::TensorNotFound(format!("Output register {reg} for '{name}' is empty"))
             })?;
 
-            let data = self.ctx.download_tensor(runtime_tensor).map_err(|e| {
+            let data = self.ctx.download_tensor(runtime_tensor).await.map_err(|e| {
                 RuntimeError::ExecutionError(format!("Failed to download tensor '{name}': {e}"))
             })?;
             let tensor = Tensor::from_raw(data, &runtime_tensor.shape, runtime_tensor.dtype);
@@ -251,6 +252,16 @@ impl DispatchExecutor {
         }
 
         Ok(results)
+    }
+
+    /// Blocking wrapper around [`run`](Self::run) for native callers.
+    ///
+    /// Drives the async run to completion on the current thread. Only available
+    /// off the web — on wasm there is no blocking executor, so callers must
+    /// `.await` [`run`](Self::run) directly.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn run_blocking(&mut self, inputs: &[(&str, Tensor)]) -> Result<HashMap<String, Tensor>> {
+        pollster::block_on(self.run(inputs))
     }
 
     /// Release registers that became dead after `entry_idx` to the buffer pool.
@@ -326,8 +337,9 @@ mod tests {
     /// Copies the first input buffer to a fresh output tensor.
     struct LegacyPassthroughOp;
 
+    #[async_trait::async_trait(?Send)]
     impl OpDispatch for LegacyPassthroughOp {
-        fn dispatch(
+        async fn dispatch(
             &self,
             inputs: Vec<RuntimeTensor>,
             ctx: &mut DispatchCtx,
@@ -343,6 +355,7 @@ mod tests {
     /// Copies the first input into the pre-allocated output buffer.
     struct PreAllocPassthroughOp;
 
+    #[async_trait::async_trait(?Send)]
     impl OpDispatch for PreAllocPassthroughOp {
         fn resolve_shapes(
             &self,
@@ -355,7 +368,7 @@ mod tests {
             }))
         }
 
-        fn dispatch_with_outputs(
+        async fn dispatch_with_outputs(
             &self,
             inputs: Vec<RuntimeTensor>,
             outputs: Vec<RuntimeTensor>,
@@ -370,7 +383,7 @@ mod tests {
             )
         }
 
-        fn dispatch(
+        async fn dispatch(
             &self,
             _inputs: Vec<RuntimeTensor>,
             _ctx: &mut DispatchCtx,
@@ -383,6 +396,7 @@ mod tests {
     /// output registers), which should trigger a shape mismatch error.
     struct BadShapeMockOp;
 
+    #[async_trait::async_trait(?Send)]
     impl OpDispatch for BadShapeMockOp {
         fn resolve_shapes(
             &self,
@@ -396,7 +410,7 @@ mod tests {
             }))
         }
 
-        fn dispatch_with_outputs(
+        async fn dispatch_with_outputs(
             &self,
             _inputs: Vec<RuntimeTensor>,
             _outputs: Vec<RuntimeTensor>,
@@ -405,7 +419,7 @@ mod tests {
             Ok(())
         }
 
-        fn dispatch(
+        async fn dispatch(
             &self,
             _inputs: Vec<RuntimeTensor>,
             _ctx: &mut DispatchCtx,
@@ -456,7 +470,7 @@ mod tests {
         let tensor = crate::tensor::Tensor::from_raw(input_bytes, &[4], DataType::F32);
 
         let outputs = executor
-            .run(&[("input", tensor)])
+            .run_blocking(&[("input", tensor)])
             .expect("Execution should succeed");
 
         let output = outputs.get("output").expect("Output should be present");
@@ -487,7 +501,7 @@ mod tests {
         let tensor = crate::tensor::Tensor::from_raw(input_bytes, &[4], DataType::F32);
 
         let outputs = executor
-            .run(&[("input", tensor)])
+            .run_blocking(&[("input", tensor)])
             .expect("Execution should succeed");
 
         let output = outputs.get("output").expect("Output should be present");
@@ -522,7 +536,7 @@ mod tests {
         let tensor = crate::tensor::Tensor::from_raw(input_bytes, &[2], DataType::F32);
 
         let outputs = executor
-            .run(&[("input", tensor)])
+            .run_blocking(&[("input", tensor)])
             .expect("Execution should succeed");
 
         let output = outputs.get("output").expect("Output should be present");
@@ -550,7 +564,7 @@ mod tests {
         let input_bytes: Vec<u8> = 1.0f32.to_le_bytes().to_vec();
         let tensor = crate::tensor::Tensor::from_raw(input_bytes, &[1], DataType::F32);
 
-        let result = executor.run(&[("input", tensor)]);
+        let result = executor.run_blocking(&[("input", tensor)]);
         assert!(
             result.is_err(),
             "Should fail due to shape count mismatch from resolve_shapes"
@@ -618,13 +632,13 @@ mod tests {
         // First run — pool may already reuse within the same run (e.g. reg0
         // freed after op0 can be reused for reg2's allocation in op1).
         let tensor = crate::tensor::Tensor::from_raw(input_bytes.clone(), &[4], DataType::F32);
-        executor.run(&[("input", tensor)]).expect("first run");
+        executor.run_blocking(&[("input", tensor)]).expect("first run");
         let (allocs_after_first, _reuses_after_first, _) = executor.pool_stats();
         assert!(allocs_after_first > 0, "Should have made allocations");
 
         // Second run — more buffers should be reused from the pool.
         let tensor2 = crate::tensor::Tensor::from_raw(input_bytes.clone(), &[4], DataType::F32);
-        let outputs = executor.run(&[("input", tensor2)]).expect("second run");
+        let outputs = executor.run_blocking(&[("input", tensor2)]).expect("second run");
 
         let (_, reuses_after_second, _) = executor.pool_stats();
         assert!(

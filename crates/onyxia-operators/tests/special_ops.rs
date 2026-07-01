@@ -96,10 +96,10 @@ async fn test_range_basic() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
-    let outputs = executor.run(&[]).unwrap();
+    let outputs = executor.run_blocking(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     assert_vec_eq(&result, &[0.0, 1.0, 2.0, 3.0, 4.0]);
@@ -113,10 +113,10 @@ async fn test_range_float_step() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
-    let outputs = executor.run(&[]).unwrap();
+    let outputs = executor.run_blocking(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     assert_vec_eq(&result, &[0.0, 0.25, 0.5, 0.75]);
@@ -130,10 +130,10 @@ async fn test_range_negative_step() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
-    let outputs = executor.run(&[]).unwrap();
+    let outputs = executor.run_blocking(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     assert_vec_eq(&result, &[5.0, 4.0, 3.0, 2.0, 1.0]);
@@ -213,10 +213,10 @@ async fn test_trilu_upper() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
-    let outputs = executor.run(&[]).unwrap();
+    let outputs = executor.run_blocking(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Expected: [[1,2,3], [0,5,6], [0,0,9]]
@@ -232,10 +232,10 @@ async fn test_trilu_lower() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
-    let outputs = executor.run(&[]).unwrap();
+    let outputs = executor.run_blocking(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Expected: [[1,0,0], [4,5,0], [7,8,9]]
@@ -251,10 +251,10 @@ async fn test_trilu_upper_offset() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
-    let outputs = executor.run(&[]).unwrap();
+    let outputs = executor.run_blocking(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Expected: [[0,2,3], [0,0,6], [0,0,0]] (above main diagonal)
@@ -346,10 +346,10 @@ async fn test_where_basic() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
-    let outputs = executor.run(&[]).unwrap();
+    let outputs = executor.run_blocking(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Expected: [1, 20, 3] (select from X where condition is true)
@@ -370,10 +370,10 @@ async fn test_where_broadcast() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
-    let outputs = executor.run(&[]).unwrap();
+    let outputs = executor.run_blocking(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Expected: [1, 6, 3, 8] (condition selects alternating elements)
@@ -393,10 +393,10 @@ async fn test_where_scalar_broadcast() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
-    let outputs = executor.run(&[]).unwrap();
+    let outputs = executor.run_blocking(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     assert_vec_eq(&result, &x_data);
@@ -435,10 +435,10 @@ async fn test_where_trailing_dim_expansion() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
-    let outputs = executor.run(&[]).unwrap();
+    let outputs = executor.run_blocking(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Build expected
@@ -488,10 +488,10 @@ async fn test_where_leading_and_multi_dimensional_broadcast() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
-    let outputs = executor.run(&[]).unwrap();
+    let outputs = executor.run_blocking(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Build expected

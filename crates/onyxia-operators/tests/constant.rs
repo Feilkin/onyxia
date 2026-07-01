@@ -59,13 +59,13 @@ async fn test_constant_f32() {
     // Execute (no inputs needed)
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
     let model = pipeline
-        .compile(&graph, &registry, runtime.gpu())
+        .compile_blocking(&graph, &registry, runtime.gpu())
         .expect("Compilation should succeed");
     let mut executor = runtime
         .load_model(model)
         .expect("Model loading should succeed");
 
-    let outputs = executor.run(&[]).expect("Execution should succeed");
+    let outputs = executor.run_blocking(&[]).expect("Execution should succeed");
 
     // Verify constant values
     let output = outputs.get("constant_out").expect("Output should exist");
@@ -93,13 +93,13 @@ async fn test_constant_i64() {
     // Execute
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
     let model = pipeline
-        .compile(&graph, &registry, runtime.gpu())
+        .compile_blocking(&graph, &registry, runtime.gpu())
         .expect("Compilation should succeed");
     let mut executor = runtime
         .load_model(model)
         .expect("Model loading should succeed");
 
-    let outputs = executor.run(&[]).expect("Execution should succeed");
+    let outputs = executor.run_blocking(&[]).expect("Execution should succeed");
 
     // Verify constant values
     let output = outputs.get("constant_out").expect("Output should exist");
@@ -124,13 +124,13 @@ async fn test_constant_scalar() {
     // Execute
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
     let model = pipeline
-        .compile(&graph, &registry, runtime.gpu())
+        .compile_blocking(&graph, &registry, runtime.gpu())
         .expect("Compilation should succeed");
     let mut executor = runtime
         .load_model(model)
         .expect("Model loading should succeed");
 
-    let outputs = executor.run(&[]).expect("Execution should succeed");
+    let outputs = executor.run_blocking(&[]).expect("Execution should succeed");
 
     // Verify constant value
     let output = outputs.get("constant_out").expect("Output should exist");
@@ -158,13 +158,13 @@ async fn test_constant_multidimensional() {
     // Execute
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
     let model = pipeline
-        .compile(&graph, &registry, runtime.gpu())
+        .compile_blocking(&graph, &registry, runtime.gpu())
         .expect("Compilation should succeed");
     let mut executor = runtime
         .load_model(model)
         .expect("Model loading should succeed");
 
-    let outputs = executor.run(&[]).expect("Execution should succeed");
+    let outputs = executor.run_blocking(&[]).expect("Execution should succeed");
 
     // Verify constant values
     let output = outputs.get("constant_out").expect("Output should exist");

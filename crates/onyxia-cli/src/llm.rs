@@ -93,7 +93,7 @@ impl LlmSession {
         let input_refs: Vec<(&str, Tensor)> = inputs.into_iter().collect();
 
         // Run the model
-        let outputs = self.executor.run(&input_refs).with_context(|| {
+        let outputs = self.executor.run_blocking(&input_refs).with_context(|| {
             format!(
                 "Prefill execution failed (prompt_len={}, inputs={:?})",
                 prompt_len,
@@ -171,7 +171,7 @@ impl LlmSession {
         let input_refs: Vec<(&str, Tensor)> = inputs.into_iter().collect();
 
         // Run the model
-        let outputs = self.executor.run(&input_refs).with_context(|| {
+        let outputs = self.executor.run_blocking(&input_refs).with_context(|| {
             format!(
                 "Decode execution failed (token={}, past_seq_len={}, inputs={:?})",
                 token_id,
@@ -222,6 +222,17 @@ impl LlmSession {
     /// Reset state for a new conversation.
     pub fn reset(&mut self) {
         self.past_seq_len = 0;
+    }
+
+    /// Reset state and clear the KV cache for a completely fresh prefill.
+    ///
+    /// Unlike `reset()`, this drops the stored KV tensors so the next
+    /// `prefill()` starts from an empty context rather than reusing stale
+    /// cache from the previous conversation. Required when re-prefilling a
+    /// full conversation each turn (multi-turn chat).
+    pub fn reset_full(&mut self) {
+        self.past_seq_len = 0;
+        self.kv_cache.clear();
     }
 
     /// Get current sequence length.

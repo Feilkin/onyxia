@@ -18,7 +18,7 @@ async fn test_gelu_e2e() {
     // Execute
     let runtime = Runtime::new().await.expect("Runtime init should succeed");
     let compiled = pipeline
-        .compile(&graph, &registry, runtime.gpu())
+        .compile_blocking(&graph, &registry, runtime.gpu())
         .expect("Compilation should succeed");
     let mut executor = runtime
         .load_model(compiled)
@@ -36,7 +36,7 @@ async fn test_gelu_e2e() {
     let input = Tensor::from_vec(input_data.clone(), &[6]);
 
     let outputs = executor
-        .run(&[("input", input)])
+        .run_blocking(&[("input", input)])
         .expect("Execution should succeed");
 
     let result: Vec<f32> = outputs["output"].to_vec().expect("Should convert to f32");

@@ -30,8 +30,7 @@ pub fn inspect_nodes(
     // Compile model to dispatch model (validates operators and builds execution plan)
     let gpu = pollster::block_on(GpuContext::new())
         .context("Failed to initialize GPU context")?;
-    pipeline
-        .compile(model, &registry, &gpu)
+    pollster::block_on(pipeline.compile(model, &registry, &gpu))
         .context("Failed to compile model for inspection")?;
 
     // Find and display each requested node

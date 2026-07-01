@@ -536,7 +536,7 @@ impl BenchCtx {
 
     fn execute(&mut self) {
         self.executor
-            .run(&self.inputs)
+            .run_blocking(&self.inputs)
             .expect("graph should execute");
     }
 }

@@ -49,6 +49,7 @@ impl Default for ShapePropagationPass {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl Pass for ShapePropagationPass {
     fn name(&self) -> &str {
         "shape_propagation"
@@ -58,7 +59,7 @@ impl Pass for ShapePropagationPass {
         Stage::Inference
     }
 
-    fn run(&self, graph: &mut IrGraph, registry: &OperatorRegistry) -> Result<bool> {
+    async fn run(&self, graph: &mut IrGraph, registry: &OperatorRegistry) -> Result<bool> {
         let node_ids: Vec<IrNodeId> = graph.topological_order();
         let mut changed = false;
 
@@ -155,7 +156,7 @@ mod tests {
         let registry = OperatorRegistry::new();
         let pass = ShapePropagationPass::new();
 
-        let changed = pass.run(&mut graph, &registry).unwrap();
+        let changed = pass.run_blocking(&mut graph, &registry).unwrap();
         assert!(!changed);
     }
 
@@ -169,7 +170,7 @@ mod tests {
 
         let registry = OperatorRegistry::new(); // nothing registered
         let pass = ShapePropagationPass::new();
-        let changed = pass.run(&mut graph, &registry).unwrap();
+        let changed = pass.run_blocking(&mut graph, &registry).unwrap();
 
         assert!(!changed, "unknown op should not change any shapes");
         assert_eq!(
@@ -189,7 +190,7 @@ mod tests {
 
         let registry = OperatorRegistry::new();
         let pass = ShapePropagationPass::new();
-        pass.run(&mut graph, &registry).unwrap();
+        pass.run_blocking(&mut graph, &registry).unwrap();
 
         assert_eq!(
             graph.edge(a).unwrap().shape,
@@ -229,7 +230,7 @@ mod tests {
         registry.register("Nop", NopOp);
 
         let pass = ShapePropagationPass::new();
-        let changed = pass.run(&mut graph, &registry).unwrap();
+        let changed = pass.run_blocking(&mut graph, &registry).unwrap();
 
         assert!(
             !changed,
@@ -278,7 +279,7 @@ mod tests {
         registry.register("Passthrough", PassthroughShapeOp);
 
         let pass = ShapePropagationPass::new();
-        let changed = pass.run(&mut graph, &registry).unwrap();
+        let changed = pass.run_blocking(&mut graph, &registry).unwrap();
 
         assert!(changed, "pass should report a change");
         assert_eq!(
