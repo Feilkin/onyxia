@@ -2,3 +2,9 @@
 /models
 /tasks
 /.github/prompts/plan*
+
+# Python venv used for onnxruntime differential testing
+/.venv
+# trunk / wasm build output
+/dist
+**/dist
