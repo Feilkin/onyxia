@@ -49,6 +49,8 @@ const NUM_LAYERS: usize = 26;
 // ── inter-thread communication ──────────────────────────────────────────────
 
 enum InferenceEvent {
+    /// A load-stage update shown while the model is loading.
+    Progress(String),
     Ready { gpu_name: String },
     Token(String),
     Done { tokens_per_sec: f64 },
@@ -78,6 +80,8 @@ struct ChatApp {
     /// Response currently streaming in from the inference thread.
     current_response: String,
     status: AppStatus,
+    /// Current load stage (fetching / parsing / compiling / …), shown while loading.
+    loading_message: String,
     gpu_name: String,
     last_tokens_per_sec: Option<f64>,
 
@@ -127,6 +131,7 @@ impl ChatApp {
             history: Vec::new(),
             current_response: String::new(),
             status: AppStatus::Loading,
+            loading_message: "Starting…".to_string(),
             gpu_name: String::new(),
             last_tokens_per_sec: None,
             request_tx,
@@ -158,6 +163,9 @@ impl eframe::App for ChatApp {
         // Drain all pending events from the inference thread.
         while let Ok(event) = self.event_rx.try_recv() {
             match event {
+                InferenceEvent::Progress(msg) => {
+                    self.loading_message = msg;
+                }
                 InferenceEvent::Ready { gpu_name } => {
                     self.gpu_name = gpu_name;
                     self.status = AppStatus::Ready;
@@ -188,7 +196,7 @@ impl eframe::App for ChatApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     match &self.status {
                         AppStatus::Loading => {
-                            ui.label("Loading model…");
+                            ui.label(&self.loading_message);
                             ui.spinner();
                         }
                         AppStatus::Ready => {
@@ -258,7 +266,10 @@ impl eframe::App for ChatApp {
 
             if matches!(self.status, AppStatus::Loading) && is_empty {
                 ui.centered_and_justified(|ui| {
-                    ui.label(egui::RichText::new("Loading Gemma 3 270M…").weak());
+                    ui.label(
+                        egui::RichText::new(format!("Loading Gemma 3 270M…\n{}", self.loading_message))
+                            .weak(),
+                    );
                 });
                 return;
             }
@@ -303,8 +314,12 @@ async fn run_inference(
         let _ = event_tx.send(event);
         egui_ctx.request_repaint();
     };
+    let progress = |msg: &str| {
+        let _ = event_tx.send(InferenceEvent::Progress(msg.to_string()));
+        egui_ctx.request_repaint();
+    };
 
-    let (mut session, tokenizer, gpu_name) = match load(source).await {
+    let (mut session, tokenizer, gpu_name) = match load(source, &progress).await {
         Ok(t) => t,
         Err(e) => {
             send(InferenceEvent::Error(format!("Failed to load model: {e:#}")));
@@ -438,22 +453,38 @@ async fn run_inference(
 // 4-bit quantization badly degrades this small model (verified against
 // onnxruntime: fp32 recalls long-context facts, q4 collapses into garbage).
 
+/// Yield to the browser event loop so the UI repaints between blocking load
+/// stages. No-op on native, where the inference loop has its own thread.
+#[cfg(target_arch = "wasm32")]
+async fn yield_to_browser() {
+    gloo_timers::future::TimeoutFuture::new(0).await;
+}
+#[cfg(not(target_arch = "wasm32"))]
+async fn yield_to_browser() {}
+
 /// Build a session from an already-parsed graph + tokenizer (shared by both
 /// platforms). Compilation and GPU init are async so this works on the web.
 async fn build_session(
     graph: onyxia_onnx::Graph,
     tokenizer: Tokenizer,
+    progress: &dyn Fn(&str),
 ) -> Result<(LlmSession, Tokenizer, String)> {
+    progress("Initializing GPU…");
+    yield_to_browser().await;
     let runtime = onyxia_runtime::Runtime::new()
         .await
         .context("Failed to initialise GPU runtime")?;
     let gpu_name = runtime.adapter_info().name.clone();
 
+    progress("Compiling model…");
+    yield_to_browser().await;
     let registry = onyxia_operators::core_operator_registry();
     let compiled = onyxia_compiler::compile_async(&graph, &registry, runtime.gpu())
         .await
         .context("Compilation failed")?;
 
+    progress("Uploading weights to GPU…");
+    yield_to_browser().await;
     let executor = runtime.load_model(compiled).context("Failed to load model")?;
     let session = LlmSession::new(
         executor,
@@ -467,7 +498,11 @@ async fn build_session(
 
 /// Native: read the model + tokenizer from a directory on disk.
 #[cfg(not(target_arch = "wasm32"))]
-async fn load(model_dir: PathBuf) -> Result<(LlmSession, Tokenizer, String)> {
+async fn load(
+    model_dir: PathBuf,
+    progress: &dyn Fn(&str),
+) -> Result<(LlmSession, Tokenizer, String)> {
+    progress("Reading model…");
     let onnx_path = model_dir.join("onnx/model.onnx");
     let graph = onyxia_onnx::load_and_parse_model(&onnx_path)
         .with_context(|| format!("Failed to parse ONNX from {}", onnx_path.display()))?;
@@ -483,19 +518,29 @@ async fn load(model_dir: PathBuf) -> Result<(LlmSession, Tokenizer, String)> {
             .context("Failed to load chat template")?;
     }
 
-    build_session(graph, tokenizer).await
+    build_session(graph, tokenizer, progress).await
 }
 
 /// Web: fetch the model + tokenizer over HTTP relative to `base_url`.
 #[cfg(target_arch = "wasm32")]
-async fn load(base_url: String) -> Result<(LlmSession, Tokenizer, String)> {
+async fn load(
+    base_url: String,
+    progress: &dyn Fn(&str),
+) -> Result<(LlmSession, Tokenizer, String)> {
+    progress("Fetching model… (~1.1 GB, first load is slow)");
+    yield_to_browser().await;
     let model_bytes = fetch_bytes(&format!("{base_url}/onnx/model.onnx")).await?;
     let data_bytes = fetch_bytes(&format!("{base_url}/onnx/model.onnx_data")).await?;
+
+    progress("Parsing model…");
+    yield_to_browser().await;
     let mut external = std::collections::HashMap::new();
     external.insert("model.onnx_data".to_string(), data_bytes);
     let graph = onyxia_onnx::parse_model_from_bytes(&model_bytes, external)
         .context("Failed to parse ONNX model")?;
 
+    progress("Fetching tokenizer…");
+    yield_to_browser().await;
     let tok_bytes = fetch_bytes(&format!("{base_url}/tokenizer.json")).await?;
     let mut tokenizer =
         Tokenizer::from_bytes(&tok_bytes).context("Failed to load tokenizer")?;
@@ -503,7 +548,7 @@ async fn load(base_url: String) -> Result<(LlmSession, Tokenizer, String)> {
         tokenizer = tokenizer.with_chat_template(template);
     }
 
-    build_session(graph, tokenizer).await
+    build_session(graph, tokenizer, progress).await
 }
 
 #[cfg(target_arch = "wasm32")]

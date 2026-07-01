@@ -37,6 +37,8 @@ tokenizers = { version = "0.22.2", default-features = false, features = ["unstab
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 gloo-net = { version = "0.6", features = ["http"] }
+# Yield to the browser event loop between blocking load stages so the UI paints.
+gloo-timers = { version = "0.3", features = ["futures"] }
 console_error_panic_hook = "0.1"
 console_log = "0.2"
 web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement"] }

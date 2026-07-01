@@ -31,7 +31,10 @@
     <link data-trunk rel="rust" data-bin="gemma-chat" data-wasm-opt="0" />
   </head>
   <body>
-    <div id="loading">Loading…</div>
+    <!-- Shown only until the wasm app paints its first frame; the egui app
+         then covers this with its own staged "Loading…" status. If you still
+         see THIS text, the app hasn't started painting. -->
+    <div id="loading">Loading WASM runtime…</div>
     <canvas id="canvas"></canvas>
   </body>
 </html>
