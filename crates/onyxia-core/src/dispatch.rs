@@ -503,7 +503,7 @@ pub struct ResolvedShapes {
 /// }
 /// ```
 #[async_trait::async_trait(?Send)]
-pub trait OpDispatch: Send + Sync {
+pub trait OpDispatch: crate::MaybeSendSync {
     /// Resolve concrete output shapes from concrete input tensors.
     ///
     /// Called by the runtime **before** dispatch, using the actual runtime

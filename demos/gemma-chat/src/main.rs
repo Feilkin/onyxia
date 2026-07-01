@@ -13,16 +13,20 @@
 //!   tokenizer.json           — HuggingFace tokenizer
 //!   chat_template.jinja      — Jinja2 chat template (optional)
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::time::Instant;
 
 use anyhow::{Context, Result};
 use eframe::egui;
+use futures::StreamExt;
+use futures::channel::mpsc as async_mpsc;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
+use web_time::Instant;
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
 
 mod inference;
 mod sampling;
@@ -31,6 +35,12 @@ mod tokenizer;
 use inference::{LlmConfig, LlmSession};
 use sampling::{SamplingConfig, sample};
 use tokenizer::{ChatMessage, Tokenizer};
+
+/// Where to load the model from: a directory on native, a base URL on web.
+#[cfg(not(target_arch = "wasm32"))]
+type ModelSource = PathBuf;
+#[cfg(target_arch = "wasm32")]
+type ModelSource = String;
 
 const MAX_TOKENS: usize = 512;
 const MAX_SEQ_LEN: usize = 2048;
@@ -71,7 +81,7 @@ struct ChatApp {
     gpu_name: String,
     last_tokens_per_sec: Option<f64>,
 
-    request_tx: mpsc::Sender<InferenceRequest>,
+    request_tx: async_mpsc::UnboundedSender<InferenceRequest>,
     event_rx: mpsc::Receiver<InferenceEvent>,
     /// Set by the UI to ask the inference thread to stop generating early.
     /// Shared with the inference thread, which polls it between decode steps.
@@ -79,16 +89,38 @@ struct ChatApp {
 }
 
 impl ChatApp {
-    fn new(cc: &eframe::CreationContext, model_dir: PathBuf) -> Self {
-        let (request_tx, request_rx) = mpsc::channel::<InferenceRequest>();
+    fn new(cc: &eframe::CreationContext, source: ModelSource) -> Self {
+        let (request_tx, request_rx) = async_mpsc::unbounded::<InferenceRequest>();
         let (event_tx, event_rx) = mpsc::channel::<InferenceEvent>();
         let egui_ctx = cc.egui_ctx.clone();
         let stop_flag = Arc::new(AtomicBool::new(false));
+        let task_stop_flag = Arc::clone(&stop_flag);
 
-        let thread_stop_flag = Arc::clone(&stop_flag);
+        // Drive the async inference loop. On native it runs on a dedicated
+        // thread (blocking executor); on web it runs as a spawned task on the
+        // single browser thread, yielding to the UI at each `.await`.
+        //
+        // The runtime's futures are `?Send` (they hold wgpu/tracing state across
+        // awaits), so the native future is built *inside* the thread closure —
+        // only the (Send) arguments cross the thread boundary, not the future.
+        #[cfg(not(target_arch = "wasm32"))]
         std::thread::spawn(move || {
-            inference_thread(model_dir, request_rx, event_tx, egui_ctx, thread_stop_flag);
+            pollster::block_on(run_inference(
+                source,
+                request_rx,
+                event_tx,
+                egui_ctx,
+                task_stop_flag,
+            ));
         });
+        #[cfg(target_arch = "wasm32")]
+        wasm_bindgen_futures::spawn_local(run_inference(
+            source,
+            request_rx,
+            event_tx,
+            egui_ctx,
+            task_stop_flag,
+        ));
 
         Self {
             input: String::new(),
@@ -110,14 +142,14 @@ impl ChatApp {
         }
         self.history.push(("user".to_string(), msg.clone()));
         self.status = AppStatus::Generating;
-        let _ = self.request_tx.send(InferenceRequest::Generate(msg));
+        let _ = self.request_tx.unbounded_send(InferenceRequest::Generate(msg));
     }
 
     fn new_conversation(&mut self) {
         self.history.clear();
         self.current_response.clear();
         self.last_tokens_per_sec = None;
-        let _ = self.request_tx.send(InferenceRequest::Reset);
+        let _ = self.request_tx.unbounded_send(InferenceRequest::Reset);
     }
 }
 
@@ -260,9 +292,9 @@ impl eframe::App for ChatApp {
 
 // ── inference thread ────────────────────────────────────────────────────────
 
-fn inference_thread(
-    model_dir: PathBuf,
-    request_rx: mpsc::Receiver<InferenceRequest>,
+async fn run_inference(
+    source: ModelSource,
+    mut request_rx: async_mpsc::UnboundedReceiver<InferenceRequest>,
     event_tx: mpsc::Sender<InferenceEvent>,
     egui_ctx: egui::Context,
     stop_flag: Arc<AtomicBool>,
@@ -272,8 +304,7 @@ fn inference_thread(
         egui_ctx.request_repaint();
     };
 
-    let result = load(model_dir);
-    let (mut session, tokenizer, gpu_name) = match result {
+    let (mut session, tokenizer, gpu_name) = match load(source).await {
         Ok(t) => t,
         Err(e) => {
             send(InferenceEvent::Error(format!("Failed to load model: {e:#}")));
@@ -293,7 +324,7 @@ fn inference_thread(
     // Conversation history, maintained across turns for multi-turn chat.
     let mut conversation: Vec<ChatMessage> = Vec::new();
 
-    for request in &request_rx {
+    while let Some(request) = request_rx.next().await {
         match request {
             InferenceRequest::Reset => {
                 conversation.clear();
@@ -332,7 +363,7 @@ fn inference_thread(
                     }
                 };
 
-                let logits = match pollster::block_on(session.prefill(&input_ids)) {
+                let logits = match session.prefill(&input_ids).await {
                     Ok(l) => l,
                     Err(e) => {
                         send(InferenceEvent::Error(format!("Prefill failed: {e}")));
@@ -367,7 +398,7 @@ fn inference_thread(
                     }
 
                     // Generate the next token conditioned on the one just emitted.
-                    let logits = match pollster::block_on(session.decode(token as i64)) {
+                    let logits = match session.decode(token as i64).await {
                         Ok(l) => l,
                         Err(e) => {
                             send(InferenceEvent::Error(format!("Decode failed: {e}")));
@@ -403,38 +434,48 @@ fn inference_thread(
 
 // ── model loading ────────────────────────────────────────────────────────────
 
-fn load(model_dir: PathBuf) -> Result<(LlmSession, Tokenizer, String)> {
-    // Full-precision model. The community `model_q4.onnx` 4-bit quantization
-    // badly degrades this small model (verified against onnxruntime: fp32
-    // recalls long-context facts, q4 collapses into garbage), so the demo uses
-    // fp32 for coherent output.
-    let onnx_path = model_dir.join("onnx/model.onnx");
+// The demo uses the full-precision `model.onnx`. The community `model_q4.onnx`
+// 4-bit quantization badly degrades this small model (verified against
+// onnxruntime: fp32 recalls long-context facts, q4 collapses into garbage).
 
-    let graph = onyxia_onnx::load_and_parse_model(&onnx_path)
-        .with_context(|| format!("Failed to parse ONNX from {}", onnx_path.display()))?;
-
-    let runtime = pollster::block_on(onyxia_runtime::Runtime::new())
+/// Build a session from an already-parsed graph + tokenizer (shared by both
+/// platforms). Compilation and GPU init are async so this works on the web.
+async fn build_session(
+    graph: onyxia_onnx::Graph,
+    tokenizer: Tokenizer,
+) -> Result<(LlmSession, Tokenizer, String)> {
+    let runtime = onyxia_runtime::Runtime::new()
+        .await
         .context("Failed to initialise GPU runtime")?;
-
     let gpu_name = runtime.adapter_info().name.clone();
 
     let registry = onyxia_operators::core_operator_registry();
-    let compiled = onyxia_compiler::compile(&graph, &registry, runtime.gpu())
+    let compiled = onyxia_compiler::compile_async(&graph, &registry, runtime.gpu())
+        .await
         .context("Compilation failed")?;
 
     let executor = runtime.load_model(compiled).context("Failed to load model")?;
+    let session = LlmSession::new(
+        executor,
+        &LlmConfig {
+            max_seq_len: MAX_SEQ_LEN,
+            num_layers: NUM_LAYERS,
+        },
+    );
+    Ok((session, tokenizer, gpu_name))
+}
 
-    let config = LlmConfig {
-        max_seq_len: MAX_SEQ_LEN,
-        num_layers: NUM_LAYERS,
-    };
-    let session = LlmSession::new(executor, &config);
+/// Native: read the model + tokenizer from a directory on disk.
+#[cfg(not(target_arch = "wasm32"))]
+async fn load(model_dir: PathBuf) -> Result<(LlmSession, Tokenizer, String)> {
+    let onnx_path = model_dir.join("onnx/model.onnx");
+    let graph = onyxia_onnx::load_and_parse_model(&onnx_path)
+        .with_context(|| format!("Failed to parse ONNX from {}", onnx_path.display()))?;
 
     let tokenizer_file = model_dir.join("tokenizer.json");
     let mut tokenizer = Tokenizer::from_file(&tokenizer_file).with_context(|| {
         format!("Failed to load tokenizer from {}", tokenizer_file.display())
     })?;
-
     let template_file = model_dir.join("chat_template.jinja");
     if template_file.exists() {
         tokenizer = tokenizer
@@ -442,12 +483,63 @@ fn load(model_dir: PathBuf) -> Result<(LlmSession, Tokenizer, String)> {
             .context("Failed to load chat template")?;
     }
 
-    Ok((session, tokenizer, gpu_name))
+    build_session(graph, tokenizer).await
+}
+
+/// Web: fetch the model + tokenizer over HTTP relative to `base_url`.
+#[cfg(target_arch = "wasm32")]
+async fn load(base_url: String) -> Result<(LlmSession, Tokenizer, String)> {
+    let model_bytes = fetch_bytes(&format!("{base_url}/onnx/model.onnx")).await?;
+    let data_bytes = fetch_bytes(&format!("{base_url}/onnx/model.onnx_data")).await?;
+    let mut external = std::collections::HashMap::new();
+    external.insert("model.onnx_data".to_string(), data_bytes);
+    let graph = onyxia_onnx::parse_model_from_bytes(&model_bytes, external)
+        .context("Failed to parse ONNX model")?;
+
+    let tok_bytes = fetch_bytes(&format!("{base_url}/tokenizer.json")).await?;
+    let mut tokenizer =
+        Tokenizer::from_bytes(&tok_bytes).context("Failed to load tokenizer")?;
+    if let Ok(template) = fetch_string(&format!("{base_url}/chat_template.jinja")).await {
+        tokenizer = tokenizer.with_chat_template(template);
+    }
+
+    build_session(graph, tokenizer).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn fetch_bytes(url: &str) -> Result<Vec<u8>> {
+    let resp = gloo_net::http::Request::get(url)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("fetch {url} failed: {e}"))?;
+    if !resp.ok() {
+        anyhow::bail!("fetch {url} failed: HTTP {}", resp.status());
+    }
+    resp.binary()
+        .await
+        .map_err(|e| anyhow::anyhow!("read {url} failed: {e}"))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn fetch_string(url: &str) -> Result<String> {
+    let resp = gloo_net::http::Request::get(url)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("fetch {url} failed: {e}"))?;
+    if !resp.ok() {
+        anyhow::bail!("fetch {url} failed: HTTP {}", resp.status());
+    }
+    resp.text()
+        .await
+        .map_err(|e| anyhow::anyhow!("read {url} failed: {e}"))
 }
 
 // ── entry point ──────────────────────────────────────────────────────────────
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
+    env_logger::init();
+
     let model_dir = std::env::args()
         .nth(1)
         .map(PathBuf::from)
@@ -465,4 +557,34 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| Ok(Box::new(ChatApp::new(cc, model_dir)))),
     )
+}
+
+/// Web entry point. Trunk calls `main`; we start eframe on the `#canvas`
+/// element and fetch the model relative to the served page (`.`).
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    use wasm_bindgen::JsCast as _;
+
+    console_error_panic_hook::set_once();
+    let _ = console_log::init_with_level(log::Level::Info);
+
+    wasm_bindgen_futures::spawn_local(async {
+        let canvas = web_sys::window()
+            .expect("no window")
+            .document()
+            .expect("no document")
+            .get_element_by_id("canvas")
+            .expect("no element with id 'canvas'")
+            .dyn_into::<web_sys::HtmlCanvasElement>()
+            .expect("'canvas' element is not a <canvas>");
+
+        eframe::WebRunner::new()
+            .start(
+                canvas,
+                eframe::WebOptions::default(),
+                Box::new(|cc| Ok(Box::new(ChatApp::new(cc, ".".to_string())))),
+            )
+            .await
+            .expect("failed to start eframe");
+    });
 }

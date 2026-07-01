@@ -15,8 +15,31 @@ onyxia-runtime = { path = "../../crates/onyxia-runtime" }
 onyxia-operators = { path = "../../crates/onyxia-operators" }
 
 eframe = "0.31"
-tokenizers = "0.22.2"
+egui = "0.31"
 minijinja = "2.15.1"
 anyhow = "1.0"
 rand = "0.10"
+# Cross-platform Instant (std::time::Instant panics on wasm).
+web-time = "1"
+# Async channels + StreamExt for the inference driver (works native + wasm).
+futures = "0.3"
+log = "0.4"
+
+# Native-only: full tokenizers + a blocking executor to drive the async runtime.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokenizers = "0.22.2"
 pollster = "0.4"
+env_logger = "0.11"
+
+# Web: tokenizers wasm build, spawn_local, fetch, panic hook, logging.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokenizers = { version = "0.22.2", default-features = false, features = ["unstable_wasm"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+gloo-net = { version = "0.6", features = ["http"] }
+console_error_panic_hook = "0.1"
+console_log = "0.2"
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement"] }
+# rand/tokenizers pull getrandom, which needs an explicit backend on wasm
+# (also requires --cfg getrandom_backend="wasm_js"; see .cargo/config.toml).
+getrandom = { version = "0.4", features = ["wasm_js"] }

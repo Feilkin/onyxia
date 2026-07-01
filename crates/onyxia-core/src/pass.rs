@@ -76,7 +76,7 @@ pub enum Stage {
 /// }
 /// ```
 #[async_trait::async_trait(?Send)]
-pub trait Pass: Send + Sync {
+pub trait Pass: crate::MaybeSendSync {
     /// Get the pass name (used for logging and debugging).
     fn name(&self) -> &str;
 

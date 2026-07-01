@@ -188,6 +188,92 @@ fn parse_initializer(
     })
 }
 
+/// Inline external tensor data from in-memory buffers into the model.
+///
+/// Rewrites every external-data tensor (initializers and `Constant` node
+/// attributes) so its bytes are embedded as `raw_data` and `data_location`
+/// becomes DEFAULT. This lets the rest of the parser run unchanged with no
+/// filesystem access — used on the web, where external data is fetched over
+/// HTTP into memory rather than read from disk.
+///
+/// `external` maps each external-data `location` (e.g. `"model.onnx_data"`) to
+/// its full byte buffer. Callers should drop those buffers afterwards to free
+/// memory, since the bytes are now copied into the model.
+pub(crate) fn inline_external_data(
+    model: &mut ModelProto,
+    external: &HashMap<String, Vec<u8>>,
+) -> Result<()> {
+    let graph = model
+        .graph
+        .as_mut()
+        .ok_or_else(|| OnnxError::InvalidGraph("Model has no graph".to_string()))?;
+
+    for tensor in &mut graph.initializer {
+        inline_tensor(tensor, external)?;
+    }
+    for node in &mut graph.node {
+        for attr in &mut node.attribute {
+            if let Some(tensor) = attr.t.as_mut() {
+                inline_tensor(tensor, external)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Inline a single tensor's external data from `external` into its `raw_data`.
+fn inline_tensor(tensor: &mut TensorProto, external: &HashMap<String, Vec<u8>>) -> Result<()> {
+    if tensor.data_location != 1 {
+        return Ok(()); // not external
+    }
+
+    let mut location: Option<String> = None;
+    let mut offset: usize = 0;
+    let mut length: Option<usize> = None;
+    for entry in &tensor.external_data {
+        match entry.key.as_str() {
+            "location" => location = Some(entry.value.clone()),
+            "offset" => {
+                offset = entry.value.parse().map_err(|e| {
+                    OnnxError::InvalidModel(format!("Invalid offset in external_data: {}", e))
+                })?
+            }
+            "length" => {
+                length = Some(entry.value.parse().map_err(|e| {
+                    OnnxError::InvalidModel(format!("Invalid length in external_data: {}", e))
+                })?)
+            }
+            _ => {}
+        }
+    }
+
+    let location = location.ok_or_else(|| {
+        OnnxError::InvalidModel("External data missing 'location' key".to_string())
+    })?;
+    let buffer = external.get(&location).ok_or_else(|| {
+        OnnxError::InvalidModel(format!("External data buffer '{}' not provided", location))
+    })?;
+
+    let end = match length {
+        Some(len) => offset + len,
+        None => buffer.len(),
+    };
+    if end > buffer.len() {
+        return Err(OnnxError::InvalidModel(format!(
+            "External data range {}..{} out of bounds for '{}' (len {})",
+            offset,
+            end,
+            location,
+            buffer.len()
+        )));
+    }
+
+    tensor.raw_data = buffer[offset..end].to_vec();
+    tensor.data_location = 0; // DEFAULT (embedded)
+    tensor.external_data.clear();
+    Ok(())
+}
+
 /// Load external tensor data from a file.
 fn load_external_data(tensor: &TensorProto, base_dir: Option<&Path>) -> Result<Option<Vec<u8>>> {
     // Parse external_data key-value pairs

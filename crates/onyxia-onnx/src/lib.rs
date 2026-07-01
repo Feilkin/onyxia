@@ -140,6 +140,25 @@ pub fn load_and_parse_model<P: AsRef<Path>>(path: P) -> Result<Graph> {
     parse_model(&model, base_dir)
 }
 
+/// Parse an ONNX model from in-memory bytes into a Graph.
+///
+/// Unlike [`load_and_parse_model`], this touches no filesystem: the model
+/// protobuf and its external-data buffers are supplied directly. `external`
+/// maps each external-data `location` (e.g. `"model.onnx_data"`) to its full
+/// byte buffer. Intended for the web, where these are fetched over HTTP.
+///
+/// The `external` buffers are consumed and freed once their bytes have been
+/// copied into the model, keeping peak memory to roughly one extra copy.
+pub fn parse_model_from_bytes(
+    model_bytes: &[u8],
+    external: std::collections::HashMap<String, Vec<u8>>,
+) -> Result<Graph> {
+    let mut model = ModelProto::decode(model_bytes)?;
+    crate::parser::inline_external_data(&mut model, &external)?;
+    drop(external);
+    parse_model(&model, None)
+}
+
 /// Convert an ONNX model to Graphviz DOT format.
 ///
 /// Generates a directed graph representing the computation graph structure

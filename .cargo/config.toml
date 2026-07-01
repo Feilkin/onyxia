@@ -1,0 +1,4 @@
+# getrandom's wasm_js backend must be selected via cfg for wasm builds
+# (used by the gemma-chat web demo). Harmless for other targets.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
