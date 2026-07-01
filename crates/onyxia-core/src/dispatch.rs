@@ -160,41 +160,24 @@ impl DispatchCtx {
                     source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module.clone())),
                 });
 
-            // First create a temporary pipeline with auto layout to get bind group layout
-            let temp_pipeline =
-                self.device
-                    .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                        label: Some(&format!("{label}_temp")),
-                        layout: None, // Auto-infer to get the bind group layout
-                        module: &shader_module,
-                        entry_point: Some(entry_point),
-                        compilation_options: Default::default(),
-                        cache: None,
-                    });
-
-            // Get the inferred bind group layout
-            let bind_group_layout = temp_pipeline.get_bind_group_layout(0);
-
-            // Create the actual pipeline layout with immediate data size
-            let pipeline_layout =
-                self.device
-                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                        label: Some(&format!("{label}_layout")),
-                        bind_group_layouts: &[Some(&bind_group_layout)],
-                        immediate_size: 256, // Support up to 256 bytes of immediate data
-                    });
-
-            // Create the final pipeline with the explicit layout
+            // Use an auto-inferred layout: wgpu derives both the bind group
+            // layout and the immediate-data block from the shader. (wgpu 29
+            // makes auto-derived bind group layouts *exclusive* to their
+            // pipeline, so we can't feed one into an explicit PipelineLayout —
+            // hence we take the layout straight off this pipeline and only use
+            // it to build bind groups.)
             let pipeline = self
                 .device
                 .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                     label: Some(label),
-                    layout: Some(&pipeline_layout),
+                    layout: None,
                     module: &shader_module,
                     entry_point: Some(entry_point),
                     compilation_options: Default::default(),
                     cache: None,
                 });
+
+            let bind_group_layout = pipeline.get_bind_group_layout(0);
 
             self.pipeline_cache.insert(
                 key.clone(),
