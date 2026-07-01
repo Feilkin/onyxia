@@ -26,13 +26,15 @@ rustup target add wasm32-unknown-unknown
 cargo install trunk
 
 cd demos/gemma-chat
-./serve-web.sh ../../models/gemma-3-270m-it-ONNX --release
+trunk serve --release
 # then open http://localhost:8080 in Chrome/Edge
 ```
 
-`serve-web.sh` runs `trunk build`, symlinks the model into `dist/`, and serves
-it with a static server. The app fetches the model over HTTP relative to the
-page.
+The app fetches the model over HTTP relative to the page. `Trunk.toml` has a
+`post_build` hook that symlinks the model into the served directory after each
+build (a symlink, not a copy — the fp32 model is ~1.1 GB), so `trunk serve`
+serves the app and the model together with hot reload. Override the model with
+`MODEL_DIR=/path/to/model-dir trunk serve --release`.
 
 ### Requirements & caveats
 

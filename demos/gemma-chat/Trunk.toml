@@ -1,0 +1,19 @@
+[build]
+# wasm-opt off for faster iteration; the bundle is served locally.
+release = false
+
+[serve]
+address = "127.0.0.1"
+port = 8080
+
+# The web app fetches the model relative to the page (./onnx/model.onnx, etc.).
+# Rather than copy the ~1.1GB fp32 model into dist on every build, symlink it
+# into the staging dir after each build so `trunk serve` serves it same-origin.
+# Point MODEL_DIR elsewhere to use a different model.
+[[hooks]]
+stage = "post_build"
+command = "sh"
+command_arguments = [
+    "-c",
+    'set -e; m="$(cd "${MODEL_DIR:-../../models/gemma-3-270m-it-ONNX}" && pwd)"; ln -sfn "$m/onnx" "$TRUNK_STAGING_DIR/onnx"; ln -sfn "$m/tokenizer.json" "$TRUNK_STAGING_DIR/tokenizer.json"; if [ -f "$m/chat_template.jinja" ]; then ln -sfn "$m/chat_template.jinja" "$TRUNK_STAGING_DIR/chat_template.jinja"; fi',
+]
