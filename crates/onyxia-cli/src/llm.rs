@@ -224,6 +224,17 @@ impl LlmSession {
         self.past_seq_len = 0;
     }
 
+    /// Reset state and clear the KV cache for a completely fresh prefill.
+    ///
+    /// Unlike `reset()`, this drops the stored KV tensors so the next
+    /// `prefill()` starts from an empty context rather than reusing stale
+    /// cache from the previous conversation. Required when re-prefilling a
+    /// full conversation each turn (multi-turn chat).
+    pub fn reset_full(&mut self) {
+        self.past_seq_len = 0;
+        self.kv_cache.clear();
+    }
+
     /// Get current sequence length.
     pub fn sequence_length(&self) -> usize {
         self.past_seq_len

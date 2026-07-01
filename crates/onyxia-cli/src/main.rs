@@ -105,6 +105,61 @@ enum Commands {
         #[arg(long)]
         no_stream: bool,
     },
+    /// Run a scripted multi-turn chat (for testing multi-turn decode).
+    ///
+    /// Each `--message` is a user turn, processed in order. The full
+    /// conversation is re-prefilled every turn (KV cache cleared via
+    /// reset_full), mirroring the gemma-chat demo exactly.
+    Chat {
+        /// Path to the ONNX model file
+        #[arg(value_name = "MODEL")]
+        model: PathBuf,
+
+        /// Path to the tokenizer directory (containing tokenizer.json)
+        #[arg(short, long, value_name = "TOKENIZER")]
+        tokenizer: PathBuf,
+
+        /// User message(s), one per turn, in order. Repeat the flag.
+        #[arg(short, long = "message", required = true)]
+        messages: Vec<String>,
+
+        /// Maximum number of tokens to generate per turn
+        #[arg(long, default_value = "200")]
+        max_tokens: usize,
+
+        /// Temperature (0.0 = greedy/deterministic)
+        #[arg(long, default_value = "0.0")]
+        temperature: f32,
+
+        /// Top-K sampling: keep only top K tokens (0 = disabled)
+        #[arg(long, default_value = "0")]
+        top_k: usize,
+
+        /// Top-P (nucleus) sampling threshold (0.0 = disabled)
+        #[arg(long, default_value = "0.0")]
+        top_p: f32,
+
+        /// Random seed for reproducible sampling
+        #[arg(long)]
+        seed: Option<u64>,
+
+        /// Maximum sequence length for KV cache allocation
+        #[arg(long, default_value = "2048")]
+        max_seq_len: usize,
+
+        /// Number of transformer layers (for KV cache discovery)
+        #[arg(long, default_value = "26")]
+        num_layers: usize,
+
+        /// Print the exact rendered prompt + token count fed to the model each turn
+        #[arg(long)]
+        print_prompt: bool,
+
+        /// Use reset() instead of reset_full() between turns (to demonstrate
+        /// the KV-cache carryover bug). For diagnostics only.
+        #[arg(long)]
+        buggy_reset: bool,
+    },
     /// Inspect a specific node in the model
     InspectNode {
         /// Path to the ONNX model file
@@ -277,6 +332,35 @@ fn main() -> Result<()> {
                 max_seq_len,
                 num_layers,
                 !no_stream,
+            ))?;
+        }
+        Commands::Chat {
+            model,
+            tokenizer,
+            messages,
+            max_tokens,
+            temperature,
+            top_k,
+            top_p,
+            seed,
+            max_seq_len,
+            num_layers,
+            print_prompt,
+            buggy_reset,
+        } => {
+            pollster::block_on(cmd_chat(
+                model,
+                tokenizer,
+                messages,
+                max_tokens,
+                temperature,
+                top_k,
+                top_p,
+                seed,
+                max_seq_len,
+                num_layers,
+                print_prompt,
+                buggy_reset,
             ))?;
         }
         Commands::InspectNode {
@@ -842,6 +926,154 @@ async fn cmd_run_model(
     // Print statistics
     print_stats(&stats);
 
+    Ok(())
+}
+
+/// Run a scripted multi-turn chat, re-prefilling the full conversation each
+/// turn (mirrors the gemma-chat demo). Used to test multi-turn decode.
+#[allow(clippy::too_many_arguments)]
+async fn cmd_chat(
+    model_path: PathBuf,
+    tokenizer_path: PathBuf,
+    messages: Vec<String>,
+    max_tokens: usize,
+    temperature: f32,
+    top_k: usize,
+    top_p: f32,
+    seed: Option<u64>,
+    max_seq_len: usize,
+    num_layers: usize,
+    print_prompt: bool,
+    buggy_reset: bool,
+) -> Result<()> {
+    use onyxia_cli::generate::generate;
+    use onyxia_cli::llm::{LlmConfig, LlmSession};
+    use onyxia_cli::sampling::SamplingConfig;
+    use onyxia_cli::tokenizer::{ChatMessage, Tokenizer};
+
+    println!("Loading model from {}...", model_path.display());
+    let model = onyxia_onnx::load_and_parse_model(&model_path)
+        .with_context(|| format!("Failed to load model from {}", model_path.display()))?;
+
+    println!("Initializing GPU runtime...");
+    let runtime = onyxia_runtime::Runtime::new()
+        .await
+        .with_context(|| "Failed to create GPU runtime")?;
+
+    let registry = onyxia_operators::core_operator_registry();
+    let mut pipeline = onyxia_compiler::CompilerPipeline::new();
+    println!("Compiling execution plan...");
+    let compiled_model = pipeline
+        .compile(&model, &registry, runtime.gpu())
+        .await
+        .with_context(|| "Failed to compile model")?;
+
+    let executor = runtime
+        .load_model(compiled_model)
+        .with_context(|| "Failed to load compiled model")?;
+
+    let mut session = LlmSession::new(
+        executor,
+        &LlmConfig {
+            max_seq_len,
+            num_layers,
+        },
+    );
+
+    let tokenizer_file = tokenizer_path.join("tokenizer.json");
+    let mut tokenizer = Tokenizer::from_file(&tokenizer_file)
+        .with_context(|| format!("Failed to load tokenizer from {}", tokenizer_file.display()))?;
+
+    let chat_template_file = tokenizer_path.join("chat_template.jinja");
+    if !chat_template_file.exists() {
+        anyhow::bail!(
+            "chat requires a chat_template.jinja in the tokenizer directory ({})",
+            tokenizer_path.display()
+        );
+    }
+    tokenizer = tokenizer
+        .with_chat_template_file(&chat_template_file)
+        .with_context(|| "Failed to load chat template")?;
+
+    // Stop on EOS and Gemma's <end_of_turn>.
+    let mut stop_token_ids = vec![tokenizer.eos_token_id() as u32];
+    if let Ok(ids) = tokenizer.encode("<end_of_turn>", false)
+        && ids.len() == 1
+    {
+        stop_token_ids.push(ids[0] as u32);
+    }
+
+    let sampling = SamplingConfig {
+        temperature,
+        top_k,
+        top_p,
+        seed,
+    };
+
+    println!(
+        "\nReset mode: {}\n",
+        if buggy_reset {
+            "reset() [buggy: keeps stale KV cache]"
+        } else {
+            "reset_full() [clears KV cache]"
+        }
+    );
+
+    let mut conversation: Vec<ChatMessage> = Vec::new();
+    for (i, user_msg) in messages.into_iter().enumerate() {
+        conversation.push(ChatMessage {
+            role: "user".to_string(),
+            content: user_msg.clone(),
+        });
+
+        let prompt = tokenizer
+            .apply_chat_template(&conversation, true)
+            .with_context(|| "Failed to apply chat template")?;
+
+        if print_prompt {
+            let ids = tokenizer.encode(&prompt, false)?;
+            println!(
+                "\n----- turn {} prefill prompt ({} tokens) -----\n{}\n----- end prompt -----",
+                i + 1,
+                ids.len(),
+                prompt
+            );
+        }
+
+        // Re-prefill the full conversation each turn.
+        if buggy_reset {
+            session.reset();
+        } else {
+            session.reset_full();
+        }
+
+        println!("\n[user]  {user_msg}");
+        print!("[model] ");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+        let (text, _stats) = generate(
+            &mut session,
+            &tokenizer,
+            &prompt,
+            max_tokens,
+            &sampling,
+            true,
+            &stop_token_ids,
+        )
+        .with_context(|| format!("Generation failed on turn {}", i + 1))?;
+
+        // Strip stop-token text before storing so re-templating stays clean.
+        let cleaned = text
+            .replace("<end_of_turn>", "")
+            .replace("<eos>", "")
+            .trim()
+            .to_string();
+        conversation.push(ChatMessage {
+            role: "model".to_string(),
+            content: cleaned,
+        });
+    }
+
+    println!();
     Ok(())
 }
 
