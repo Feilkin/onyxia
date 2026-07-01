@@ -9,7 +9,7 @@
 //!   gemma-chat <model-dir>
 //!
 //! Where <model-dir> contains:
-//!   onnx/model_q4.onnx      — quantised ONNX model
+//!   onnx/model.onnx          — full-precision ONNX model (+ .onnx_data)
 //!   tokenizer.json           — HuggingFace tokenizer
 //!   chat_template.jinja      — Jinja2 chat template (optional)
 
@@ -404,7 +404,11 @@ fn inference_thread(
 // ── model loading ────────────────────────────────────────────────────────────
 
 fn load(model_dir: PathBuf) -> Result<(LlmSession, Tokenizer, String)> {
-    let onnx_path = model_dir.join("onnx/model_q4.onnx");
+    // Full-precision model. The community `model_q4.onnx` 4-bit quantization
+    // badly degrades this small model (verified against onnxruntime: fp32
+    // recalls long-context facts, q4 collapses into garbage), so the demo uses
+    // fp32 for coherent output.
+    let onnx_path = model_dir.join("onnx/model.onnx");
 
     let graph = onyxia_onnx::load_and_parse_model(&onnx_path)
         .with_context(|| format!("Failed to parse ONNX from {}", onnx_path.display()))?;
