@@ -1,0 +1,14 @@
+[package]
+name = "onyxia-ir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Backend-neutral intermediate representation for Onyxia: primitives, composites, symbolic shapes, and the reference interpreter."
+
+[dependencies]
+async-trait = "0.1"
+half = "2.7.1"
+thiserror = "2.0.18"
+
+[dev-dependencies]

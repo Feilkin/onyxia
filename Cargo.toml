@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/onyxia-ir",
+    "crates/onyxia-lower",
+    "crates/onyxia-backend-ref",
+    "crates/onyxia-backend-wgpu",
     "crates/onyxia-core",
     "crates/onyxia-onnx",
     "crates/onyxia-operators",

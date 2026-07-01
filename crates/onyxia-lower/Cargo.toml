@@ -1,0 +1,13 @@
+[package]
+name = "onyxia-lower"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ONNX frontend for Onyxia: lowers parsed ONNX graphs into the backend-neutral IR."
+
+[dependencies]
+onyxia-ir = { path = "../onyxia-ir" }
+onyxia-onnx.workspace = true
+
+[dev-dependencies]

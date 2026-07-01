@@ -1,0 +1,14 @@
+[package]
+name = "onyxia-backend-ref"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reference CPU backend for Onyxia: the interpreter behind the Backend/Session traits. Correctness oracle, not a performance backend."
+
+[dependencies]
+async-trait = "0.1"
+onyxia-ir = { path = "../onyxia-ir" }
+
+[dev-dependencies]
+pollster = "0.4"
