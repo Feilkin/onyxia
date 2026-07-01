@@ -32,6 +32,7 @@ impl Default for InitializeConstantsPass {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl Pass for InitializeConstantsPass {
     fn name(&self) -> &str {
         "initialize_constants"
@@ -41,7 +42,7 @@ impl Pass for InitializeConstantsPass {
         Stage::Resolution
     }
 
-    fn run(&self, graph: &mut IrGraph, _registry: &OperatorRegistry) -> Result<bool> {
+    async fn run(&self, graph: &mut IrGraph, _registry: &OperatorRegistry) -> Result<bool> {
         let mut changed = false;
 
         for idx in 0..graph.tensor_count() {
@@ -87,7 +88,7 @@ mod tests {
 
         let registry = OperatorRegistry::new();
         let pass = InitializeConstantsPass::new();
-        let changed = pass.run(&mut graph, &registry).unwrap();
+        let changed = pass.run_blocking(&mut graph, &registry).unwrap();
 
         assert!(changed);
         let edge = graph.edge(id).unwrap();
@@ -113,7 +114,7 @@ mod tests {
 
         let registry = OperatorRegistry::new();
         let pass = InitializeConstantsPass::new();
-        let changed = pass.run(&mut graph, &registry).unwrap();
+        let changed = pass.run_blocking(&mut graph, &registry).unwrap();
 
         assert!(changed);
         let val = graph.edge(id).unwrap().constant_value().unwrap();
@@ -133,7 +134,7 @@ mod tests {
 
         let registry = OperatorRegistry::new();
         let pass = InitializeConstantsPass::new();
-        let changed = pass.run(&mut graph, &registry).unwrap();
+        let changed = pass.run_blocking(&mut graph, &registry).unwrap();
 
         assert!(!changed);
     }
@@ -156,7 +157,7 @@ mod tests {
 
         let registry = OperatorRegistry::new();
         let pass = InitializeConstantsPass::new();
-        let changed = pass.run(&mut graph, &registry).unwrap();
+        let changed = pass.run_blocking(&mut graph, &registry).unwrap();
 
         assert!(!changed);
     }
@@ -181,7 +182,7 @@ mod tests {
 
         let registry = OperatorRegistry::new();
         let pass = InitializeConstantsPass::new();
-        let changed = pass.run(&mut graph, &registry).unwrap();
+        let changed = pass.run_blocking(&mut graph, &registry).unwrap();
 
         assert!(!changed);
     }

@@ -167,7 +167,7 @@ pub async fn compile_and_run_f32(
         .expect("Runtime initialization should succeed");
 
     let model = pipeline
-        .compile(graph, &registry, runtime.gpu())
+        .compile_blocking(graph, &registry, runtime.gpu())
         .expect("Compilation should succeed");
 
     let mut executor = runtime
@@ -175,7 +175,9 @@ pub async fn compile_and_run_f32(
         .expect("Model loading should succeed");
 
     // Run with inputs
-    let outputs = executor.run(inputs).expect("Execution should succeed");
+    let outputs = executor
+        .run_blocking(inputs)
+        .expect("Execution should succeed");
 
     // Convert outputs to Vec<f32>
     outputs

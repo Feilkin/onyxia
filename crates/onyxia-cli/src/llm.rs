@@ -93,7 +93,7 @@ impl LlmSession {
         let input_refs: Vec<(&str, Tensor)> = inputs.into_iter().collect();
 
         // Run the model
-        let outputs = self.executor.run(&input_refs).with_context(|| {
+        let outputs = self.executor.run_blocking(&input_refs).with_context(|| {
             format!(
                 "Prefill execution failed (prompt_len={}, inputs={:?})",
                 prompt_len,
@@ -171,7 +171,7 @@ impl LlmSession {
         let input_refs: Vec<(&str, Tensor)> = inputs.into_iter().collect();
 
         // Run the model
-        let outputs = self.executor.run(&input_refs).with_context(|| {
+        let outputs = self.executor.run_blocking(&input_refs).with_context(|| {
             format!(
                 "Decode execution failed (token={}, past_seq_len={}, inputs={:?})",
                 token_id,

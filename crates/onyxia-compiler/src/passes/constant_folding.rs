@@ -71,7 +71,7 @@ impl ConstantFoldingPass {
     /// Perform one sweep over the graph, folding all eligible nodes.
     ///
     /// Returns `true` if at least one node was folded (i.e. the graph changed).
-    fn run_once(
+    async fn run_once(
         &self,
         graph: &mut IrGraph,
         registry: &OperatorRegistry,
@@ -161,14 +161,14 @@ impl ConstantFoldingPass {
             };
 
             // Run the operator on the GPU.
-            let outputs = dispatch.dispatch(gpu_inputs, dispatch_ctx)?;
+            let outputs = dispatch.dispatch(gpu_inputs, dispatch_ctx).await?;
 
             // Flush pending GPU commands and wait for completion.
             dispatch_ctx.submit_commands()?;
 
             // Download the result and build a TensorValue.
             let output = &outputs[0];
-            let bytes = dispatch_ctx.download_tensor(output)?;
+            let bytes = dispatch_ctx.download_tensor(output).await?;
             let value = TensorValue::from_bytes(&bytes, output.dtype, &output.shape)?;
 
             // Fold: replace the node with the constant value.
@@ -187,6 +187,7 @@ impl ConstantFoldingPass {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl Pass for ConstantFoldingPass {
     fn name(&self) -> &str {
         "constant_folding"
@@ -201,13 +202,15 @@ impl Pass for ConstantFoldingPass {
     /// Loops until no more nodes can be folded. Each iteration may expose
     /// previously non-foldable downstream nodes whose inputs are now all
     /// constant as a result of the previous sweep.
-    fn run(&self, graph: &mut IrGraph, registry: &OperatorRegistry) -> Result<bool> {
+    async fn run(&self, graph: &mut IrGraph, registry: &OperatorRegistry) -> Result<bool> {
         let mut shader_cache = HashMap::new();
         let mut dispatch_ctx = (self.dispatch_factory)();
         let mut any_changed = false;
 
         loop {
-            let changed = self.run_once(graph, registry, &mut shader_cache, &mut dispatch_ctx)?;
+            let changed = self
+                .run_once(graph, registry, &mut shader_cache, &mut dispatch_ctx)
+                .await?;
             if !changed {
                 break;
             }
@@ -482,7 +485,7 @@ mod tests {
 
         let pass = ConstantFoldingPass::new(&gpu);
         let changed = pass
-            .run(&mut graph, &registry)
+            .run_blocking(&mut graph, &registry)
             .expect("folding should succeed");
 
         assert!(changed, "folding should have changed the graph");
@@ -570,7 +573,7 @@ mod tests {
         let registry = onyxia_operators::core_operator_registry();
         let pass = ConstantFoldingPass::new(&gpu);
         let changed = pass
-            .run(&mut graph, &registry)
+            .run_blocking(&mut graph, &registry)
             .expect("folding should succeed");
 
         assert!(changed, "folding should have changed the graph");
@@ -648,7 +651,7 @@ mod tests {
         graph.add_node(node);
 
         let pass = ConstantFoldingPass::new(&gpu);
-        let changed = pass.run(&mut graph, &registry).unwrap();
+        let changed = pass.run_blocking(&mut graph, &registry).unwrap();
 
         assert!(!changed, "is_foldable=false should prevent folding");
         assert_eq!(graph.node_count(), 1, "node should still be in graph");

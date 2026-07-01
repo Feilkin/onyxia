@@ -88,8 +88,9 @@ struct ComparisonDispatch {
     label: String,
 }
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for ComparisonDispatch {
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,

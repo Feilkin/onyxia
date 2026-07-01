@@ -19,10 +19,12 @@
 //! // Parse ONNX model to graph
 //! # let graph = onyxia_onnx::Graph::new();
 //!
-//! // Compile to dispatch model
+//! // Compile to dispatch model (native blocking wrapper; use `compile` +
+//! // `.await` on the web).
 //! let registry = OperatorRegistry::new();
+//! let gpu = pollster::block_on(onyxia_core::GpuContext::new())?;
 //! let mut pipeline = CompilerPipeline::new();
-//! let model = pipeline.compile(&graph, &registry)?;
+//! let model = pipeline.compile_blocking(&graph, &registry, &gpu)?;
 //!
 //! println!("Compiled {} operations", model.entries.len());
 //! # Ok(())
@@ -111,7 +113,7 @@ impl CompilerPipeline {
     /// - Any pass fails
     /// - Dispatch model construction fails
     #[tracing::instrument(skip_all, fields(num_nodes = graph.nodes.len(), num_tensors = graph.tensor_info.len()))]
-    pub fn compile(
+    pub async fn compile(
         &mut self,
         graph: &Graph,
         registry: &onyxia_core::OperatorRegistry,
@@ -136,12 +138,27 @@ impl CompilerPipeline {
         for pass in &all_passes {
             let _span =
                 tracing::debug_span!("pass", name = pass.name(), stage = ?pass.stage()).entered();
-            pass.run(&mut ir_graph, registry)?;
+            pass.run(&mut ir_graph, registry).await?;
         }
 
         // Step 3: Build dispatch model
         let mut dispatch_ctx = DispatchCtx::new(gpu.device.clone(), gpu.queue.clone());
         self.build_dispatch_model(&ir_graph, registry, &mut dispatch_ctx)
+    }
+
+    /// Blocking wrapper around [`compile`](Self::compile) for native callers.
+    ///
+    /// Drives the async compilation to completion on the current thread. Only
+    /// available off the web — on wasm there is no blocking executor, so use
+    /// [`compile`](Self::compile) and `.await` it directly.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn compile_blocking(
+        &mut self,
+        graph: &Graph,
+        registry: &onyxia_core::OperatorRegistry,
+        gpu: &GpuContext,
+    ) -> onyxia_core::Result<DispatchModel> {
+        pollster::block_on(self.compile(graph, registry, gpu))
     }
 
     /// Build the final dispatch model from the IR graph.
@@ -306,13 +323,29 @@ impl Default for CompilerPipeline {
 /// # }
 /// ```
 #[tracing::instrument(skip_all)]
-pub fn compile(
+pub async fn compile_async(
     graph: &Graph,
     registry: &onyxia_core::OperatorRegistry,
     gpu: &GpuContext,
 ) -> onyxia_core::Result<DispatchModel> {
     let mut pipeline = CompilerPipeline::new();
-    pipeline.compile(graph, registry, gpu)
+    pipeline.compile(graph, registry, gpu).await
+}
+
+/// Blocking wrapper around [`compile_async`] for native callers.
+///
+/// Constant folding runs operators on the GPU and reads results back, which is
+/// async on the web. Native callers (the CLI, desktop demos) can drive that to
+/// completion on the current thread via this wrapper; on wasm there is no
+/// blocking executor, so use [`compile_async`] and `.await` it instead.
+#[cfg(not(target_arch = "wasm32"))]
+#[tracing::instrument(skip_all)]
+pub fn compile(
+    graph: &Graph,
+    registry: &onyxia_core::OperatorRegistry,
+    gpu: &GpuContext,
+) -> onyxia_core::Result<DispatchModel> {
+    pollster::block_on(compile_async(graph, registry, gpu))
 }
 
 #[cfg(test)]
@@ -335,6 +368,7 @@ mod tests {
         // Custom pass that does nothing
         struct NoOpPass;
 
+        #[async_trait::async_trait(?Send)]
         impl Pass for NoOpPass {
             fn name(&self) -> &str {
                 "noop"
@@ -344,7 +378,7 @@ mod tests {
                 Stage::Optimization
             }
 
-            fn run(
+            async fn run(
                 &self,
                 _graph: &mut IrGraph,
                 _registry: &OperatorRegistry,
@@ -422,7 +456,7 @@ mod tests {
             .expect("GpuContext should initialize");
 
         let mut pipeline = CompilerPipeline::new();
-        let model = pipeline.compile(&graph, &registry, &gpu).unwrap();
+        let model = pipeline.compile_blocking(&graph, &registry, &gpu).unwrap();
 
         // Verify structure
         assert!(!model.entries.is_empty(), "Model should have operations");
@@ -480,7 +514,7 @@ mod tests {
         let gpu = pollster::block_on(onyxia_core::GpuContext::new())
             .expect("GpuContext should initialize");
         let mut pipeline = CompilerPipeline::new();
-        let model = pipeline.compile(&graph, &registry, &gpu).unwrap();
+        let model = pipeline.compile_blocking(&graph, &registry, &gpu).unwrap();
 
         // The Add entry should read from input registers and write to output register
         assert_eq!(model.entries.len(), 1, "Should have one operation");

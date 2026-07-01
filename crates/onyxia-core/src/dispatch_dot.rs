@@ -188,8 +188,9 @@ mod tests {
 
     // Mock OpDispatch for testing
     struct MockOp;
+    #[async_trait::async_trait(?Send)]
     impl crate::dispatch::OpDispatch for MockOp {
-        fn dispatch(
+        async fn dispatch(
             &self,
             _inputs: Vec<crate::dispatch::RuntimeTensor>,
             _ctx: &mut crate::dispatch::DispatchCtx,

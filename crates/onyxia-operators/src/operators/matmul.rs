@@ -31,9 +31,10 @@ struct MatMulDispatch {
     module: naga::Module,
 }
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for MatMulDispatch {
     #[instrument(name = "MatMul::dispatch", skip_all)]
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,
@@ -84,8 +85,8 @@ impl OpDispatch for MatMulDispatch {
         output_shape.push(n);
 
         // Handle broadcasting by reshaping inputs if needed
-        let a_batched = reshape_for_batch(a, &a_shape, batch_size, m, k, ctx)?;
-        let b_batched = reshape_for_batch(b, &b_shape, batch_size, k, n, ctx)?;
+        let a_batched = reshape_for_batch(a, &a_shape, batch_size, m, k, ctx).await?;
+        let b_batched = reshape_for_batch(b, &b_shape, batch_size, k, n, ctx).await?;
 
         // Allocate output buffer
         let output = ctx.create_output_tensor(&output_shape, a.dtype)?;
@@ -204,7 +205,7 @@ fn broadcast_batch_dims(a_batch: &[usize], b_batch: &[usize]) -> Result<Vec<usiz
 ///
 /// If the input needs broadcasting (its batch dims are smaller than target),
 /// we replicate data by copying. Returns a tensor of shape (batch_size, rows, cols).
-fn reshape_for_batch(
+async fn reshape_for_batch(
     tensor: &RuntimeTensor,
     normalized_shape: &[usize],
     target_batch_size: usize,
@@ -246,7 +247,7 @@ fn reshape_for_batch(
     let output_shape = vec![target_batch_size, rows, cols];
 
     // Download original data and replicate
-    let data = ctx.download_tensor(tensor)?;
+    let data = ctx.download_tensor(tensor).await?;
     let f32_data: &[f32] = bytemuck::cast_slice(&data);
 
     let mut broadcast_data = Vec::with_capacity(target_batch_size * matrix_size);

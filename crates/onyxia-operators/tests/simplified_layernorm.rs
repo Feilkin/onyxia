@@ -108,13 +108,13 @@ async fn test_simplified_layernorm_basic_2d() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let compiled = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let compiled = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(compiled).unwrap();
 
     let input_data = vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
     let input_tensor = Tensor::from_vec(input_data, &input_shape);
 
-    let outputs = executor.run(&[("X", input_tensor)]).unwrap();
+    let outputs = executor.run_blocking(&[("X", input_tensor)]).unwrap();
     let result: Vec<f32> = outputs["Y"].to_vec().unwrap();
 
     let rms_0 = (7.5_f32 + epsilon).sqrt();
@@ -148,13 +148,13 @@ async fn test_simplified_layernorm_with_scale() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let compiled = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let compiled = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(compiled).unwrap();
 
     let input_data = vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
     let input_tensor = Tensor::from_vec(input_data, &input_shape);
 
-    let outputs = executor.run(&[("X", input_tensor)]).unwrap();
+    let outputs = executor.run_blocking(&[("X", input_tensor)]).unwrap();
     let result: Vec<f32> = outputs["Y"].to_vec().unwrap();
 
     let rms_0 = (7.5_f32 + epsilon).sqrt();

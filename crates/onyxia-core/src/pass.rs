@@ -75,6 +75,7 @@ pub enum Stage {
 ///     }
 /// }
 /// ```
+#[async_trait::async_trait(?Send)]
 pub trait Pass: Send + Sync {
     /// Get the pass name (used for logging and debugging).
     fn name(&self) -> &str;
@@ -83,6 +84,9 @@ pub trait Pass: Send + Sync {
     fn stage(&self) -> Stage;
 
     /// Run the pass on the given graph.
+    ///
+    /// Async because some passes (e.g. constant folding) execute operators on
+    /// the GPU and read results back, which is an async operation on the web.
     ///
     /// # Arguments
     ///
@@ -94,7 +98,17 @@ pub trait Pass: Send + Sync {
     /// * `Ok(true)` if the pass made changes to the graph.
     /// * `Ok(false)` if no changes were made.
     /// * `Err(_)` if the pass encountered an error.
-    fn run(&self, graph: &mut IrGraph, registry: &OperatorRegistry) -> Result<bool>;
+    async fn run(&self, graph: &mut IrGraph, registry: &OperatorRegistry) -> Result<bool>;
+
+    /// Blocking wrapper around [`run`](Self::run) for native callers.
+    ///
+    /// Drives the async pass to completion on the current thread. Only available
+    /// off the web — on wasm there is no blocking executor, so `.await` [`run`]
+    /// directly instead.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn run_blocking(&self, graph: &mut IrGraph, registry: &OperatorRegistry) -> Result<bool> {
+        pollster::block_on(self.run(graph, registry))
+    }
 }
 
 #[cfg(test)]
@@ -104,6 +118,7 @@ mod tests {
     // Mock pass for testing
     struct NoOpPass;
 
+    #[async_trait::async_trait(?Send)]
     impl Pass for NoOpPass {
         fn name(&self) -> &str {
             "noop"
@@ -113,7 +128,7 @@ mod tests {
             Stage::Optimization
         }
 
-        fn run(&self, _graph: &mut IrGraph, _registry: &OperatorRegistry) -> Result<bool> {
+        async fn run(&self, _graph: &mut IrGraph, _registry: &OperatorRegistry) -> Result<bool> {
             Ok(false)
         }
     }

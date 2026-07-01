@@ -50,8 +50,7 @@ pub fn validate_model(
 
     let gpu =
         pollster::block_on(GpuContext::new()).context("Failed to initialize GPU context")?;
-    let _compiled = pipeline
-        .compile(&model, &registry, &gpu)
+    let _compiled = pollster::block_on(pipeline.compile(&model, &registry, &gpu))
         .context("Failed to compile model")?;
     print_success();
 

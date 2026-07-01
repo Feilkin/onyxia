@@ -615,8 +615,7 @@ fn cmd_inspect(model_path: PathBuf, dynamic_dim_args: Vec<String>) -> Result<()>
     let _ = dynamic_dims; // Suppress unused warning
 
     // Just run up to inference stage to get shapes, don't need full compilation
-    pipeline
-        .compile(&model, &registry, &gpu)
+    pollster::block_on(pipeline.compile(&model, &registry, &gpu))
         .with_context(|| "Failed to compile model for analysis")?;
 
     println!("Model: {}", model.metadata.name);
@@ -752,8 +751,7 @@ async fn cmd_run_model(
     let mut pipeline = onyxia_compiler::CompilerPipeline::new();
 
     println!("Compiling execution plan...");
-    let compiled_model = pipeline
-        .compile(&model, &registry, runtime.gpu())
+    let compiled_model = pollster::block_on(pipeline.compile(&model, &registry, runtime.gpu()))
         .with_context(|| "Failed to compile model")?;
 
     // Load model (reuses device/queue from runtime — no new device created)

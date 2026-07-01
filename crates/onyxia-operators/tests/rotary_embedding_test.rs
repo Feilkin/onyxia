@@ -86,7 +86,7 @@ async fn test_rotary_embedding_basic() {
     // Execute
     let runtime = Runtime::new().await.expect("Runtime init");
     let compiled = pipeline
-        .compile(&graph, &registry, runtime.gpu())
+        .compile_blocking(&graph, &registry, runtime.gpu())
         .expect("Compilation should succeed");
     let mut executor = runtime.load_model(compiled).expect("Load model");
 
@@ -97,7 +97,7 @@ async fn test_rotary_embedding_basic() {
     let sin_cache = Tensor::from_vec(vec![0.0f32; 1024 * 32], &[1024, 32]);
 
     let outputs = executor
-        .run(&[
+        .run_blocking(&[
             ("input", input),
             ("position_ids", position_ids),
             ("cos_cache", cos_cache),
@@ -187,7 +187,7 @@ async fn test_rotary_embedding_applies_per_head() {
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
     let compiled = pipeline
-        .compile(&graph, &registry, runtime.gpu())
+        .compile_blocking(&graph, &registry, runtime.gpu())
         .expect("Compilation should succeed");
     let mut executor = runtime.load_model(compiled).expect("Load model");
 
@@ -199,7 +199,7 @@ async fn test_rotary_embedding_applies_per_head() {
     let sin_cache = Tensor::from_vec(vec![1.0f32, 1.0], &[1, 2]);
 
     let outputs = executor
-        .run(&[
+        .run_blocking(&[
             ("input", input),
             ("position_ids", position_ids),
             ("cos_cache", cos_cache),

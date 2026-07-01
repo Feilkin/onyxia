@@ -349,12 +349,19 @@ impl DispatchCtx {
 
         let _span = trace_span!("gpu_execute").entered();
         let submission_id = self.queue.submit([encoder.finish()]);
+        // On native we block the calling thread until the submission completes.
+        // On wasm the browser drives GPU progress via the event loop, and any
+        // CPU-side wait happens through `map_async` callbacks in
+        // `download_tensor`, so there is nothing to poll here.
+        #[cfg(not(target_arch = "wasm32"))]
         self.device
             .poll(wgpu::PollType::Wait {
                 submission_index: Some(submission_id),
                 timeout: None,
             })
             .map_err(|e| Error::Runtime(format!("GPU poll failed: {e:?}")))?;
+        #[cfg(target_arch = "wasm32")]
+        let _ = submission_id;
         drop(_span);
         Ok(())
     }
@@ -393,8 +400,12 @@ impl DispatchCtx {
     ///
     /// Submits any pending commands first, then creates a staging buffer,
     /// copies data from GPU, and returns the bytes.
-    /// This is a blocking operation that waits for GPU completion.
-    pub fn download_tensor(&mut self, tensor: &RuntimeTensor) -> Result<Vec<u8>> {
+    ///
+    /// This awaits GPU completion via the `map_async` callback. On native the
+    /// device is polled to drive the callback to completion (so the future
+    /// resolves immediately under a blocking executor); on wasm the browser
+    /// event loop drives it and the future suspends until the map resolves.
+    pub async fn download_tensor(&mut self, tensor: &RuntimeTensor) -> Result<Vec<u8>> {
         // Submit any pending compute operations first
         self.submit_commands()?;
 
@@ -415,27 +426,32 @@ impl DispatchCtx {
         });
         encoder.copy_buffer_to_buffer(&tensor.buffer, 0, &staging, 0, tensor.size_bytes as u64);
 
-        // Submit the download copy and wait
-        let _span = trace_span!("gpu_download").entered();
+        // Submit the download copy.
         let sub_id = self.queue.submit([self.encoder.take().unwrap().finish()]);
 
-        // Map and read
+        // Map and read. The callback fires once the submitted copy completes.
         let slice = staging.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = futures_channel::oneshot::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
 
+        // Drive the map callback. On native, polling with `Wait` blocks until
+        // the submission finishes (the callback runs synchronously here). On
+        // wasm there is no blocking poll; the browser fires the callback when
+        // the event loop is reached during `rx.await`.
+        #[cfg(not(target_arch = "wasm32"))]
         self.device
             .poll(wgpu::PollType::Wait {
                 submission_index: Some(sub_id),
                 timeout: None,
             })
             .map_err(|e| Error::Runtime(format!("GPU poll failed: {e:?}")))?;
-        drop(_span);
+        #[cfg(target_arch = "wasm32")]
+        let _ = sub_id;
 
-        rx.recv()
-            .map_err(|e| Error::Runtime(format!("Channel recv failed: {e}")))?
+        rx.await
+            .map_err(|e| Error::Runtime(format!("Buffer map canceled: {e}")))?
             .map_err(|e| Error::Runtime(format!("Buffer map failed: {e}")))?;
 
         let data = slice.get_mapped_range().to_vec();
@@ -472,7 +488,7 @@ pub struct ResolvedShapes {
 /// }
 ///
 /// impl OpDispatch for AddDispatch {
-///     fn dispatch(
+///     async fn dispatch(
 ///         &self,
 ///         inputs: Vec<RuntimeTensor>,
 ///         ctx: &mut DispatchCtx,
@@ -486,6 +502,7 @@ pub struct ResolvedShapes {
 ///     }
 /// }
 /// ```
+#[async_trait::async_trait(?Send)]
 pub trait OpDispatch: Send + Sync {
     /// Resolve concrete output shapes from concrete input tensors.
     ///
@@ -513,7 +530,7 @@ pub trait OpDispatch: Send + Sync {
     ///
     /// Default implementation returns an error (must be implemented when
     /// `resolve_shapes()` returns `Some`).
-    fn dispatch_with_outputs(
+    async fn dispatch_with_outputs(
         &self,
         inputs: Vec<RuntimeTensor>,
         outputs: Vec<RuntimeTensor>,
@@ -538,7 +555,7 @@ pub trait OpDispatch: Send + Sync {
     ///
     /// Output tensors produced by this operation, with concrete shapes
     /// and data resident on the GPU.
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,
@@ -616,8 +633,9 @@ mod tests {
     /// relying on default impls for `resolve_shapes` and `dispatch_with_outputs`.
     struct LegacyOnlyOp;
 
+    #[async_trait::async_trait(?Send)]
     impl OpDispatch for LegacyOnlyOp {
-        fn dispatch(
+        async fn dispatch(
             &self,
             _inputs: Vec<RuntimeTensor>,
             _ctx: &mut DispatchCtx,

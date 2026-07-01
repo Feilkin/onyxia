@@ -125,7 +125,7 @@ async fn test_slice_1d_basic() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(
@@ -138,7 +138,7 @@ async fn test_slice_1d_basic() {
     let steps = Tensor::from_vec(vec![1i64], &[1]);
 
     let outputs = executor
-        .run(&[
+        .run_blocking(&[
             ("data", data),
             ("starts", starts),
             ("ends", ends),
@@ -167,7 +167,7 @@ async fn test_slice_2d_basic() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(
@@ -182,7 +182,7 @@ async fn test_slice_2d_basic() {
     let steps = Tensor::from_vec(vec![1i64, 1], &[2]);
 
     let outputs = executor
-        .run(&[
+        .run_blocking(&[
             ("data", data),
             ("starts", starts),
             ("ends", ends),
@@ -216,7 +216,7 @@ async fn test_slice_negative_indices() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![0.0f32, 1.0, 2.0, 3.0, 4.0], &[5]);
@@ -226,7 +226,7 @@ async fn test_slice_negative_indices() {
     let steps = Tensor::from_vec(vec![1i64], &[1]);
 
     let outputs = executor
-        .run(&[
+        .run_blocking(&[
             ("data", data),
             ("starts", starts),
             ("ends", ends),
@@ -259,7 +259,7 @@ async fn test_slice_step_2() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(
@@ -272,7 +272,7 @@ async fn test_slice_step_2() {
     let steps = Tensor::from_vec(vec![2i64], &[1]);
 
     let outputs = executor
-        .run(&[
+        .run_blocking(&[
             ("data", data),
             ("starts", starts),
             ("ends", ends),
@@ -301,7 +301,7 @@ async fn test_slice_negative_step() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![0.0f32, 1.0, 2.0, 3.0, 4.0], &[5]);
@@ -311,7 +311,7 @@ async fn test_slice_negative_step() {
     let steps = Tensor::from_vec(vec![-1i64], &[1]);
 
     let outputs = executor
-        .run(&[
+        .run_blocking(&[
             ("data", data),
             ("starts", starts),
             ("ends", ends),
@@ -344,7 +344,7 @@ async fn test_slice_multi_axis() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec((0..24).map(|x| x as f32).collect(), &[2, 3, 4]);
@@ -354,7 +354,7 @@ async fn test_slice_multi_axis() {
     let steps = Tensor::from_vec(vec![1i64, 1, 1], &[3]);
 
     let outputs = executor
-        .run(&[
+        .run_blocking(&[
             ("data", data),
             ("starts", starts),
             ("ends", ends),
@@ -394,7 +394,7 @@ async fn test_slice_default_axes_and_steps() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(
@@ -405,7 +405,7 @@ async fn test_slice_default_axes_and_steps() {
     let ends = Tensor::from_vec(vec![7i64], &[1]);
 
     let outputs = executor
-        .run(&[("data", data), ("starts", starts), ("ends", ends)])
+        .run_blocking(&[("data", data), ("starts", starts), ("ends", ends)])
         .unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
@@ -432,7 +432,7 @@ async fn test_slice_full_range() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![0.0f32, 1.0, 2.0, 3.0, 4.0], &[5]);
@@ -442,7 +442,7 @@ async fn test_slice_full_range() {
     let steps = Tensor::from_vec(vec![1i64], &[1]);
 
     let outputs = executor
-        .run(&[
+        .run_blocking(&[
             ("data", data),
             ("starts", starts),
             ("ends", ends),
@@ -471,7 +471,7 @@ async fn test_slice_single_element() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![0.0f32, 1.0, 2.0, 3.0, 4.0], &[5]);
@@ -481,7 +481,7 @@ async fn test_slice_single_element() {
     let steps = Tensor::from_vec(vec![1i64], &[1]);
 
     let outputs = executor
-        .run(&[
+        .run_blocking(&[
             ("data", data),
             ("starts", starts),
             ("ends", ends),

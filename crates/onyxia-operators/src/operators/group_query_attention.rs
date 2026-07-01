@@ -167,9 +167,10 @@ struct GroupQueryAttentionDispatch {
     scale_override: Option<f32>,
 }
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for GroupQueryAttentionDispatch {
     #[instrument(name = "GroupQueryAttention::dispatch", skip_all)]
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,

@@ -71,8 +71,9 @@ struct TriluDispatch {
     upper: bool,
 }
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for TriluDispatch {
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,
@@ -104,7 +105,7 @@ impl OpDispatch for TriluDispatch {
             }
 
             // Download k value
-            let k_data = ctx.download_tensor(k_tensor)?;
+            let k_data = ctx.download_tensor(k_tensor).await?;
 
             match k_tensor.dtype {
                 DataType::I64 => i64::from_le_bytes(k_data[0..8].try_into().unwrap()) as i32,

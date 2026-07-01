@@ -315,7 +315,7 @@ fn inference_thread(
                     }
                 };
 
-                let logits = match session.prefill(&input_ids) {
+                let logits = match pollster::block_on(session.prefill(&input_ids)) {
                     Ok(l) => l,
                     Err(e) => {
                         send(InferenceEvent::Error(format!("Prefill failed: {e}")));
@@ -340,7 +340,7 @@ fn inference_thread(
                         break;
                     }
 
-                    let logits = match session.decode(token as i64) {
+                    let logits = match pollster::block_on(session.decode(token as i64)) {
                         Ok(l) => l,
                         Err(e) => {
                             send(InferenceEvent::Error(format!("Decode failed: {e}")));

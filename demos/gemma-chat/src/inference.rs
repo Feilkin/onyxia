@@ -56,7 +56,7 @@ impl LlmSession {
     /// - Runs with seq_len = prompt_len
     /// - After run, downloads present.* outputs and stores as KV cache for next step
     /// - Returns logits \[vocab_size\] for last position
-    pub fn prefill(&mut self, input_ids: &[i64]) -> Result<Vec<f32>> {
+    pub async fn prefill(&mut self, input_ids: &[i64]) -> Result<Vec<f32>> {
         let prompt_len = input_ids.len();
 
         if prompt_len == 0 {
@@ -93,7 +93,7 @@ impl LlmSession {
         let input_refs: Vec<(&str, Tensor)> = inputs.into_iter().collect();
 
         // Run the model
-        let outputs = self.executor.run(&input_refs).with_context(|| {
+        let outputs = self.executor.run(&input_refs).await.with_context(|| {
             format!(
                 "Prefill execution failed (prompt_len={}, inputs={:?})",
                 prompt_len,
@@ -148,7 +148,7 @@ impl LlmSession {
     /// - Runs with seq_len = 1
     /// - After run, downloads present.* outputs and stores as KV cache
     /// - Returns logits \\[vocab_size\\]
-    pub fn decode(&mut self, token_id: i64) -> Result<Vec<f32>> {
+    pub async fn decode(&mut self, token_id: i64) -> Result<Vec<f32>> {
         if self.past_seq_len >= self.max_seq_len {
             anyhow::bail!(
                 "Sequence length {} would exceed max_seq_len {}",
@@ -171,7 +171,7 @@ impl LlmSession {
         let input_refs: Vec<(&str, Tensor)> = inputs.into_iter().collect();
 
         // Run the model
-        let outputs = self.executor.run(&input_refs).with_context(|| {
+        let outputs = self.executor.run(&input_refs).await.with_context(|| {
             format!(
                 "Decode execution failed (token={}, past_seq_len={}, inputs={:?})",
                 token_id,

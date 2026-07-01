@@ -62,7 +62,7 @@ async fn test_concat_axis_0() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let a = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
@@ -71,7 +71,7 @@ async fn test_concat_axis_0() {
         &[3, 3],
     );
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<f32> = outputs["c"].to_vec().unwrap();
 
     assert_eq!(
@@ -129,7 +129,7 @@ async fn test_concat_axis_1() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let a = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
@@ -138,7 +138,7 @@ async fn test_concat_axis_1() {
         &[2, 5],
     );
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<f32> = outputs["c"].to_vec().unwrap();
 
     // Expected: first row = [1,2,3,7,8,9,10,11], second row = [4,5,6,12,13,14,15,16]
@@ -194,13 +194,13 @@ async fn test_concat_negative_axis() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let a = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
     let b = Tensor::from_vec(vec![7.0f32, 8.0, 9.0, 10.0], &[2, 2]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<f32> = outputs["c"].to_vec().unwrap();
 
     // Expected: [1,2,3,7,8] [4,5,6,9,10]
@@ -258,13 +258,13 @@ async fn test_concat_i64_axis_0() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let a = Tensor::from_vec(vec![100i64, 200], &[2]);
     let b = Tensor::from_vec(vec![300i64, 400, 500], &[3]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<i64> = outputs["c"].to_vec().unwrap();
 
     assert_eq!(result, vec![100, 200, 300, 400, 500]);
@@ -318,13 +318,13 @@ async fn test_concat_i64_negative_values() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let a = Tensor::from_vec(vec![-1i64], &[1]);
     let b = Tensor::from_vec(vec![4i64], &[1]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<i64> = outputs["c"].to_vec().unwrap();
 
     // This should be [-1, 4], not [4294967295, 4]
@@ -378,14 +378,14 @@ async fn test_concat_i64_2d() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     // Include negative values to ensure proper I64 handling
     let a = Tensor::from_vec(vec![1i64, -2, 3, 4, -5, 6], &[2, 3]);
     let b = Tensor::from_vec(vec![7i64, 8, -9], &[1, 3]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<i64> = outputs["c"].to_vec().unwrap();
 
     assert_eq!(result, vec![1, -2, 3, 4, -5, 6, 7, 8, -9]);
@@ -441,12 +441,12 @@ async fn test_expand_broadcast_column() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], &[3, 1]);
 
-    let outputs = executor.run(&[("data", data)]).unwrap();
+    let outputs = executor.run_blocking(&[("data", data)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Expected: each row repeated 4 times
@@ -499,12 +499,12 @@ async fn test_expand_broadcast_row() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[1, 4]);
 
-    let outputs = executor.run(&[("data", data)]).unwrap();
+    let outputs = executor.run_blocking(&[("data", data)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Expected: [1,2,3,4] repeated 3 times
@@ -557,12 +557,12 @@ async fn test_expand_scalar() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![42.0f32], &[1]);
 
-    let outputs = executor.run(&[("data", data)]).unwrap();
+    let outputs = executor.run_blocking(&[("data", data)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Expected: 42.0 repeated 6 times
@@ -608,13 +608,13 @@ async fn test_transpose_2d() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     // Input: [[1, 2, 3], [4, 5, 6]]
     let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
 
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Expected: [[1, 4], [2, 5], [3, 6]]
@@ -657,14 +657,14 @@ async fn test_transpose_3d() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     // Input: 2x3x4 tensor filled with sequential values
     let input_data: Vec<f32> = (0..24).map(|i| i as f32).collect();
     let input = Tensor::from_vec(input_data, &[2, 3, 4]);
 
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Verify a few key elements
@@ -712,13 +712,13 @@ async fn test_transpose_identity() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let input_data: Vec<f32> = (0..24).map(|i| i as f32).collect();
     let input = Tensor::from_vec(input_data.clone(), &[2, 3, 4]);
 
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Should be identical to input
@@ -772,12 +772,12 @@ async fn test_unsqueeze_single_axis() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
 
-    let outputs = executor.run(&[("data", data)]).unwrap();
+    let outputs = executor.run_blocking(&[("data", data)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Data should be unchanged, only shape changes
@@ -827,12 +827,12 @@ async fn test_unsqueeze_multiple_axes() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
 
-    let outputs = executor.run(&[("data", data)]).unwrap();
+    let outputs = executor.run_blocking(&[("data", data)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // Data should be unchanged
@@ -882,12 +882,12 @@ async fn test_unsqueeze_trailing() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![42.0f32, 99.0], &[2]);
 
-    let outputs = executor.run(&[("data", data)]).unwrap();
+    let outputs = executor.run_blocking(&[("data", data)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     assert_eq!(result, vec![42.0, 99.0]);
@@ -931,12 +931,12 @@ async fn test_shape_1d() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0], &[5]);
 
-    let outputs = executor.run(&[("data", data)]).unwrap();
+    let outputs = executor.run_blocking(&[("data", data)]).unwrap();
     let result: Vec<i64> = outputs["shape"].to_vec().unwrap();
 
     assert_eq!(result, vec![5]);
@@ -976,12 +976,12 @@ async fn test_shape_2d() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let data = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
 
-    let outputs = executor.run(&[("data", data)]).unwrap();
+    let outputs = executor.run_blocking(&[("data", data)]).unwrap();
     let result: Vec<i64> = outputs["shape"].to_vec().unwrap();
 
     assert_eq!(result, vec![2, 3]);
@@ -1021,13 +1021,13 @@ async fn test_shape_4d() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     // Create a small dummy tensor with the right shape (not full 1×3×224×224)
     let data = Tensor::from_vec(vec![1.0f32; 1 * 3 * 224 * 224], &[1, 3, 224, 224]);
 
-    let outputs = executor.run(&[("data", data)]).unwrap();
+    let outputs = executor.run_blocking(&[("data", data)]).unwrap();
     let result: Vec<i64> = outputs["shape"].to_vec().unwrap();
 
     assert_eq!(result, vec![1, 3, 224, 224]);
@@ -1072,10 +1072,10 @@ async fn test_constant_of_shape_zeros() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
-    let outputs = executor.run(&[]).unwrap();
+    let outputs = executor.run_blocking(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     assert_eq!(result, vec![0.0; 6]);
@@ -1116,10 +1116,10 @@ async fn test_constant_of_shape_1d() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
-    let outputs = executor.run(&[]).unwrap();
+    let outputs = executor.run_blocking(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     assert_eq!(result, vec![0.0; 5]);
@@ -1160,10 +1160,10 @@ async fn test_constant_of_shape_large() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
-    let outputs = executor.run(&[]).unwrap();
+    let outputs = executor.run_blocking(&[]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     assert_eq!(result.len(), 10000);

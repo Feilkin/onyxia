@@ -25,8 +25,9 @@ struct ConstantDispatch {
     dtype: DataType,
 }
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for ConstantDispatch {
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,

@@ -43,9 +43,10 @@ struct MatMulNBitsDispatch {
     block_size: usize,
 }
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for MatMulNBitsDispatch {
     #[instrument(name = "MatMulNBits::dispatch", skip_all)]
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,

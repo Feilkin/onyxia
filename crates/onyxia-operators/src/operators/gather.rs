@@ -27,8 +27,9 @@ struct GatherDispatch {
     axis: i64,
 }
 
+#[async_trait::async_trait(?Send)]
 impl OpDispatch for GatherDispatch {
-    fn dispatch(
+    async fn dispatch(
         &self,
         inputs: Vec<RuntimeTensor>,
         ctx: &mut DispatchCtx,
@@ -66,7 +67,8 @@ impl OpDispatch for GatherDispatch {
         // Fallback path for non-F32 data tensors (e.g., I64 shape subgraphs).
         // GPU shader currently supports f32 data only.
         if data_tensor.dtype != onyxia_core::DataType::F32 {
-            let gathered = cpu_gather(ctx, data_tensor, indices_tensor, axis, &output_shape)?;
+            let gathered =
+                cpu_gather(ctx, data_tensor, indices_tensor, axis, &output_shape).await?;
             return Ok(vec![gathered]);
         }
 
@@ -74,7 +76,7 @@ impl OpDispatch for GatherDispatch {
         let indices_for_gpu = if indices_tensor.dtype == onyxia_core::DataType::I32 {
             Arc::clone(&indices_tensor.buffer)
         } else if indices_tensor.dtype == onyxia_core::DataType::I64 {
-            let indices_data = ctx.download_tensor(indices_tensor)?;
+            let indices_data = ctx.download_tensor(indices_tensor).await?;
             let indices_i64: &[i64] = bytemuck::cast_slice(&indices_data);
             let mut indices_i32 = Vec::with_capacity(indices_i64.len());
             for &v in indices_i64 {
@@ -210,15 +212,15 @@ fn element_size(dtype: onyxia_core::DataType) -> Result<usize> {
     }
 }
 
-fn cpu_gather(
+async fn cpu_gather(
     ctx: &mut DispatchCtx,
     data_tensor: &RuntimeTensor,
     indices_tensor: &RuntimeTensor,
     axis: usize,
     output_shape: &[usize],
 ) -> Result<RuntimeTensor> {
-    let data = ctx.download_tensor(data_tensor)?;
-    let indices_bytes = ctx.download_tensor(indices_tensor)?;
+    let data = ctx.download_tensor(data_tensor).await?;
+    let indices_bytes = ctx.download_tensor(indices_tensor).await?;
     let indices = read_indices_i64(&indices_bytes, indices_tensor.dtype)?;
 
     let data_shape = &data_tensor.shape;

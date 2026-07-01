@@ -25,7 +25,7 @@ async fn test_add_basic() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Load and execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -33,7 +33,7 @@ async fn test_add_basic() {
     let a = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[4]);
     let b = Tensor::from_vec(vec![10.0f32, 20.0, 30.0, 40.0], &[4]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<f32> = outputs["c"].to_vec().unwrap();
 
     assert_eq!(result, vec![11.0, 22.0, 33.0, 44.0]);
@@ -85,7 +85,7 @@ async fn test_add_broadcast() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -93,7 +93,7 @@ async fn test_add_broadcast() {
     let a = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
     let b = Tensor::from_vec(vec![10.0f32], &[1]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<f32> = outputs["c"].to_vec().unwrap();
 
     assert_eq!(result, vec![11.0, 12.0, 13.0, 14.0, 15.0, 16.0]);
@@ -113,7 +113,7 @@ async fn test_mul_basic() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Load and execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -121,7 +121,7 @@ async fn test_mul_basic() {
     let a = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[4]);
     let b = Tensor::from_vec(vec![10.0f32, 20.0, 30.0, 40.0], &[4]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<f32> = outputs["c"].to_vec().unwrap();
 
     // 1*10, 2*20, 3*30, 4*40
@@ -209,14 +209,14 @@ async fn test_mul_then_add() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let a = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[4]);
     let b = Tensor::from_vec(vec![2.0f32, 2.0, 2.0, 2.0], &[4]);
     let c = Tensor::from_vec(vec![100.0f32, 100.0, 100.0, 100.0], &[4]);
 
-    let outputs = executor.run(&[("a", a), ("b", b), ("c", c)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b), ("c", c)]).unwrap();
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
 
     // a * b + c = [2, 4, 6, 8] + [100, 100, 100, 100] = [102, 104, 106, 108]
@@ -301,14 +301,14 @@ async fn test_fan_out_tensor() {
     let runtime = Runtime::new().await.unwrap();
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
     let mut executor = runtime.load_model(model).unwrap();
 
     let a = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[4]);
     let b = Tensor::from_vec(vec![10.0f32, 10.0, 10.0, 10.0], &[4]);
     let c = Tensor::from_vec(vec![5.0f32, 5.0, 5.0, 5.0], &[4]);
 
-    let outputs = executor.run(&[("a", a), ("b", b), ("c", c)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b), ("c", c)]).unwrap();
 
     let result1: Vec<f32> = outputs["output1"].to_vec().unwrap();
     let result2: Vec<f32> = outputs["output2"].to_vec().unwrap();
@@ -376,13 +376,13 @@ async fn test_reshape() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Execute
     let mut executor = runtime.load_model(model).unwrap();
 
     let input = Tensor::from_vec((1..=12).map(|x| x as f32).collect(), &[3, 4]);
-    let outputs = executor.run(&[("input", input)]).unwrap();
+    let outputs = executor.run_blocking(&[("input", input)]).unwrap();
 
     let result: Vec<f32> = outputs["output"].to_vec().unwrap();
     assert_eq!(result.len(), 12);
@@ -404,7 +404,7 @@ async fn test_div_basic() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Load and execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -412,7 +412,7 @@ async fn test_div_basic() {
     let a = Tensor::from_vec(vec![6.0f32, 8.0, 10.0, 12.0], &[4]);
     let b = Tensor::from_vec(vec![2.0f32, 4.0, 5.0, 3.0], &[4]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<f32> = outputs["c"].to_vec().unwrap();
 
     // 6/2=3, 8/4=2, 10/5=2, 12/3=4
@@ -465,7 +465,7 @@ async fn test_div_broadcast() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -473,7 +473,7 @@ async fn test_div_broadcast() {
     let a = Tensor::from_vec(vec![10.0f32, 20.0, 30.0, 40.0, 50.0, 60.0], &[2, 3]);
     let b = Tensor::from_vec(vec![2.0f32], &[1]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<f32> = outputs["c"].to_vec().unwrap();
 
     assert_eq!(result, vec![5.0, 10.0, 15.0, 20.0, 25.0, 30.0]);
@@ -489,7 +489,7 @@ async fn test_div_by_zero() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -497,7 +497,7 @@ async fn test_div_by_zero() {
     let a = Tensor::from_vec(vec![1.0f32, -1.0], &[2]);
     let b = Tensor::from_vec(vec![0.0f32, 0.0], &[2]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<f32> = outputs["c"].to_vec().unwrap();
 
     // 1.0/0.0 = Inf, -1.0/0.0 = -Inf
@@ -519,7 +519,7 @@ async fn test_sub_basic() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Load and execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -527,7 +527,7 @@ async fn test_sub_basic() {
     let a = Tensor::from_vec(vec![5.0f32, 3.0, 10.0, 0.0], &[4]);
     let b = Tensor::from_vec(vec![2.0f32, 1.0, 5.0, 1.0], &[4]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<f32> = outputs["c"].to_vec().unwrap();
 
     // 5-2=3, 3-1=2, 10-5=5, 0-1=-1
@@ -580,7 +580,7 @@ async fn test_sub_broadcast() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -588,7 +588,7 @@ async fn test_sub_broadcast() {
     let a = Tensor::from_vec(vec![10.0f32, 20.0, 30.0], &[3]);
     let b = Tensor::from_vec(vec![5.0f32], &[1]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<f32> = outputs["c"].to_vec().unwrap();
 
     assert_eq!(result, vec![5.0, 15.0, 25.0]);
@@ -604,7 +604,7 @@ async fn test_sub_negative_result() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -612,7 +612,7 @@ async fn test_sub_negative_result() {
     let a = Tensor::from_vec(vec![0.0f32, 1.0, 2.0], &[3]);
     let b = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], &[3]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<f32> = outputs["c"].to_vec().unwrap();
 
     assert_eq!(result, vec![-1.0, -1.0, -1.0]);
@@ -632,7 +632,7 @@ async fn test_pow_basic() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Load and execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -640,7 +640,7 @@ async fn test_pow_basic() {
     let a = Tensor::from_vec(vec![2.0f32, 3.0, 4.0, 5.0], &[4]);
     let b = Tensor::from_vec(vec![3.0f32, 2.0, 2.0, 1.0], &[4]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<f32> = outputs["c"].to_vec().unwrap();
 
     // 2^3=8, 3^2=9, 4^2=16, 5^1=5
@@ -693,7 +693,7 @@ async fn test_pow_broadcast() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -701,7 +701,7 @@ async fn test_pow_broadcast() {
     let a = Tensor::from_vec(vec![2.0f32], &[1]);
     let b = Tensor::from_vec(vec![0.0f32, 1.0, 2.0, 3.0], &[4]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<f32> = outputs["c"].to_vec().unwrap();
 
     // 2^0=1, 2^1=2, 2^2=4, 2^3=8
@@ -718,7 +718,7 @@ async fn test_pow_special_cases() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -726,7 +726,7 @@ async fn test_pow_special_cases() {
     let a = Tensor::from_vec(vec![0.0f32, 0.0, 5.0], &[3]);
     let b = Tensor::from_vec(vec![0.0f32, 2.0, 0.0], &[3]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<f32> = outputs["c"].to_vec().unwrap();
 
     // 0^0=1, 0^2=0, 5^0=1
@@ -780,7 +780,7 @@ async fn test_equal_basic() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -788,7 +788,7 @@ async fn test_equal_basic() {
     let a = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[4]);
     let b = Tensor::from_vec(vec![1.0f32, 2.0, 4.0, 3.0], &[4]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<u32> = outputs["c"].to_vec().unwrap();
 
     // [true, true, false, false]
@@ -838,7 +838,7 @@ async fn test_equal_broadcast() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -846,7 +846,7 @@ async fn test_equal_broadcast() {
     let a = Tensor::from_vec(vec![5.0f32, 6.0, 5.0], &[3]);
     let b = Tensor::from_vec(vec![5.0f32], &[1]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<u32> = outputs["c"].to_vec().unwrap();
 
     // [true, false, true]
@@ -896,7 +896,7 @@ async fn test_equal_nan_handling() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -904,7 +904,7 @@ async fn test_equal_nan_handling() {
     let a = Tensor::from_vec(vec![f32::NAN, 1.0, f32::NAN], &[3]);
     let b = Tensor::from_vec(vec![f32::NAN, 1.0, 2.0], &[3]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<u32> = outputs["c"].to_vec().unwrap();
 
     // [false, true, false] - NaN != NaN
@@ -954,7 +954,7 @@ async fn test_greater_basic() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -962,7 +962,7 @@ async fn test_greater_basic() {
     let a = Tensor::from_vec(vec![5.0f32, 3.0, 1.0, 2.0], &[4]);
     let b = Tensor::from_vec(vec![3.0f32, 3.0, 5.0, 1.0], &[4]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<u32> = outputs["c"].to_vec().unwrap();
 
     // [true, false, false, true]
@@ -1012,7 +1012,7 @@ async fn test_greater_broadcast() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -1020,7 +1020,7 @@ async fn test_greater_broadcast() {
     let a = Tensor::from_vec(vec![3.0f32, 5.0, 7.0, 5.0], &[4]);
     let b = Tensor::from_vec(vec![5.0f32], &[1]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<u32> = outputs["c"].to_vec().unwrap();
 
     // [false, false, true, false]
@@ -1070,7 +1070,7 @@ async fn test_greater_nan_handling() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -1078,7 +1078,7 @@ async fn test_greater_nan_handling() {
     let a = Tensor::from_vec(vec![f32::NAN, 1.0, 5.0], &[3]);
     let b = Tensor::from_vec(vec![1.0, f32::NAN, 3.0], &[3]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<u32> = outputs["c"].to_vec().unwrap();
 
     // [false, false, true] - NaN comparisons are false
@@ -1128,7 +1128,7 @@ async fn test_less_basic() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -1136,7 +1136,7 @@ async fn test_less_basic() {
     let a = Tensor::from_vec(vec![1.0f32, 5.0, 3.0], &[3]);
     let b = Tensor::from_vec(vec![3.0f32, 5.0, 1.0], &[3]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<u32> = outputs["c"].to_vec().unwrap();
 
     // [true, false, false]
@@ -1186,7 +1186,7 @@ async fn test_greater_or_equal_basic() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -1194,7 +1194,7 @@ async fn test_greater_or_equal_basic() {
     let a = Tensor::from_vec(vec![5.0f32, 3.0, 3.0], &[3]);
     let b = Tensor::from_vec(vec![3.0f32, 3.0, 5.0], &[3]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<u32> = outputs["c"].to_vec().unwrap();
 
     // [true, true, false]
@@ -1244,7 +1244,7 @@ async fn test_less_or_equal_basic() {
     // Compile
     let registry = core_operator_registry();
     let mut pipeline = CompilerPipeline::new();
-    let model = pipeline.compile(&graph, &registry, runtime.gpu()).unwrap();
+    let model = pipeline.compile_blocking(&graph, &registry, runtime.gpu()).unwrap();
 
     // Execute
     let mut executor = runtime.load_model(model).unwrap();
@@ -1252,7 +1252,7 @@ async fn test_less_or_equal_basic() {
     let a = Tensor::from_vec(vec![1.0f32, 3.0, 5.0], &[3]);
     let b = Tensor::from_vec(vec![3.0f32, 3.0, 1.0], &[3]);
 
-    let outputs = executor.run(&[("a", a), ("b", b)]).unwrap();
+    let outputs = executor.run_blocking(&[("a", a), ("b", b)]).unwrap();
     let result: Vec<u32> = outputs["c"].to_vec().unwrap();
 
     // [true, true, false]
