@@ -214,8 +214,15 @@ impl onyxia_ir::Session for CubeclSession {
 
     fn upload(&mut self, tensor: &Tensor) -> Result<CubeTensor> {
         let data = to_phys(tensor)?;
+        // Zero-element tensors (e.g. an empty KV cache at first prefill)
+        // still need a live handle to bind.
+        let handle = if data.is_empty() {
+            self.client.empty(4)
+        } else {
+            self.client.create_from_slice(&data)
+        };
         Ok(CubeTensor {
-            handle: self.client.create_from_slice(&data),
+            handle,
             dtype: tensor.dtype(),
             shape: tensor.shape().to_vec(),
         })

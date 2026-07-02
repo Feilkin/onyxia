@@ -93,6 +93,10 @@ enum Commands {
         #[arg(long, default_value = "2048")]
         max_seq_len: usize,
 
+        /// Execution backend
+        #[arg(long, value_enum, default_value_t = BackendKind::Wgpu)]
+        backend: BackendKind,
+
         /// Disable streaming output (print all at once instead of token-by-token)
         #[arg(long)]
         no_stream: bool,
@@ -138,6 +142,10 @@ enum Commands {
         /// Maximum sequence length (bound on prompt + generated tokens)
         #[arg(long, default_value = "2048")]
         max_seq_len: usize,
+
+        /// Execution backend
+        #[arg(long, value_enum, default_value_t = BackendKind::Wgpu)]
+        backend: BackendKind,
 
         /// Print the exact rendered prompt + token count fed to the model each turn
         #[arg(long)]
@@ -240,6 +248,48 @@ enum Commands {
     },
 }
 
+/// Which execution backend runs the model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum BackendKind {
+    /// Hand-written wgpu backend (generated WGSL + fused composite kernels).
+    Wgpu,
+    /// CubeCL backend (primitives only; composites run via decompositions).
+    Cubecl,
+}
+
+/// A prepared LLM session on either backend. `Session` has an associated
+/// tensor type, so this can't be a trait object — dispatch once here and
+/// stay generic downstream.
+enum AnySession {
+    Wgpu(onyxia_cli::llm::LlmSession<onyxia_backend_wgpu::WgpuSession>),
+    Cubecl(onyxia_cli::llm::LlmSession<onyxia_backend_cubecl::CubeclSession>),
+}
+
+async fn prepare_session(
+    kind: BackendKind,
+    module: onyxia_ir::Module,
+    max_seq_len: usize,
+) -> Result<AnySession> {
+    use onyxia_cli::llm::LlmSession;
+    Ok(match kind {
+        BackendKind::Wgpu => {
+            println!("Initializing GPU (wgpu backend)...");
+            let ctx = onyxia_backend_wgpu::GpuContext::new()
+                .await
+                .with_context(|| "Failed to create GPU context")?;
+            let backend = onyxia_backend_wgpu::WgpuBackend::new(ctx);
+            println!("Preparing session (uploading weights)...");
+            AnySession::Wgpu(LlmSession::new(&backend, module, max_seq_len)?)
+        }
+        BackendKind::Cubecl => {
+            println!("Initializing GPU (cubecl backend, primitives only)...");
+            let backend = onyxia_backend_cubecl::CubeclBackend::new();
+            println!("Preparing session (uploading weights)...");
+            AnySession::Cubecl(LlmSession::new(&backend, module, max_seq_len)?)
+        }
+    })
+}
+
 fn main() -> Result<()> {
     // Initialize tracing with Tracy profiler support
     #[cfg(feature = "tracy")]
@@ -286,6 +336,7 @@ fn main() -> Result<()> {
             top_p,
             seed,
             max_seq_len,
+            backend,
             no_stream,
         } => {
             pollster::block_on(cmd_run_model(
@@ -299,6 +350,7 @@ fn main() -> Result<()> {
                 seed,
                 max_seq_len,
                 !no_stream,
+                backend,
             ))?;
         }
         Commands::Chat {
@@ -311,6 +363,7 @@ fn main() -> Result<()> {
             top_p,
             seed,
             max_seq_len,
+            backend,
             print_prompt,
             buggy_reset,
         } => {
@@ -326,6 +379,7 @@ fn main() -> Result<()> {
                 max_seq_len,
                 print_prompt,
                 buggy_reset,
+                backend,
             ))?;
         }
         Commands::InspectNode {
@@ -715,11 +769,9 @@ async fn cmd_run_model(
     seed: Option<u64>,
     max_seq_len: usize,
     stream: bool,
+    backend: BackendKind,
 ) -> Result<()> {
-    use onyxia_cli::generate::{generate, print_stats};
     use onyxia_cli::llm::LlmSession;
-    use onyxia_cli::sampling::SamplingConfig;
-    use onyxia_cli::tokenizer::{ChatMessage, Tokenizer};
 
     println!("Loading model from {}...", model_path.display());
     let graph = onyxia_onnx::load_and_parse_model(&model_path)
@@ -729,14 +781,49 @@ async fn cmd_run_model(
     let module = onyxia_lower::lower(graph, &onyxia_lower::standard_registry())
         .with_context(|| "Failed to lower model")?;
 
-    println!("Initializing GPU...");
-    let ctx = onyxia_backend_wgpu::GpuContext::new()
-        .await
-        .with_context(|| "Failed to create GPU context")?;
-    let backend = onyxia_backend_wgpu::WgpuBackend::new(ctx);
+    let session = prepare_session(backend, module, max_seq_len).await?;
+    match session {
+        AnySession::Wgpu(session) => run_model_with_session(
+            session,
+            tokenizer_path,
+            prompt,
+            max_tokens,
+            temperature,
+            top_k,
+            top_p,
+            seed,
+            stream,
+        ),
+        AnySession::Cubecl(session) => run_model_with_session(
+            session,
+            tokenizer_path,
+            prompt,
+            max_tokens,
+            temperature,
+            top_k,
+            top_p,
+            seed,
+            stream,
+        ),
+    }
+}
 
-    println!("Preparing session (uploading weights)...");
-    let mut session = LlmSession::new(&backend, module, max_seq_len)?;
+/// The generation half of `run-model`, generic over the backend session.
+#[allow(clippy::too_many_arguments)]
+fn run_model_with_session<S: onyxia_ir::Session>(
+    mut session: onyxia_cli::llm::LlmSession<S>,
+    tokenizer_path: PathBuf,
+    prompt: String,
+    max_tokens: usize,
+    temperature: f32,
+    top_k: usize,
+    top_p: f32,
+    seed: Option<u64>,
+    stream: bool,
+) -> Result<()> {
+    use onyxia_cli::generate::{generate, print_stats};
+    use onyxia_cli::sampling::SamplingConfig;
+    use onyxia_cli::tokenizer::{ChatMessage, Tokenizer};
 
     println!("Loading tokenizer from {}...", tokenizer_path.display());
 
@@ -832,12 +919,8 @@ async fn cmd_chat(
     max_seq_len: usize,
     print_prompt: bool,
     buggy_reset: bool,
+    backend: BackendKind,
 ) -> Result<()> {
-    use onyxia_cli::generate::generate;
-    use onyxia_cli::llm::LlmSession;
-    use onyxia_cli::sampling::SamplingConfig;
-    use onyxia_cli::tokenizer::{ChatMessage, Tokenizer};
-
     println!("Loading model from {}...", model_path.display());
     let graph = onyxia_onnx::load_and_parse_model(&model_path)
         .with_context(|| format!("Failed to load model from {}", model_path.display()))?;
@@ -846,14 +929,52 @@ async fn cmd_chat(
     let module = onyxia_lower::lower(graph, &onyxia_lower::standard_registry())
         .with_context(|| "Failed to lower model")?;
 
-    println!("Initializing GPU...");
-    let ctx = onyxia_backend_wgpu::GpuContext::new()
-        .await
-        .with_context(|| "Failed to create GPU context")?;
-    let backend = onyxia_backend_wgpu::WgpuBackend::new(ctx);
+    let session = prepare_session(backend, module, max_seq_len).await?;
+    match session {
+        AnySession::Wgpu(session) => chat_with_session(
+            session,
+            tokenizer_path,
+            messages,
+            max_tokens,
+            temperature,
+            top_k,
+            top_p,
+            seed,
+            print_prompt,
+            buggy_reset,
+        ),
+        AnySession::Cubecl(session) => chat_with_session(
+            session,
+            tokenizer_path,
+            messages,
+            max_tokens,
+            temperature,
+            top_k,
+            top_p,
+            seed,
+            print_prompt,
+            buggy_reset,
+        ),
+    }
+}
 
-    println!("Preparing session (uploading weights)...");
-    let mut session = LlmSession::new(&backend, module, max_seq_len)?;
+/// The conversation half of `chat`, generic over the backend session.
+#[allow(clippy::too_many_arguments)]
+fn chat_with_session<S: onyxia_ir::Session>(
+    mut session: onyxia_cli::llm::LlmSession<S>,
+    tokenizer_path: PathBuf,
+    messages: Vec<String>,
+    max_tokens: usize,
+    temperature: f32,
+    top_k: usize,
+    top_p: f32,
+    seed: Option<u64>,
+    print_prompt: bool,
+    buggy_reset: bool,
+) -> Result<()> {
+    use onyxia_cli::generate::generate;
+    use onyxia_cli::sampling::SamplingConfig;
+    use onyxia_cli::tokenizer::{ChatMessage, Tokenizer};
 
     let tokenizer_file = tokenizer_path.join("tokenizer.json");
     let mut tokenizer = Tokenizer::from_file(&tokenizer_file)

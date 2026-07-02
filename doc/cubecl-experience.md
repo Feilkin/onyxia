@@ -53,6 +53,16 @@ forward-check`):
 - Cold includes JIT: CubeCL compiles each kernel specialization on first
   use (~2.6× our cold pass, where pipelines also compile lazily but from
   pre-generated WGSL).
+- **Decode reverses the result** (greedy, 64 tokens, via
+  `onyxia run-model --backend {wgpu,cubecl}`): wgpu **10.1 tok/s**,
+  cubecl **6.9 tok/s**. Prefill is compute-bound and CubeCL's codegen
+  wins; decode at S=1 is launch-overhead-bound, and there the wgpu
+  backend's advantages are structural: fused Softmax/RMS-norm/Gelu means
+  *fewer launches* (each decomposed softmax is ~5), and it batches every
+  dispatch of a forward pass into a single command-buffer submission,
+  where the CubeCL session launches kernel-by-kernel through the client.
+  Nice talk shape: *which* backend is faster depends on whether the
+  workload amortizes launch overhead — neither stack is simply better.
 - max |Δlogit| at the last position: **3.1e-5**, argmax identical.
 - Code size: wgpu backend 2 242 lines (kernels 541 + session 1090 +
   gpu 297 + fused 292 + lib 22); cubecl backend **1 597 lines** (kernels

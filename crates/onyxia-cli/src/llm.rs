@@ -10,7 +10,6 @@
 //! knows nothing about LLMs.
 
 use anyhow::{Context, Result, bail};
-use onyxia_backend_wgpu::{GpuTensor, WgpuBackend, WgpuSession};
 use onyxia_ir::interp::Tensor;
 use onyxia_ir::{Backend, Bindings, DataType, Module, Session, SymbolTable, SymbolicShape};
 use std::collections::HashMap;
@@ -23,26 +22,31 @@ struct InputSpec {
 }
 
 /// High-level LLM inference session with device-resident KV cache.
-pub struct LlmSession {
-    session: WgpuSession,
+/// Generic over the backend session — wgpu and cubecl both drive it.
+pub struct LlmSession<S: Session> {
+    session: S,
     inputs: Vec<InputSpec>,
     symbols: SymbolTable,
     /// KV cache tensor name pairs: (present_output_name, past_input_name).
     kv_pairs: Vec<(String, String)>,
     /// Device-resident KV handles, keyed by past_key_values.* name.
-    kv_cache: HashMap<String, GpuTensor>,
+    kv_cache: HashMap<String, S::Tensor>,
     /// Current past sequence length (grows each call).
     past_seq_len: usize,
     /// Hard bound on total sequence length (clean error, not a GPU fault).
     max_seq_len: usize,
 }
 
-impl LlmSession {
+impl<S: Session> LlmSession<S> {
     /// Prepare `module` on `backend` and set up KV-cache plumbing.
     ///
     /// Input specs and KV pairs are extracted before `prepare` consumes the
     /// module, so the (potentially GiB-sized) constant pool is never cloned.
-    pub fn new(backend: &WgpuBackend, module: Module, max_seq_len: usize) -> Result<Self> {
+    pub fn new<B: Backend<Session = S>>(
+        backend: &B,
+        module: Module,
+        max_seq_len: usize,
+    ) -> Result<Self> {
         let inputs: Vec<InputSpec> = module
             .inputs
             .iter()
@@ -107,7 +111,7 @@ impl LlmSession {
         let seq = ids.len();
         let bindings = self.bindings_for(seq)?;
 
-        let mut inputs: Vec<(String, GpuTensor)> = Vec::with_capacity(self.inputs.len());
+        let mut inputs: Vec<(String, S::Tensor)> = Vec::with_capacity(self.inputs.len());
         for i in 0..self.inputs.len() {
             let (name, dtype) = (self.inputs[i].name.clone(), self.inputs[i].dtype);
             let tensor = if name == "input_ids" {
@@ -146,7 +150,7 @@ impl LlmSession {
             inputs.push((name, tensor));
         }
 
-        let refs: Vec<(&str, GpuTensor)> = inputs
+        let refs: Vec<(&str, S::Tensor)> = inputs
             .iter()
             .map(|(n, t)| (n.as_str(), t.clone()))
             .collect();

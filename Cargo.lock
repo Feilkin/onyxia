@@ -3792,6 +3792,7 @@ dependencies = [
  "anyhow",
  "clap",
  "minijinja",
+ "onyxia-backend-cubecl",
  "onyxia-backend-ref",
  "onyxia-backend-wgpu",
  "onyxia-ir",

@@ -32,6 +32,7 @@ onyxia-ir = { path = "crates/onyxia-ir" }
 onyxia-lower = { path = "crates/onyxia-lower" }
 onyxia-backend-ref = { path = "crates/onyxia-backend-ref" }
 onyxia-backend-wgpu = { path = "crates/onyxia-backend-wgpu" }
+onyxia-backend-cubecl = { path = "crates/onyxia-backend-cubecl" }
 
 # 3rd party
 tracing = "0.1.44"

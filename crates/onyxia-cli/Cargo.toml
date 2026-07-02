@@ -18,6 +18,7 @@ onyxia-onnx.workspace = true
 onyxia-ir.workspace = true
 onyxia-lower.workspace = true
 onyxia-backend-wgpu.workspace = true
+onyxia-backend-cubecl.workspace = true
 clap = { version = "4.5.58", features = ["derive"] }
 pollster = "0.4.0"
 anyhow = "1.0.101"

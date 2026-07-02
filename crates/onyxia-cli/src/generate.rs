@@ -43,8 +43,8 @@ pub struct GenerationStats {
 ///
 /// # Returns
 /// Generated text and statistics
-pub fn generate(
-    session: &mut LlmSession,
+pub fn generate<S: onyxia_ir::Session>(
+    session: &mut LlmSession<S>,
     tokenizer: &Tokenizer,
     prompt: &str,
     max_tokens: usize,
