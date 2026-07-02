@@ -319,7 +319,9 @@ in the demo README.
 ##   collision with unstable std `erf`); generic-over-dtype kernels fight
 ##   trait bounds (concrete per-dtype kernels were faster to write);
 ##   `f32::new` vs literal typing inside comptime branches is fussy.
-##   Compile time +~40 s for the cubecl dep tree (second wgpu copy).
+##   Compile time +~40 s for the cubecl dep tree (NB: cubecl-wgpu 0.10
+##   pins wgpu 29.0.3 — same as ours, so no duplicate wgpu after all).
+##   Full write-up for the talk: `doc/cubecl-experience.md`.
 ## - Spike gaps (clean errors): Scatter, Dequantize (q4), f16, cast→Bool,
 ##   no memory planning (registers live for the whole run), blocking
 ##   readback (native-only; wasm needs the async read path).
