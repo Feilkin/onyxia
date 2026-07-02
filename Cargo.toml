@@ -5,11 +5,7 @@ members = [
     "crates/onyxia-lower",
     "crates/onyxia-backend-ref",
     "crates/onyxia-backend-wgpu",
-    "crates/onyxia-core",
     "crates/onyxia-onnx",
-    "crates/onyxia-operators",
-    "crates/onyxia-compiler",
-    "crates/onyxia-runtime",
     "crates/onyxia-cli",
     "demos/gemma-chat",
 ]
@@ -30,11 +26,7 @@ repository = "https://github.com/your-org/onyxia"
 
 [workspace.dependencies]
 # Workspace crates
-onyxia-core = { path = "crates/onyxia-core" }
 onyxia-onnx = { path = "crates/onyxia-onnx" }
-onyxia-operators = { path = "crates/onyxia-operators" }
-onyxia-compiler = { path = "crates/onyxia-compiler" }
-onyxia-runtime = { path = "crates/onyxia-runtime" }
 onyxia-ir = { path = "crates/onyxia-ir" }
 onyxia-lower = { path = "crates/onyxia-lower" }
 onyxia-backend-ref = { path = "crates/onyxia-backend-ref" }
