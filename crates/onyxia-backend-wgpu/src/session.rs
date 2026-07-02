@@ -7,7 +7,9 @@
 //! one-thread-per-element kernels (correctness-first). Remaining fused
 //! ports: GQA, RotaryEmbedding, MatMulNBits — see `fused.rs`.
 
-use crate::gpu::{BufferPool, GpuContext, PipelineCache, WORKGROUP_SIZE, dispatch_size};
+use crate::gpu::{
+    BufferPool, GpuContext, IMMEDIATE_SIZE, PipelineCache, WORKGROUP_SIZE, dispatch_size,
+};
 use crate::kernels::{self, Imm, MAX_RANK};
 use onyxia_ir::graph::{Module, NodeId, NodeKind, Origin, ValueId};
 use onyxia_ir::interp::{Tensor, bind_shapes};
@@ -194,9 +196,16 @@ impl onyxia_ir::Backend for WgpuBackend {
             last_use,
             consts,
             kernels: self.kernels.clone(),
-            pipelines: PipelineCache::default(),
+            pipelines: PipelineCache::new(if self.ctx.use_immediates {
+                IMMEDIATE_SIZE
+            } else {
+                0
+            }),
             pool: BufferPool::default(),
             encoder: None,
+            use_immediates: self.ctx.use_immediates,
+            imm_buffers: Vec::new(),
+            imm_free: Vec::new(),
         })
     }
 }
@@ -213,6 +222,17 @@ pub struct WgpuSession {
     pipelines: PipelineCache,
     pool: BufferPool,
     encoder: Option<wgpu::CommandEncoder>,
+    /// False → params bind as a storage buffer instead of `set_immediates`
+    /// (the web path; see `gpu.rs` module docs).
+    use_immediates: bool,
+    /// Params buffers for the in-flight batch. Each dispatch gets its own
+    /// (all `write_buffer`s execute before the batch), returned to
+    /// `imm_free` at submit. MUST NOT come from the tensor pool: a params
+    /// `write_buffer` executes before the batch, so sharing a buffer with a
+    /// tensor that dies mid-batch lets the tensor write clobber the params.
+    imm_buffers: Vec<Arc<wgpu::Buffer>>,
+    /// Free list of `IMMEDIATE_SIZE` params buffers (fallback mode only).
+    imm_free: Vec<Arc<wgpu::Buffer>>,
 }
 
 impl WgpuSession {
@@ -230,7 +250,8 @@ impl WgpuSession {
         size: usize,
     ) -> Result<()> {
         let (pipeline, layout) = self.pipelines.get_or_create(&self.device, label, wgsl)?;
-        let entries: Vec<wgpu::BindGroupEntry> = buffers
+        let imm_buf = self.imm_fallback_buffer(imm);
+        let mut entries: Vec<wgpu::BindGroupEntry> = buffers
             .iter()
             .enumerate()
             .map(|(i, b)| wgpu::BindGroupEntry {
@@ -238,6 +259,12 @@ impl WgpuSession {
                 resource: b.as_entire_binding(),
             })
             .collect();
+        if let Some(buf) = &imm_buf {
+            entries.push(wgpu::BindGroupEntry {
+                binding: buffers.len() as u32,
+                resource: buf.as_entire_binding(),
+            });
+        }
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(label),
             layout: &layout,
@@ -246,6 +273,7 @@ impl WgpuSession {
         let linear = (size as u32).div_ceil(WORKGROUP_SIZE);
         let (wg, _x_stride) = dispatch_size(linear);
         self.encode_pass(label, &pipeline, &bind_group, imm, wg);
+        self.imm_buffers.extend(imm_buf);
         Ok(())
     }
 
@@ -259,7 +287,8 @@ impl WgpuSession {
         rows: usize,
     ) -> Result<()> {
         let (pipeline, layout) = self.pipelines.get_or_create(&self.device, label, wgsl)?;
-        let entries: Vec<wgpu::BindGroupEntry> = buffers
+        let imm_buf = self.imm_fallback_buffer(imm);
+        let mut entries: Vec<wgpu::BindGroupEntry> = buffers
             .iter()
             .enumerate()
             .map(|(i, b)| wgpu::BindGroupEntry {
@@ -267,6 +296,12 @@ impl WgpuSession {
                 resource: b.as_entire_binding(),
             })
             .collect();
+        if let Some(buf) = &imm_buf {
+            entries.push(wgpu::BindGroupEntry {
+                binding: buffers.len() as u32,
+                resource: buf.as_entire_binding(),
+            });
+        }
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(label),
             layout: &layout,
@@ -279,7 +314,28 @@ impl WgpuSession {
             imm,
             [rows.max(1) as u32, 1, 1],
         );
+        self.imm_buffers.extend(imm_buf);
         Ok(())
+    }
+
+    /// In fallback mode: a storage buffer holding this dispatch's params
+    /// blob, bound where `set_immediates` would have put it. Drawn from a
+    /// dedicated free list, never the tensor pool (see `imm_buffers`).
+    fn imm_fallback_buffer(&mut self, imm: &Imm) -> Option<Arc<wgpu::Buffer>> {
+        if self.use_immediates {
+            return None;
+        }
+        debug_assert!(imm.bytes().len() <= IMMEDIATE_SIZE as usize);
+        let buf = self.imm_free.pop().unwrap_or_else(|| {
+            Arc::new(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("params"),
+                size: IMMEDIATE_SIZE as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }))
+        });
+        self.queue.write_buffer(&buf, 0, imm.bytes());
+        Some(buf)
     }
 
     fn encode_pass(
@@ -302,7 +358,9 @@ impl WgpuSession {
         });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bind_group, &[]);
-        pass.set_immediates(0, imm.bytes());
+        if self.use_immediates {
+            pass.set_immediates(0, imm.bytes());
+        }
         pass.dispatch_workgroups(wg[0], wg[1], wg[2]);
     }
 
@@ -310,6 +368,9 @@ impl WgpuSession {
         if let Some(encoder) = self.encoder.take() {
             self.queue.submit([encoder.finish()]);
         }
+        // Safe to recycle now: a later batch's `write_buffer`s are queue-
+        // ordered after this submit's execution.
+        self.imm_free.append(&mut self.imm_buffers);
     }
 
     pub(crate) fn alloc_out(&mut self, dtype: DataType, shape: Vec<usize>) -> GpuTensor {
