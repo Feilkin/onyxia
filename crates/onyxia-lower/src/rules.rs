@@ -606,10 +606,6 @@ fn range(ctx: &mut LowerCtx) -> Result<()> {
 }
 
 /// ConstantOfShape = Broadcast(scalar, shape).
-///
-/// `onyxia-onnx` drops dtype information for attribute tensors, so the
-/// scalar's type is recovered from its byte length (documented limitation;
-/// fix belongs in the parser).
 fn constant_of_shape(ctx: &mut LowerCtx) -> Result<()> {
     let target = ctx.content(0).ok_or_else(|| {
         Error::Unsupported(format!(
@@ -617,22 +613,16 @@ fn constant_of_shape(ctx: &mut LowerCtx) -> Result<()> {
             ctx.node_name()
         ))
     })?;
-    let (ty, bytes): (TensorType, Vec<u8>) = match ctx.attr_bytes("value") {
+    let (ty, bytes): (TensorType, Vec<u8>) = match ctx.attr_tensor("value") {
+        // Per the ONNX spec, the default is a single f32 zero.
         None => (
             TensorType::of(DataType::F32, &[]),
             0f32.to_le_bytes().to_vec(),
         ),
-        Some(b) => match b.len() {
-            8 => (TensorType::of(DataType::I64, &[]), b.to_vec()),
-            4 => (TensorType::of(DataType::F32, &[]), b.to_vec()),
-            2 => (TensorType::of(DataType::F16, &[]), b.to_vec()),
-            1 => (TensorType::of(DataType::U8, &[]), b.to_vec()),
-            n => {
-                return Err(Error::Unsupported(format!(
-                    "ConstantOfShape value of {n} bytes"
-                )));
-            }
-        },
+        Some(t) => (
+            TensorType::of(crate::convert_dtype(t.dtype), &[]),
+            t.data.clone(),
+        ),
     };
     let scalar = ctx.builder().constant(ty, bytes)?;
     let out = ctx.emit(

@@ -245,11 +245,10 @@ impl LowerCtx<'_> {
         }
     }
 
-    /// Optional tensor attribute (raw bytes, as parsed — dtype/shape are
-    /// not preserved by `onyxia-onnx` for attribute tensors).
-    pub fn attr_bytes(&self, name: &str) -> Option<&[u8]> {
+    /// Optional tensor attribute (dtype, dims, and raw bytes).
+    pub fn attr_tensor(&self, name: &str) -> Option<&onyxia_onnx::AttrTensor> {
         match self.node.attributes.get(name) {
-            Some(onyxia_onnx::AttributeValue::Tensor(v)) => Some(v),
+            Some(onyxia_onnx::AttributeValue::Tensor(t)) => Some(t),
             _ => None,
         }
     }

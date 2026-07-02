@@ -213,13 +213,23 @@ impl Node {
     }
 }
 
+/// A tensor-valued attribute: dtype and shape preserved alongside the raw
+/// little-endian bytes (the same layout `raw_data` uses in the protobuf).
+#[derive(Debug, Clone)]
+pub struct AttrTensor {
+    pub dtype: DataType,
+    /// Static dimensions; empty for a scalar.
+    pub dims: Vec<usize>,
+    pub data: Vec<u8>,
+}
+
 /// Attribute value types.
 #[derive(Debug, Clone)]
 pub enum AttributeValue {
     Float(f32),
     Int(i64),
     String(String),
-    Tensor(Vec<u8>),
+    Tensor(AttrTensor),
     Floats(Vec<f32>),
     Ints(Vec<i64>),
     Strings(Vec<String>),

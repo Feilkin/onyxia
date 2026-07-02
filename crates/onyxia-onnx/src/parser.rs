@@ -133,7 +133,12 @@ fn parse_value_info(
                     let shape = parse_shape(&tensor_type.shape)?;
                     (dtype, shape)
                 }
-                _ => (DataType::F32, TensorShape::Unknown), // Non-tensor types
+                other => {
+                    return Err(OnnxError::UnsupportedDataType(format!(
+                        "value '{name}' has a non-tensor type ({other:?}); \
+                         sequences, maps, optionals, and sparse tensors are not supported"
+                    )));
+                }
             }
         } else {
             (DataType::F32, TensorShape::Unknown)
@@ -151,6 +156,23 @@ fn parse_value_info(
     })
 }
 
+/// Convert a TensorProto's dims to usizes, rejecting negative values (a
+/// corrupt model's `-1` would otherwise wrap to a huge allocation).
+fn tensor_dims(tensor: &TensorProto) -> Result<Vec<usize>> {
+    tensor
+        .dims
+        .iter()
+        .map(|&d| {
+            usize::try_from(d).map_err(|_| {
+                OnnxError::InvalidModel(format!(
+                    "tensor '{}' has a negative dimension ({d})",
+                    tensor.name
+                ))
+            })
+        })
+        .collect()
+}
+
 /// Parse a TensorProto (initializer) into TensorInfo.
 fn parse_initializer(
     tensor: &TensorProto,
@@ -160,11 +182,7 @@ fn parse_initializer(
     let name = tensor.name.clone();
     let dtype = parse_data_type(tensor.data_type)?;
 
-    let shape = if tensor.dims.is_empty() {
-        TensorShape::Static(vec![])
-    } else {
-        TensorShape::Static(tensor.dims.iter().map(|&d| d as usize).collect())
-    };
+    let shape = TensorShape::Static(tensor_dims(tensor)?);
 
     // Extract raw data - check if it's external or embedded
     let initializer = if tensor.data_location == 1 {
@@ -174,9 +192,21 @@ fn parse_initializer(
     } else if !tensor.raw_data.is_empty() {
         // Embedded raw data
         Some(tensor.raw_data.clone())
+    } else if let Some(bytes) = typed_data_to_raw(tensor, dtype)? {
+        // Typed data fields (float_data, int32_data, …) — the older
+        // encoding some exporters still emit instead of raw_data.
+        Some(bytes)
     } else {
-        // Handle typed data fields (float_data, int32_data, etc.)
-        None // TODO: Convert typed data to raw bytes
+        let numel: usize = tensor_dims(tensor)?.iter().product();
+        if numel == 0 {
+            Some(Vec::new()) // zero-element tensor: empty data is correct
+        } else {
+            return Err(OnnxError::InvalidModel(format!(
+                "initializer '{}' ({} elements) carries no data: raw_data, \
+                 external data, and typed data fields are all empty",
+                tensor.name, numel
+            )));
+        }
     };
 
     Ok(TensorInfo {
@@ -186,6 +216,80 @@ fn parse_initializer(
         kind,
         initializer,
     })
+}
+
+/// Convert a TensorProto's typed data fields (`float_data`, `int32_data`,
+/// `int64_data`, `uint64_data`) into raw little-endian bytes — the same
+/// layout `raw_data` uses. Returns `Ok(None)` when no typed field is
+/// populated, and an error when a populated field doesn't match the
+/// declared dtype or holds a dtype we don't support.
+///
+/// Per the ONNX spec, `int32_data` carries every sub-32-bit integer type
+/// plus bool and (bit-cast) float16; each entry holds one element for
+/// dtypes of 8 bits or wider.
+fn typed_data_to_raw(tensor: &TensorProto, dtype: DataType) -> Result<Option<Vec<u8>>> {
+    let type_mismatch = |field: &str| {
+        OnnxError::InvalidModel(format!(
+            "initializer '{}': {field} is populated but the declared data type is {dtype:?}",
+            tensor.name
+        ))
+    };
+
+    if !tensor.float_data.is_empty() {
+        if dtype != DataType::F32 {
+            return Err(type_mismatch("float_data"));
+        }
+        return Ok(Some(
+            tensor.float_data.iter().flat_map(|v| v.to_le_bytes()).collect(),
+        ));
+    }
+    if !tensor.int64_data.is_empty() {
+        if dtype != DataType::I64 {
+            return Err(type_mismatch("int64_data"));
+        }
+        return Ok(Some(
+            tensor.int64_data.iter().flat_map(|v| v.to_le_bytes()).collect(),
+        ));
+    }
+    if !tensor.int32_data.is_empty() {
+        let data = &tensor.int32_data;
+        let bytes = match dtype {
+            DataType::I32 => data.iter().flat_map(|v| v.to_le_bytes()).collect(),
+            DataType::U8 => data.iter().map(|&v| v as u8).collect(),
+            DataType::Bool => data.iter().map(|&v| (v != 0) as u8).collect(),
+            // float16 is stored bit-cast in the low 16 bits.
+            DataType::F16 => data
+                .iter()
+                .flat_map(|&v| (v as u16).to_le_bytes())
+                .collect(),
+            other => {
+                return Err(OnnxError::UnsupportedDataType(format!(
+                    "initializer '{}': int32_data with data type {other:?}",
+                    tensor.name
+                )));
+            }
+        };
+        return Ok(Some(bytes));
+    }
+    if !tensor.uint64_data.is_empty() {
+        if dtype != DataType::U32 {
+            return Err(type_mismatch("uint64_data"));
+        }
+        return Ok(Some(
+            tensor
+                .uint64_data
+                .iter()
+                .flat_map(|&v| (v as u32).to_le_bytes())
+                .collect(),
+        ));
+    }
+    if !tensor.double_data.is_empty() || !tensor.string_data.is_empty() {
+        return Err(OnnxError::UnsupportedDataType(format!(
+            "initializer '{}': double/string typed data",
+            tensor.name
+        )));
+    }
+    Ok(None)
 }
 
 /// Inline external tensor data from in-memory buffers into the model.
@@ -350,22 +454,18 @@ fn extract_constant_tensor_info(
         if attr.name == "value"
             && let Some(ref tensor) = attr.t
         {
-            let shape = if tensor.dims.is_empty() {
-                TensorShape::Static(vec![]) // Scalar
-            } else {
-                TensorShape::Static(tensor.dims.iter().map(|&d| d as usize).collect())
-            };
-
-            let dtype = tensor_data_type_to_dtype(tensor.data_type);
+            let shape = TensorShape::Static(tensor_dims(tensor)?);
+            let dtype = parse_data_type(tensor.data_type)?;
 
             // Extract raw data - check if it's external or embedded
             let initializer = if tensor.data_location == 1 {
                 // EXTERNAL
                 // Load from external file
                 load_external_data(tensor, base_dir)?
+            } else if !tensor.raw_data.is_empty() {
+                Some(tensor.raw_data.clone())
             } else {
-                // Extract raw data from tensor (embedded or typed arrays)
-                extract_tensor_raw_data(tensor)
+                typed_data_to_raw(tensor, dtype)?
             };
 
             return Ok(TensorInfo {
@@ -386,92 +486,6 @@ fn extract_constant_tensor_info(
         kind: TensorKind::Intermediate,
         initializer: None,
     })
-}
-
-/// Extract raw data from a TensorProto, handling both raw_data and typed arrays.
-fn extract_tensor_raw_data(tensor: &TensorProto) -> Option<Vec<u8>> {
-    // If raw_data is present, use it directly
-    if !tensor.raw_data.is_empty() {
-        return Some(tensor.raw_data.clone());
-    }
-
-    // Otherwise, try typed arrays
-    // Handle int64_data
-    if !tensor.int64_data.is_empty() {
-        let bytes: Vec<u8> = tensor
-            .int64_data
-            .iter()
-            .flat_map(|&v| v.to_le_bytes())
-            .collect();
-        return Some(bytes);
-    }
-
-    // Handle int32_data
-    if !tensor.int32_data.is_empty() {
-        let bytes: Vec<u8> = tensor
-            .int32_data
-            .iter()
-            .flat_map(|&v| v.to_le_bytes())
-            .collect();
-        return Some(bytes);
-    }
-
-    // Handle float_data
-    if !tensor.float_data.is_empty() {
-        let bytes: Vec<u8> = tensor
-            .float_data
-            .iter()
-            .flat_map(|&v| v.to_le_bytes())
-            .collect();
-        return Some(bytes);
-    }
-
-    // Handle double_data
-    if !tensor.double_data.is_empty() {
-        let bytes: Vec<u8> = tensor
-            .double_data
-            .iter()
-            .flat_map(|&v| v.to_le_bytes())
-            .collect();
-        return Some(bytes);
-    }
-
-    None
-}
-
-/// Convert ONNX TensorProto data type to internal DataType.
-fn tensor_data_type_to_dtype(data_type: i32) -> DataType {
-    use crate::onnx::tensor_proto::DataType as OnnxDataType;
-    match OnnxDataType::try_from(data_type) {
-        Ok(OnnxDataType::Float) => DataType::F32,
-        Ok(OnnxDataType::Float16) => DataType::F16,
-        Ok(OnnxDataType::Int32) => DataType::I32,
-        Ok(OnnxDataType::Int64) => DataType::I64,
-        Ok(OnnxDataType::Uint8) => DataType::U8,
-        Ok(OnnxDataType::Uint32) => DataType::U32,
-        Ok(OnnxDataType::Bool) => DataType::Bool,
-        _ => DataType::F32, // Default
-    }
-}
-
-/// Extract shape from a Constant node's tensor attribute (for backwards compatibility).
-#[allow(dead_code)]
-fn extract_constant_shape(node: &NodeProto) -> Result<TensorShape> {
-    // Find the "value" attribute which contains the TensorProto
-    for attr in &node.attribute {
-        if attr.name == "value"
-            && let Some(ref tensor) = attr.t
-        {
-            let shape = if tensor.dims.is_empty() {
-                TensorShape::Static(vec![]) // Scalar
-            } else {
-                TensorShape::Static(tensor.dims.iter().map(|&d| d as usize).collect())
-            };
-            return Ok(shape);
-        }
-    }
-    // No tensor attribute found - shouldn't happen for valid Constant nodes
-    Ok(TensorShape::Unknown)
 }
 
 /// Parse a NodeProto into a Node.
@@ -522,9 +536,33 @@ fn parse_attribute(attr: &AttributeProto) -> Result<Option<AttributeValue>> {
             AttributeValue::Strings(strings?)
         }
         AttributeType::Tensor => {
-            // Tensor attributes are not fully parsed yet
-            // For Constant nodes, shape is extracted separately during node parsing
-            return Ok(None);
+            let tensor = attr.t.as_ref().ok_or_else(|| {
+                OnnxError::InvalidGraph(format!(
+                    "tensor attribute '{}' carries no tensor",
+                    attr.name
+                ))
+            })?;
+            if tensor.data_location == 1 {
+                // External data in an attribute tensor needs a base dir we
+                // don't have here; `inline_external_data` (the web path)
+                // rewrites these to embedded before parsing.
+                return Err(OnnxError::InvalidModel(format!(
+                    "tensor attribute '{}' uses external data, which is only \
+                     supported after inlining",
+                    attr.name
+                )));
+            }
+            let dtype = parse_data_type(tensor.data_type)?;
+            let data = if !tensor.raw_data.is_empty() {
+                tensor.raw_data.clone()
+            } else {
+                typed_data_to_raw(tensor, dtype)?.unwrap_or_default()
+            };
+            AttributeValue::Tensor(crate::graph::AttrTensor {
+                dtype,
+                dims: tensor_dims(tensor)?,
+                data,
+            })
         }
         _ => return Ok(None), // Unsupported attribute types
     };
@@ -619,5 +657,106 @@ mod tests {
         let graph = parse_model(&model, None).unwrap();
         assert_eq!(graph.metadata.name, "test_graph");
         assert_eq!(graph.metadata.ir_version, 8);
+    }
+
+    /// Initializers using the typed data fields (`float_data`, …) instead
+    /// of `raw_data` must convert to the same little-endian byte layout.
+    #[test]
+    fn typed_data_initializers_convert_to_raw_bytes() {
+        use crate::onnx::tensor_proto::DataType as DT;
+
+        let cases: Vec<(TensorProto, Vec<u8>)> = vec![
+            (
+                TensorProto {
+                    data_type: DT::Float as i32,
+                    dims: vec![2],
+                    float_data: vec![1.5, -2.0],
+                    ..Default::default()
+                },
+                [1.5f32.to_le_bytes(), (-2.0f32).to_le_bytes()].concat(),
+            ),
+            (
+                TensorProto {
+                    data_type: DT::Int64 as i32,
+                    dims: vec![2],
+                    int64_data: vec![-1, 7],
+                    ..Default::default()
+                },
+                [(-1i64).to_le_bytes(), 7i64.to_le_bytes()].concat(),
+            ),
+            (
+                TensorProto {
+                    data_type: DT::Uint8 as i32,
+                    dims: vec![3],
+                    int32_data: vec![0, 128, 255],
+                    ..Default::default()
+                },
+                vec![0, 128, 255],
+            ),
+            (
+                TensorProto {
+                    data_type: DT::Bool as i32,
+                    dims: vec![2],
+                    int32_data: vec![1, 0],
+                    ..Default::default()
+                },
+                vec![1, 0],
+            ),
+        ];
+        for (tensor, expect) in cases {
+            let info = parse_initializer(&tensor, TensorKind::Weight, None).unwrap();
+            assert_eq!(info.initializer.as_deref(), Some(expect.as_slice()));
+        }
+    }
+
+    /// An initializer with a populated typed field of the *wrong* type, or
+    /// no data at all, must error instead of silently dropping the weight.
+    #[test]
+    fn initializer_without_data_errors() {
+        use crate::onnx::tensor_proto::DataType as DT;
+
+        let empty = TensorProto {
+            name: "w".into(),
+            data_type: DT::Float as i32,
+            dims: vec![4],
+            ..Default::default()
+        };
+        assert!(parse_initializer(&empty, TensorKind::Weight, None).is_err());
+
+        let mismatched = TensorProto {
+            name: "w".into(),
+            data_type: DT::Int64 as i32,
+            dims: vec![1],
+            float_data: vec![1.0],
+            ..Default::default()
+        };
+        assert!(parse_initializer(&mismatched, TensorKind::Weight, None).is_err());
+    }
+
+    /// Tensor attributes must keep their dtype and shape (regression: they
+    /// were dropped entirely, so ConstantOfShape lost its fill value).
+    #[test]
+    fn tensor_attribute_preserves_dtype_and_data() {
+        use crate::onnx::attribute_proto::AttributeType;
+        use crate::onnx::tensor_proto::DataType as DT;
+
+        let attr = AttributeProto {
+            name: "value".into(),
+            r#type: AttributeType::Tensor as i32,
+            t: Some(TensorProto {
+                data_type: DT::Int64 as i32,
+                dims: vec![1],
+                int64_data: vec![1],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let parsed = parse_attribute(&attr).unwrap().expect("attribute kept");
+        let AttributeValue::Tensor(t) = parsed else {
+            panic!("expected tensor attribute, got {parsed:?}");
+        };
+        assert_eq!(t.dtype, DataType::I64);
+        assert_eq!(t.dims, vec![1]);
+        assert_eq!(t.data, 1i64.to_le_bytes());
     }
 }

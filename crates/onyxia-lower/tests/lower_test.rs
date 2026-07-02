@@ -327,6 +327,37 @@ fn constant_of_shape_and_expand() {
 }
 
 #[test]
+fn constant_of_shape_with_explicit_value() {
+    // Regression: the `value` attribute (an attribute *tensor*) used to be
+    // dropped by the parser layer, so every ConstantOfShape silently
+    // produced f32 zeros. An i64 ones-fill must survive with dtype intact.
+    let mut g = Graph::new();
+    input(&mut g, "x", DataType::I64, TensorShape::Static(vec![3]));
+    node(&mut g, "Shape", &["x"], &["shp"]);
+    node_with(
+        &mut g,
+        "ConstantOfShape",
+        &["shp"],
+        &["ones"],
+        HashMap::from([(
+            "value".to_string(),
+            AttributeValue::Tensor(onyxia_onnx::AttrTensor {
+                dtype: DataType::I64,
+                dims: vec![1],
+                data: 1i64.to_le_bytes().to_vec(),
+            }),
+        )]),
+    );
+    node(&mut g, "Add", &["ones", "x"], &["out"]);
+    output(&mut g, "out");
+
+    let module = lower(g, &standard_registry()).unwrap();
+    let x = Tensor::from_i64(&[10, 20, 30], &[3]).unwrap();
+    let outs = eval(&module, &[("x", x)]).unwrap();
+    assert_eq!(outs[0].1.to_i64().unwrap(), vec![11, 21, 31]);
+}
+
+#[test]
 fn slice_with_sentinel_and_negative_bounds() {
     let mut g = Graph::new();
     input(&mut g, "x", DataType::F32, TensorShape::Static(vec![5]));

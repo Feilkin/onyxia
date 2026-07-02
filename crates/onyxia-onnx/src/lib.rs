@@ -6,14 +6,9 @@
 //! # Example
 //!
 //! ```no_run
-//! use onyxia_onnx::{load_model, parse_model};
-//!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! // Load raw protobuf
-//! let model = load_model("model.onnx")?;
-//!
-//! // Parse into structured graph
-//! let graph = parse_model(&model)?;
+//! // Load and parse in one step (resolves external data next to the file).
+//! let graph = onyxia_onnx::load_and_parse_model("model.onnx")?;
 //!
 //! println!("Model: {}", graph.metadata.name);
 //! println!("Nodes: {}", graph.nodes.len());
@@ -21,6 +16,10 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! To go step by step (e.g. when the bytes come from somewhere other than
+//! the filesystem), use [`load_model`] + [`parse_model`]; the second
+//! argument is the directory external tensor data is resolved against.
 
 use prost::Message;
 use std::fs;
@@ -37,8 +36,8 @@ pub mod graph;
 pub mod parser;
 
 pub use graph::{
-    AttributeValue, DataType, Dimension, Graph, GraphMetadata, Node, NodeId, TensorId, TensorInfo,
-    TensorKind, TensorShape,
+    AttrTensor, AttributeValue, DataType, Dimension, Graph, GraphMetadata, Node, NodeId, TensorId,
+    TensorInfo, TensorKind, TensorShape,
 };
 pub use onnx::ModelProto;
 pub use parser::parse_model;
