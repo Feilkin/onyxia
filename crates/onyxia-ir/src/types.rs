@@ -66,8 +66,14 @@ impl DataType {
     ///
     /// For whole-byte types this is `num_elements * bytes_per_element`. For
     /// packed types the total is rounded up to a whole byte.
+    ///
+    /// The bit count is computed in u64: on wasm32 (32-bit usize) the
+    /// intermediate `num_elements * bits` wraps for tensors ≥ 512 MiB —
+    /// Gemma's 671 MB f32 embed table hit exactly this. A byte size that
+    /// itself exceeds the address space panics instead of wrapping.
     pub fn storage_bytes(self, num_elements: usize) -> usize {
-        (num_elements * self.bits()).div_ceil(8)
+        let bytes = (num_elements as u64 * self.bits() as u64).div_ceil(8);
+        usize::try_from(bytes).expect("tensor byte size exceeds address space")
     }
 }
 
@@ -130,6 +136,15 @@ mod tests {
         assert_eq!(DataType::I64.storage_bytes(2), 16);
         assert_eq!(DataType::U8.storage_bytes(5), 5);
         assert_eq!(DataType::Bool.storage_bytes(4), 4);
+    }
+
+    #[test]
+    fn storage_bytes_large_tensor_no_32bit_overflow() {
+        // Gemma 3 270m's embed table: f32[262144, 640]. numel × 32 bits
+        // exceeds 2^32 — on wasm32 the old usize math wrapped to a bogus
+        // 134217728 and every big-weight model failed to lower in the
+        // browser. The math must be 64-bit regardless of pointer width.
+        assert_eq!(DataType::F32.storage_bytes(262144 * 640), 671_088_640);
     }
 
     #[test]

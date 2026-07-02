@@ -48,7 +48,9 @@ fn phys(dt: DataType) -> Result<&'static str> {
 }
 
 fn phys_bytes(numel: usize) -> u64 {
-    (numel.max(1) * 4) as u64
+    // Multiply in u64: usize is 32-bit on wasm32, and buffer sizes may
+    // legitimately exceed what a usize product can hold before the cast.
+    numel.max(1) as u64 * 4
 }
 
 /// Convert host bytes (logical layout) to device bytes (physical layout).
