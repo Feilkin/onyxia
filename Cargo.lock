@@ -2710,6 +2710,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "onyxia-backend-ref"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "onyxia-ir",
+ "pollster",
+]
+
+[[package]]
+name = "onyxia-backend-wgpu"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures-channel",
+ "naga",
+ "onyxia-backend-ref",
+ "onyxia-ir",
+ "onyxia-lower",
+ "onyxia-onnx",
+ "pollster",
+ "wgpu",
+]
+
+[[package]]
 name = "onyxia-cli"
 version = "0.1.0"
 dependencies = [
@@ -2763,6 +2787,23 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "wgpu",
+]
+
+[[package]]
+name = "onyxia-ir"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "half",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "onyxia-lower"
+version = "0.1.0"
+dependencies = [
+ "onyxia-ir",
+ "onyxia-onnx",
 ]
 
 [[package]]
