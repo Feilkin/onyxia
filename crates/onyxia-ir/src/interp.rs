@@ -564,15 +564,30 @@ pub(crate) fn eval_prim(prim: &Prim, ins: &[&Tensor], bindings: &mut Bindings) -
         Prim::Transpose { perm } => {
             let x = ins[0];
             let in_shape = x.shape();
+            // Shape inference rejects non-permutations; re-check here so a
+            // module that skipped inference errors instead of panicking.
+            let mut inverse = vec![usize::MAX; in_shape.len()];
+            if perm.len() != in_shape.len() {
+                return Err(Error::Interp(format!(
+                    "transpose perm {perm:?} does not match rank {}",
+                    in_shape.len()
+                )));
+            }
+            for (i, &p) in perm.iter().enumerate() {
+                if p >= in_shape.len() || inverse[p] != usize::MAX {
+                    return Err(Error::Interp(format!(
+                        "transpose perm {perm:?} is not a permutation"
+                    )));
+                }
+                inverse[p] = i;
+            }
             let out_shape: Vec<usize> = perm.iter().map(|&p| in_shape[p]).collect();
             let v = x.decode()?;
             let n = x.numel();
             let mut out = Vec::with_capacity(n);
             for i in 0..n {
                 let oc = unravel(i, &out_shape);
-                let ic: Vec<usize> = (0..in_shape.len())
-                    .map(|d| oc[perm.iter().position(|&p| p == d).unwrap()])
-                    .collect();
+                let ic: Vec<usize> = (0..in_shape.len()).map(|d| oc[inverse[d]]).collect();
                 out.push(scalar_at(&v, ravel(&ic, in_shape)));
             }
             collect_scalars(out)?.encode(x.dtype(), out_shape)

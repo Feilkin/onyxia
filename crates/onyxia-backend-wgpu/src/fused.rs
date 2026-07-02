@@ -22,7 +22,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// A hand-written kernel for one composite op.
-pub trait CompositeKernel {
+///
+/// `Send + Sync` so the registry can be shared (`Arc`) across threads;
+/// kernels are stateless — per-dispatch state lives in the session.
+pub trait CompositeKernel: Send + Sync {
     /// Execute the composite. `outs` carries `(dtype, shape)` per declared
     /// output; the kernel allocates and returns matching tensors.
     fn execute(
@@ -95,7 +98,12 @@ impl CompositeKernel for SoftmaxKernel {
         inputs: &[GpuTensor],
         outs: &[(DataType, Vec<usize>)],
     ) -> Result<Vec<GpuTensor>> {
-        let x = &inputs[0];
+        let [x] = inputs else {
+            return Err(Error::InvalidGraph("Softmax expects 1 input".into()));
+        };
+        let Some(&cols) = x.shape.last() else {
+            return Err(Error::Unsupported("fused softmax on a scalar".into()));
+        };
         let axis = attrs.int("axis")? as usize;
         if axis != x.shape.len() - 1 {
             return Err(Error::Unsupported(
@@ -107,7 +115,6 @@ impl CompositeKernel for SoftmaxKernel {
         if x.dtype != DataType::F32 {
             return Err(Error::Unsupported("fused softmax is f32-only".into()));
         }
-        let cols = *x.shape.last().unwrap();
         let rows = x.numel() / cols.max(1);
         check_rows(rows, "softmax")?;
         let out = session.alloc_out(outs[0].0, outs[0].1.clone());
@@ -134,11 +141,17 @@ impl CompositeKernel for RmsNormKernel {
         inputs: &[GpuTensor],
         outs: &[(DataType, Vec<usize>)],
     ) -> Result<Vec<GpuTensor>> {
-        let (x, w) = (&inputs[0], &inputs[1]);
+        let [x, w] = inputs else {
+            return Err(Error::InvalidGraph(
+                "SimplifiedLayerNormalization expects 2 inputs".into(),
+            ));
+        };
         if x.dtype != DataType::F32 {
             return Err(Error::Unsupported("fused rms-norm is f32-only".into()));
         }
-        let cols = *x.shape.last().unwrap();
+        let Some(&cols) = x.shape.last() else {
+            return Err(Error::Unsupported("fused rms-norm on a scalar".into()));
+        };
         let rows = x.numel() / cols.max(1);
         check_rows(rows, "rms-norm")?;
         let eps = attrs.float_or("epsilon", 1e-5)? as f32;
@@ -167,7 +180,9 @@ impl CompositeKernel for GeluKernel {
         inputs: &[GpuTensor],
         outs: &[(DataType, Vec<usize>)],
     ) -> Result<Vec<GpuTensor>> {
-        let x = &inputs[0];
+        let [x] = inputs else {
+            return Err(Error::InvalidGraph("Gelu expects 1 input".into()));
+        };
         if x.dtype != DataType::F32 {
             return Err(Error::Unsupported("fused gelu is f32-only".into()));
         }
