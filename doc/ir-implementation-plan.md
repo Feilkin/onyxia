@@ -171,7 +171,24 @@ pooled, shape nodes folded). Runs in the main worktree where the model
 exists; keep it `#[ignore]`d + a CLI subcommand (`onyxia lower-stats`).
 
 ## Milestone C — wgpu backend rebind — **[L total]** *(GPU required)*
-## **STATUS: C1–C3 DONE (2026-07-02, Fable), full-model gate passed.**
+## **STATUS: C1–C4 DONE (C4 2026-07-02, Fable), parity gate PASSED.**
+## C4 gate (`cargo run --release -p onyxia-cli --example parity-gate`):
+## Gemma 3 270m fp32, greedy, chat-templated prompt — token-identical for
+## 64 tokens; decode 9.25 tok/s new vs 7.16 old (ratio 1.29, well within
+## 10%); prepare 2.0 s vs 3.9 s. `--device-kv` (milestone-D preview: feed
+## `present.*` handles back as `past_key_values.*` without host round-trip)
+## also token-identical at 9.48 tok/s — the Session handle-feedback design
+## works as intended. The gate initially FAILED on tokens: the
+## RotaryEmbedding decomposition defaulted `num_heads` to 1 when the attr
+## is 0 (as optimum exports it), rotating only head 0 of Q; the old kernel
+## infers heads from the cache width (hidden / (2·cache_half)). Fixed in
+## `onyxia-ir::decomp` + regression test
+## (`rotary_infers_heads_from_cache_width`). Lesson recorded: C3's
+## forward-check compared new-GPU against new-ref only — both shared the
+## lowering bug; only the old-vs-new gate caught it.
+## `examples/debug-prefill.rs` (onyxia-cli) does per-position old/gpu/ref
+## argmax triage and stays until C5 deletes the old pipeline.
+## *(pre-C4 status below: C1–C3, 2026-07-02)*
 ## `Backend`/`Session` traits live in `onyxia-ir::backend` (device-resident
 ## tensors from day one — milestone D's API); `onyxia-backend-ref` wraps the
 ## interpreter; `onyxia-backend-wgpu` executes the *primitive set* with
@@ -185,7 +202,8 @@ exists; keep it `#[ignore]`d + a CLI subcommand (`onyxia lower-stats`).
 ## RMS-norm as one-workgroup-per-row reduction kernels and Gelu as a single
 ## pass — full-model prefill went 482 ms → 141 ms warm; every fused kernel
 ## differential-tests against its decomposition on-device
-## (`fused_kernels_match_decompositions`). **Remaining for C4/C5:** fused
+## (`fused_kernels_match_decompositions`). **Remaining (post-C4 these are
+## optional perf work, not gate blockers — the gate passed without them):** fused
 ## GQA / RotaryEmbedding / MatMulNBits (follow the SoftmaxKernel pattern;
 ## port math from the old gqa_*.wgsl), a tiled/vectorized MatMul primitive,
 ## token-identical parity + tokens/sec gate vs the old pipeline, then

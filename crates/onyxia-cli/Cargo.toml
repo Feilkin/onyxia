@@ -35,3 +35,7 @@ default = []
 tracy = ["dep:tracing-tracy"]
 
 [dev-dependencies]
+onyxia-ir.workspace = true
+onyxia-lower.workspace = true
+onyxia-backend-ref.workspace = true
+onyxia-backend-wgpu.workspace = true
