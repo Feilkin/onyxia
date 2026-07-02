@@ -182,7 +182,14 @@ exists; keep it `#[ignore]`d + a CLI subcommand (`onyxia lower-stats`).
 ## ONNX graph directly. README/ARCHITECTURE rewritten. Green: workspace +
 ## examples build, 122 tests incl. GPU suite, wasm32 check (ir, lower,
 ## gemma-chat), trunk build; run-model 9.4 tok/s, multi-turn chat recalls
-## context across turns. Manual trunk-serve check in Chrome pending (Ada).
+## context across turns. Web demo VERIFIED in-browser (2026-07-02, Ada):
+## works on Firefox with a discrete GPU (RTX 3060 Ti) after two wasm fixes
+## — 32-bit overflow in storage_bytes/phys_bytes, and immediates made
+## progressive (storage-buffer params fallback; browsers have no push
+## constants; every GPU differential now tests both modes,
+## ONYXIA_NO_IMMEDIATES=1 forces fallback natively). Known gap: fails on
+## an Intel iGPU laptop — cause unconfirmed, likely adapter buffer limits
+## vs the 671 MB embed table; parked as good-enough for now.
 ## *(C4 gate record below)*
 ## C4 gate (`cargo run --release -p onyxia-cli --example parity-gate`):
 ## Gemma 3 270m fp32, greedy, chat-templated prompt — token-identical for
