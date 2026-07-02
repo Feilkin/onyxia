@@ -287,6 +287,42 @@ now and note it). *Accept:* tokens/sec measured before/after and recorded
 in the demo README.
 
 ## Milestone E — Second backend spike — **[timeboxed L]**
+## **STATUS: DONE, exceeded the bar (2026-07-02, Fable).**
+## `crates/onyxia-backend-cubecl`: cubecl-wgpu 0.10, primitives only
+## (`supports()` ≡ false — every composite legalizes through its
+## decomposition). Not a 2-layer MLP but **full Gemma 3 270m prefill**,
+## end-to-end: max |Δlogit| vs the wgpu backend 3.1e-5, argmax identical
+## (`cargo run --release -p onyxia-backend-cubecl --example forward-check`).
+## 6 GPU differential tests vs the reference interpreter, incl. the full
+## GQA decomposition with symbolic dims + sliding window.
+##
+## **Numbers (RTX 3060 Ti, S=15 prefill, same process):** wgpu backend
+## prepared 2.1 s, cold 243 ms, warm 182 ms; cubecl prepared 3.2 s, cold
+## 631 ms (JIT), **warm 156 ms — FASTER than our wgpu backend despite zero
+## fused kernels** (CubeCL's allocator + codegen beat our
+## one-thread-per-element WGSL; neither is a tuned baseline).
+##
+## **Experience report (talk material):**
+## - The backend contract held. One person-day from empty crate to
+##   whole-Gemma parity; the kernels are 1:1 ports of the wgpu backend's
+##   index math (~600 lines of #[cube] fns), the session is ~½ the wgpu
+##   one (no pipeline cache, no layout reflection, no buffer pool — CubeCL
+##   owns all of that). Nothing in the crate names a graphics API;
+##   cubecl-cuda is a type-parameter change (+ toolkit install).
+## - Legalization "just worked": zero composite kernels, and Softmax /
+##   RMS-norm / Rotary / Gelu / GQA all arrived pre-inlined.
+## - Comptime op codes replace WGSL string generation: one #[cube] fn per
+##   kernel family, `#[comptime] op: u32` folds the branch at JIT time.
+## - Friction, honestly: cubecl 0.10's API differs from every doc/example
+##   floating around (Array indexes by usize, ABSOLUTE_POS is usize, math
+##   fns are trait methods — `ln` not `log`, `inverse_sqrt`, method-name
+##   collision with unstable std `erf`); generic-over-dtype kernels fight
+##   trait bounds (concrete per-dtype kernels were faster to write);
+##   `f32::new` vs literal typing inside comptime branches is fussy.
+##   Compile time +~40 s for the cubecl dep tree (second wgpu copy).
+## - Spike gaps (clean errors): Scatter, Dequantize (q4), f16, cast→Bool,
+##   no memory planning (registers live for the whole run), blocking
+##   readback (native-only; wasm needs the async read path).
 
 CubeCL (preferred; rust-gpu acceptable) implementing *primitives only*, no
 composite kernels. Target: a small model (MNIST-class CNN or a tiny MLP —

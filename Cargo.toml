@@ -5,6 +5,7 @@ members = [
     "crates/onyxia-lower",
     "crates/onyxia-backend-ref",
     "crates/onyxia-backend-wgpu",
+    "crates/onyxia-backend-cubecl",
     "crates/onyxia-onnx",
     "crates/onyxia-cli",
     "demos/gemma-chat",

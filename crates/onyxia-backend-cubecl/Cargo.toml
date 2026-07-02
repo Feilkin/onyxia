@@ -1,0 +1,19 @@
+[package]
+name = "onyxia-backend-cubecl"
+description = "CubeCL backend for Onyxia — the second-backend spike: primitives only, composites legalize away"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+onyxia-ir.workspace = true
+cubecl = { version = "0.10", features = ["wgpu"] }
+async-trait = "0.1"
+bytemuck = "1"
+
+[dev-dependencies]
+onyxia-backend-ref.workspace = true
+onyxia-onnx.workspace = true
+onyxia-lower.workspace = true
+onyxia-backend-wgpu.workspace = true
+pollster = "0.4.0"
