@@ -118,23 +118,23 @@ remains the correctness reference it is differential-tested against.
 
 ```bash
 # Generate text (Gemma-style chat models; see justfile for a shortcut)
-cargo run --release -- run-model model.onnx --tokenizer <dir> --prompt "Hi" --temperature 0
+cargo run --release -p onyxia-cli -- run-model model.onnx --tokenizer <dir> --prompt "Hi" --temperature 0
 
 # Scripted multi-turn chat (tests KV/multi-turn decode)
-cargo run --release -- chat model.onnx --tokenizer <dir> -m "first turn" -m "second turn"
+cargo run --release -p onyxia-cli -- chat model.onnx --tokenizer <dir> -m "first turn" -m "second turn"
 
 # Validate: parse + lower + shape inference, no GPU
-cargo run -- validate model.onnx -v
+cargo run -p onyxia-cli -- validate model.onnx -v
 
 # Inspect the ONNX graph
-cargo run -- inspect model.onnx
-cargo run -- inspect-node model.onnx --name "/model/layers.0/attn/q_rotary/RotaryEmbedding"
-cargo run -- list-nodes model.onnx --op-type MatMul --show-shapes
-cargo run -- trace-node model.onnx --name "/model/layers.0/ffn/add" --depth 2
+cargo run -p onyxia-cli -- inspect model.onnx
+cargo run -p onyxia-cli -- inspect-node model.onnx --name "/model/layers.0/attn/q_rotary/RotaryEmbedding"
+cargo run -p onyxia-cli -- list-nodes model.onnx --op-type MatMul --show-shapes
+cargo run -p onyxia-cli -- trace-node model.onnx --name "/model/layers.0/ffn/add" --depth 2
 
 # DOT visualizations (ONNX-level and lowered IR)
-cargo run -- dot model.onnx -o model.dot -s summary
-cargo run -- ir-dot model.onnx -o module.dot
+cargo run -p onyxia-cli -- dot model.onnx -o model.dot -s summary
+cargo run -p onyxia-cli -- ir-dot model.onnx -o module.dot
 ```
 
 ## Demos
