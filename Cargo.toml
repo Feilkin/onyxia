@@ -22,17 +22,22 @@ opt-level = 3
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/your-org/onyxia"
+repository = "https://github.com/Feilkin/onyxia"
+readme = "README.md"
+keywords = ["onnx", "machine-learning", "gpu", "wgpu", "inference"]
+categories = ["science", "graphics", "wasm"]
 
 [workspace.dependencies]
-# Workspace crates
-onyxia-onnx = { path = "crates/onyxia-onnx" }
-onyxia-ir = { path = "crates/onyxia-ir" }
-onyxia-lower = { path = "crates/onyxia-lower" }
-onyxia-backend-ref = { path = "crates/onyxia-backend-ref" }
-onyxia-backend-wgpu = { path = "crates/onyxia-backend-wgpu" }
-onyxia-backend-cubecl = { path = "crates/onyxia-backend-cubecl" }
+# Workspace crates. The `version` alongside `path` is what lets these
+# publish to crates.io (path-only deps are stripped at publish time).
+onyxia-onnx = { path = "crates/onyxia-onnx", version = "0.1.0" }
+onyxia-ir = { path = "crates/onyxia-ir", version = "0.1.0" }
+onyxia-lower = { path = "crates/onyxia-lower", version = "0.1.0" }
+onyxia-backend-ref = { path = "crates/onyxia-backend-ref", version = "0.1.0" }
+onyxia-backend-wgpu = { path = "crates/onyxia-backend-wgpu", version = "0.1.0" }
+onyxia-backend-cubecl = { path = "crates/onyxia-backend-cubecl", version = "0.1.0" }
 
 # 3rd party
 tracing = "0.1.44"

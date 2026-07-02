@@ -2,21 +2,25 @@
 name = "onyxia-backend-wgpu"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "wgpu backend for Onyxia: executes IR modules as WGSL compute shaders via WebGPU/Vulkan/Metal/DX12."
 
 [dependencies]
 async-trait = "0.1"
 futures-channel = "0.3"
 naga = { version = "29", features = ["wgsl-in"] }
-onyxia-ir = { path = "../onyxia-ir" }
+onyxia-ir.workspace = true
 wgpu = { version = "29", features = ["naga-ir"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = "0.4.0"
 
 [dev-dependencies]
-onyxia-backend-ref = { path = "../onyxia-backend-ref" }
-onyxia-lower = { path = "../onyxia-lower" }
+onyxia-backend-ref.workspace = true
+onyxia-lower.workspace = true
 onyxia-onnx.workspace = true
