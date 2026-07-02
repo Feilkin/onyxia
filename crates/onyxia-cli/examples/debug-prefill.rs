@@ -1,12 +1,9 @@
-//! Debug probe for the C4 parity failure: per-position prefill argmax across
-//! three executions of the same prompt —
+//! Debug probe: per-position prefill argmax on the wgpu backend vs the
+//! reference interpreter, for a real chat-templated prompt.
 //!
-//! - `old`: the old pipeline, via prefix prefills (position i of a causal LM
-//!   equals the last position of a length-i+1 prefill),
-//! - `gpu`: the new pipeline on the wgpu backend (full prefill, all positions),
-//! - `ref`: the new IR through the reference interpreter.
-//!
-//! `gpu == ref != old` ⇒ lowering/decomposition bug; `gpu != ref` ⇒ kernel bug.
+//! `gpu != ref` at some position ⇒ kernel bug at whatever op differs;
+//! `gpu == ref` but generation looks wrong ⇒ suspect lowering semantics
+//! (compare against onnxruntime — see the differential-testing notes).
 //!
 //! ```sh
 //! cargo run --release -p onyxia-cli --example debug-prefill
@@ -14,7 +11,6 @@
 
 use anyhow::{Context, Result, bail};
 use onyxia_backend_wgpu::{GpuContext, GpuTensor, WgpuBackend};
-use onyxia_cli::llm::{LlmConfig, LlmSession};
 use onyxia_cli::tokenizer::{ChatMessage, Tokenizer};
 use onyxia_ir::interp::Tensor as IrTensor;
 use onyxia_ir::{Backend, Bindings, DataType, Module, Session};
@@ -38,38 +34,12 @@ fn main() -> Result<()> {
     let seq = ids.len();
     eprintln!("prompt ids ({seq}): {ids:?}");
 
-    // --- old pipeline: per-prefix prefills, collect last-position argmax ----
-    eprintln!("old pipeline: {seq} prefix prefills …");
-    let old_argmax: Vec<usize> = {
-        let graph = onyxia_onnx::load_and_parse_model(&model_path)?;
-        let runtime = pollster::block_on(onyxia_runtime::Runtime::new())?;
-        let registry = onyxia_operators::core_operator_registry();
-        let mut pipeline = onyxia_compiler::CompilerPipeline::new();
-        let compiled = pollster::block_on(pipeline.compile(&graph, &registry, runtime.gpu()))?;
-        let executor = runtime.load_model(compiled)?;
-        let mut session = LlmSession::new(
-            executor,
-            &LlmConfig {
-                max_seq_len: 256,
-                num_layers: 0,
-            },
-        );
-        (1..=seq)
-            .map(|k| {
-                session.reset_full();
-                let logits = session.prefill(&ids[..k])?;
-                Ok(argmax(&logits))
-            })
-            .collect::<Result<_>>()?
-    };
-
-    // --- new pipeline ------------------------------------------------------
     eprintln!("lowering …");
     let graph = onyxia_onnx::load_and_parse_model(&model_path)?;
     let module = onyxia_lower::lower(graph, &onyxia_lower::standard_registry())?;
     let host_inputs = build_prefill_inputs(&module, &ids)?;
 
-    eprintln!("new pipeline (wgpu): full prefill …");
+    eprintln!("wgpu backend: full prefill …");
     let gpu_logits = {
         let ctx = GpuContext::new_blocking()?;
         let backend = WgpuBackend::new(ctx);
@@ -88,7 +58,7 @@ fn main() -> Result<()> {
         })?
     };
 
-    eprintln!("new pipeline (reference interpreter): full prefill (slow) …");
+    eprintln!("reference interpreter: full prefill (slow) …");
     let input_refs: Vec<(&str, IrTensor)> = host_inputs
         .iter()
         .map(|(n, t)| (n.as_str(), t.clone()))
@@ -99,23 +69,26 @@ fn main() -> Result<()> {
         .find(|(n, _)| n == "logits")
         .context("no logits in reference outputs")?;
 
-    // --- compare ------------------------------------------------------------
     let gpu = per_position_argmax(&gpu_logits, seq)?;
     let rf = per_position_argmax(ref_logits, seq)?;
-    println!("\npos | token(id)      | old      | gpu      | ref      | verdict");
+    println!("\npos | token(id)      | gpu      | ref      | verdict");
+    let mut mismatches = 0;
     for i in 0..seq {
         let tok = tokenizer
             .decode(&[ids[i]], false)
             .unwrap_or_else(|_| "?".into());
-        let verdict = match (old_argmax[i] == gpu[i], gpu[i] == rf[i]) {
-            (true, true) => "ok",
-            (false, true) => "LOWERING (gpu==ref!=old)",
-            (_, false) => "KERNEL (gpu!=ref)",
-        };
+        let ok = gpu[i] == rf[i];
+        mismatches += usize::from(!ok);
         println!(
-            "{i:3} | {tok:>10.10}({:>6}) | {:>8} | {:>8} | {:>8} | {verdict}",
-            ids[i], old_argmax[i], gpu[i], rf[i]
+            "{i:3} | {tok:>10.10}({:>6}) | {:>8} | {:>8} | {}",
+            ids[i],
+            gpu[i],
+            rf[i],
+            if ok { "ok" } else { "MISMATCH" }
         );
+    }
+    if mismatches > 0 {
+        bail!("{mismatches} position(s) disagree between GPU and reference");
     }
     Ok(())
 }
@@ -136,7 +109,7 @@ fn per_position_argmax(logits: &IrTensor, seq: usize) -> Result<Vec<usize>> {
         .collect())
 }
 
-/// Host-side prefill inputs matching the old pipeline's semantics.
+/// Host-side prefill inputs (past=0, dense mask).
 fn build_prefill_inputs(module: &Module, ids: &[i64]) -> Result<Vec<(String, IrTensor)>> {
     let seq = ids.len();
     let mut bindings = Bindings::new();

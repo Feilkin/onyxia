@@ -8,11 +8,10 @@ name = "gemma-chat"
 path = "src/main.rs"
 
 [dependencies]
-onyxia-core.workspace = true
 onyxia-onnx = { path = "../../crates/onyxia-onnx" }
-onyxia-compiler = { path = "../../crates/onyxia-compiler" }
-onyxia-runtime = { path = "../../crates/onyxia-runtime" }
-onyxia-operators = { path = "../../crates/onyxia-operators" }
+onyxia-ir = { path = "../../crates/onyxia-ir" }
+onyxia-lower = { path = "../../crates/onyxia-lower" }
+onyxia-backend-wgpu = { path = "../../crates/onyxia-backend-wgpu" }
 
 # Render egui via wgpu/WebGPU (not glow/WebGL). egui 0.35 uses wgpu 29, matching
 # onyxia, so there's a single wgpu in the tree.

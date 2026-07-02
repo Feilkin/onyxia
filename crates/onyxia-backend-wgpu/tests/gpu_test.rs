@@ -15,50 +15,60 @@ use onyxia_ir::{
 const ATOL: f32 = 1e-4;
 const RTOL: f32 = 1e-3;
 
-/// Run on both backends and compare all outputs.
+/// Run on both backends and compare all outputs. The GPU side runs twice:
+/// with immediates (native fast path) and with the storage-buffer params
+/// fallback (the web path, where WebGPU has no push constants) — so every
+/// differential test covers both dispatch modes.
 fn diff_test(module: Module, inputs: Vec<(&str, Tensor)>) {
     let expect = onyxia_backend_ref::run_once(module.clone(), &inputs).unwrap();
 
-    let got: Vec<(String, Tensor)> = pollster::block_on(async {
-        let ctx = GpuContext::new().await.expect("GPU available");
-        let backend = WgpuBackend::new(ctx);
-        let mut session = backend.prepare(module).expect("prepare");
-        let dev_inputs: Vec<(&str, _)> = inputs
-            .iter()
-            .map(|(n, t)| (*n, session.upload(t).expect("upload")))
-            .collect();
-        let outs = session.run(&dev_inputs).await.expect("run");
-        let mut host = Vec::new();
-        for (n, t) in outs {
-            host.push((n, session.download(&t).await.expect("download")));
-        }
-        host
-    });
+    for immediates in [true, false] {
+        let got: Vec<(String, Tensor)> = pollster::block_on(async {
+            let ctx = GpuContext::new_with(immediates)
+                .await
+                .expect("GPU available");
+            let backend = WgpuBackend::new(ctx);
+            let mut session = backend.prepare(module.clone()).expect("prepare");
+            let dev_inputs: Vec<(&str, _)> = inputs
+                .iter()
+                .map(|(n, t)| (*n, session.upload(t).expect("upload")))
+                .collect();
+            let outs = session.run(&dev_inputs).await.expect("run");
+            let mut host = Vec::new();
+            for (n, t) in outs {
+                host.push((n, session.download(&t).await.expect("download")));
+            }
+            host
+        });
 
-    assert_eq!(expect.len(), got.len());
-    for ((en, et), (gn, gt)) in expect.iter().zip(&got) {
-        assert_eq!(en, gn);
-        assert_eq!(et.shape(), gt.shape(), "output '{en}' shape");
-        assert_eq!(et.dtype(), gt.dtype(), "output '{en}' dtype");
-        match et.dtype() {
-            DataType::F32 => {
-                let (e, g) = (et.to_f32().unwrap(), gt.to_f32().unwrap());
-                for (i, (a, b)) in e.iter().zip(&g).enumerate() {
-                    assert!(
-                        (a - b).abs() <= ATOL + RTOL * a.abs(),
-                        "output '{en}'[{i}]: interp {a} vs gpu {b}"
-                    );
+        let mode = if immediates { "immediates" } else { "fallback" };
+        assert_eq!(expect.len(), got.len());
+        for ((en, et), (gn, gt)) in expect.iter().zip(&got) {
+            assert_eq!(en, gn);
+            assert_eq!(et.shape(), gt.shape(), "[{mode}] output '{en}' shape");
+            assert_eq!(et.dtype(), gt.dtype(), "[{mode}] output '{en}' dtype");
+            match et.dtype() {
+                DataType::F32 => {
+                    let (e, g) = (et.to_f32().unwrap(), gt.to_f32().unwrap());
+                    for (i, (a, b)) in e.iter().zip(&g).enumerate() {
+                        assert!(
+                            (a - b).abs() <= ATOL + RTOL * a.abs(),
+                            "[{mode}] output '{en}'[{i}]: interp {a} vs gpu {b}"
+                        );
+                    }
                 }
+                DataType::I64 => assert_eq!(
+                    et.to_i64().unwrap(),
+                    gt.to_i64().unwrap(),
+                    "[{mode}] output '{en}'"
+                ),
+                DataType::Bool => assert_eq!(
+                    et.to_bool().unwrap(),
+                    gt.to_bool().unwrap(),
+                    "[{mode}] output '{en}'"
+                ),
+                other => panic!("unexpected output dtype {other}"),
             }
-            DataType::I64 => {
-                assert_eq!(et.to_i64().unwrap(), gt.to_i64().unwrap(), "output '{en}'")
-            }
-            DataType::Bool => assert_eq!(
-                et.to_bool().unwrap(),
-                gt.to_bool().unwrap(),
-                "output '{en}'"
-            ),
-            other => panic!("unexpected output dtype {other}"),
         }
     }
 }

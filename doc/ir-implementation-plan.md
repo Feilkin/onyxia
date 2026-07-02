@@ -171,7 +171,26 @@ pooled, shape nodes folded). Runs in the main worktree where the model
 exists; keep it `#[ignore]`d + a CLI subcommand (`onyxia lower-stats`).
 
 ## Milestone C — wgpu backend rebind — **[L total]** *(GPU required)*
-## **STATUS: C1–C4 DONE (C4 2026-07-02, Fable), parity gate PASSED.**
+## **STATUS: DONE (C5 cutover 2026-07-02, Fable).** CLI + gemma-chat demo
+## run on onyxia-lower + onyxia-backend-wgpu; `onyxia-core`,
+## `onyxia-compiler`, `onyxia-operators`, `onyxia-runtime`, and
+## `tests.disabled` deleted; old WGSL kept as porting reference in
+## `onyxia-backend-wgpu/legacy-shaders/`. The ported `LlmSession` (CLI
+## `llm.rs`, demo `inference.rs`) holds the KV cache **on-device** — most of
+## milestone D landed with the cutover. `dispatch-dot` became `ir-dot`;
+## `validate` now parses + lowers with no GPU; inspection commands read the
+## ONNX graph directly. README/ARCHITECTURE rewritten. Green: workspace +
+## examples build, 122 tests incl. GPU suite, wasm32 check (ir, lower,
+## gemma-chat), trunk build; run-model 9.4 tok/s, multi-turn chat recalls
+## context across turns. Web demo VERIFIED in-browser (2026-07-02, Ada):
+## works on Firefox with a discrete GPU (RTX 3060 Ti) after two wasm fixes
+## — 32-bit overflow in storage_bytes/phys_bytes, and immediates made
+## progressive (storage-buffer params fallback; browsers have no push
+## constants; every GPU differential now tests both modes,
+## ONYXIA_NO_IMMEDIATES=1 forces fallback natively). Known gap: fails on
+## an Intel iGPU laptop — cause unconfirmed, likely adapter buffer limits
+## vs the 671 MB embed table; parked as good-enough for now.
+## *(C4 gate record below)*
 ## C4 gate (`cargo run --release -p onyxia-cli --example parity-gate`):
 ## Gemma 3 270m fp32, greedy, chat-templated prompt — token-identical for
 ## 64 tokens; decode 9.25 tok/s new vs 7.16 old (ratio 1.29, well within
@@ -249,6 +268,13 @@ sections — rewrite both docs against the new reality.
 serves via `trunk serve` (manual check, Chrome 149+).
 
 ## Milestone D — Device-resident I/O — **[M total]**
+## **STATUS: essentially DONE (2026-07-02).** D1 landed with C1 (traits were
+## device-resident from day one); D2 landed with the C5 cutover (CLI +
+## demo `LlmSession`s feed `present.*` handles back as `past_key_values.*`;
+## only logits are downloaded). Remaining nibble: logits come down as the
+## full [1, S, V] tensor — a `download` slice (last position only) would
+## save a ~1 MB/token copy during prefill-heavy turns. Perf record: C4 gate
+## measured 9.17 tok/s (host round-trip KV) → 9.48 tok/s (device KV).
 
 D1 **[M]**: `Session::run` takes/returns `DeviceTensor`s; explicit
 `download`; binding validation (shared-symbol consistency across inputs,

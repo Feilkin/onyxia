@@ -1,215 +1,190 @@
 # Onyxia
 
-**GPU compute shader runtime for ONNX models.** Uses a dispatch-based execution model where operators compile their shaders at compile time and compute shapes at runtime from actual input tensors.
+**GPU compute shader runtime for ONNX models, in Rust.** ONNX graphs are
+lowered to a small backend-neutral IR (primitives + composites, symbolic
+shapes); backends execute the IR — today via WGSL compute shaders on wgpu
+(Vulkan/Metal/DX12/WebGPU), on desktop, mobile, and the web.
 
 ## Architecture
 
 ```
 ONNX Model (.onnx)
+     │  onyxia-onnx        protobuf → Graph
+     ▼
+onyxia-lower              lowering registry: ONNX ops → IR primitives or
+     │                    composites; shape subgraphs fold away here
+     ▼
+onyxia-ir                 Module: ~16 primitives (closed set), composites
+     │                    (open set), symbolic dims, const pool. Passes:
+     │                    shape inference, constant folding, legalization.
+     │                    CPU reference interpreter = the spec. No GPU deps.
+     ▼  Backend::prepare(Module) → Session
+onyxia-backend-wgpu       generated WGSL primitive kernels + fused composite
+(onyxia-backend-ref)      kernels, memory planning, device-resident tensors
      │
      ▼
-┌─────────────┐     ┌──────────────┐     ┌───────────────┐     ┌───────────────┐
-│ onyxia-onnx │────▶│ onyxia-core  │◀────│  onyxia-ops   │     │onyxia-runtime │
-│ Parse ONNX  │     │ IR, dispatch │     │ 3 core        │     │ Register-based│
-│ protobuf    │     │ traits       │     │ operators     │     │ GPU execution │
-└─────────────┘     └──────┬───────┘     └───────────────┘     └───────────────┘
-                           │
-                    ┌──────┴───────┐
-                    │ onyxia-      │
-                    │ compiler     │──────▶ CompiledModel ──────▶ GPU Execution
-                    │ Build dispatch│
-                    └──────────────┘
+onyxia-cli, demos/        generation loop, KV-cache plumbing, tokenizer —
+                          application-layer code, not runtime features
 ```
 
 | Crate | Purpose |
 |-------|---------|
 | `onyxia-onnx` | Parse ONNX protobuf into a structured `Graph` API |
-| `onyxia-core` | IR graph, operator/dispatch traits, compiled model types, operator registry |
-| `onyxia-operators` | 3 core ONNX operator implementations (Add, Mul, Reshape) |
-| `onyxia-compiler` | Simplified pipeline: initialize constants → build dispatch model |
-| `onyxia-runtime` | Register-based GPU execution engine via `wgpu` |
-| `onyxia-cli` | CLI for model inspection, validation, and DOT visualization |
+| `onyxia-ir` | Backend-neutral IR: primitives, composites, symbolic shapes, passes, CPU reference interpreter, `Backend`/`Session` traits |
+| `onyxia-lower` | ONNX → IR lowering registry (built-in + contrib ops enter through the same door) |
+| `onyxia-backend-wgpu` | wgpu backend: generated primitive kernels, fused composite kernels, symbol binding, device-resident tensors |
+| `onyxia-backend-ref` | Reference backend over the interpreter — the differential-testing oracle |
+| `onyxia-cli` | Text generation, model inspection, validation, DOT export |
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design documentation.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and
+`doc/ir-design.md` for the reasoning behind it.
 
-## Features
+## The design in one paragraph
 
-- **ONNX parsing** — stable `Graph` API independent of protobuf schema
-- **Dispatch-based execution** — operators compute shapes at runtime from actual input tensors
-- **3 core operators** — Add, Mul, Reshape (minimal proof-of-concept set)
-- **Extensible operator system** — add custom operators via the `Operator` trait
-- **Shader compilation** — WGSL → `naga::Module` via `naga_oil` at compile time
-- **Register-based GPU execution** — efficient tensor routing via indexed register file
-- **CLI tools** — model inspection, node tracing, DOT visualization, validation
-
-### Built-in Operators (3)
-
-| Category | Operators |
-|----------|-----------|
-| Binary elementwise | Add, Mul |
-| Shape manipulation | Reshape |
+The op universe is split in two. **Primitives** (~16 tensor ops: elementwise,
+matmul, reduce, reshape/transpose/concat/slice/gather/scatter, cast, select,
+iota, dequantize) are a closed enum with fully specified semantics — they are
+the *entire* backend contract. **Composites** (Softmax, Gelu, RMS-norm,
+GroupQueryAttention, …) are an open set, each with a backend-agnostic
+*decomposition* into primitives held in a registry. A backend executes a
+composite with a hand-written fused kernel if it has one, or inlines the
+decomposition if it doesn't — so custom ops are written once and run on every
+backend, and fused kernels are a performance opt-in that differential-tests
+against its own decomposition for free.
 
 ## Usage
 
-### Running a Model
+### Running a model
 
 ```rust
-use onyxia_onnx::load_model;
-use onyxia_compiler::compile;
-use onyxia_operators::core_operator_registry;
-use onyxia_runtime::{Runtime, Tensor};
-use std::collections::HashMap;
+use onyxia_ir::{Backend, Session};
 
 #[pollster::main]
 async fn main() -> anyhow::Result<()> {
-    // 1. Parse ONNX model
-    let model = load_model("model.onnx")?;
-    let graph = onyxia_onnx::parse_model(&model)?;
+    // 1. Parse and lower to IR (no GPU needed up to here)
+    let graph = onyxia_onnx::load_and_parse_model("model.onnx")?;
+    let module = onyxia_lower::lower(graph, &onyxia_lower::standard_registry())?;
 
-    // 2. Compile to dispatch model
-    let registry = core_operator_registry();
-    let mut pipeline = onyxia_compiler::CompilerPipeline::new();
-    let compiled = pipeline.compile(&graph, &registry)?;
+    // 2. Prepare on a backend
+    let ctx = onyxia_backend_wgpu::GpuContext::new().await?;
+    let backend = onyxia_backend_wgpu::WgpuBackend::new(ctx);
+    let mut session = backend.prepare(module)?;
 
-    // 3. Execute on GPU
-    let runtime = Runtime::new().await?;
-    let mut executor = runtime.load_model(compiled).await?;
+    // 3. Execute — tensors are device-resident; upload/download are explicit.
+    //    Symbolic dims (e.g. sequence_length) bind from actual input shapes.
+    let input = onyxia_ir::interp::Tensor::from_f32(&[1.0, 2.0, 3.0, 4.0], &[1, 4])?;
+    let inputs = vec![("input", session.upload(&input)?)];
+    let outputs = session.run(&inputs).await?;
+    let result = session.download(&outputs[0].1).await?;
 
-    let input = Tensor::from_vec(vec![1.0f32, 2.0, 3.0, 4.0], &[1, 4]);
-    let outputs = executor.run(&[("input", input)])?;
-
-    println!("Output: {:?}", outputs["output"].to_vec::<f32>()?);
+    println!("{:?}", result.to_f32()?);
     Ok(())
 }
 ```
 
-### Adding Custom Operators
+Output handles can be fed back as inputs to a later `run` — that is the whole
+KV-cache story for LLMs (see `demos/gemma-chat/src/inference.rs`), and it
+works for any iterative model without onyxia knowing anything about LLMs.
+
+### Adding a custom operator
+
+One backend-agnostic lowering rule; no per-backend work required. This is
+the real RMS-norm decomposition from `onyxia-ir::decomp`:
 
 ```rust
-use onyxia_core::{Operator, CompileCtx, OpDispatch, DispatchCtx, RuntimeTensor, Result};
-use std::collections::HashMap;
+use onyxia_ir::{GraphBuilder, ReduceOp, UnaryOp};
 
-struct MyCustomOperator;
-
-impl Operator for MyCustomOperator {
-    fn name(&self) -> &str { "MyCustomOp" }
-
-    fn create_dispatch(&self, ctx: &mut CompileCtx) -> Result<Box<dyn OpDispatch>> {
-        // Compile WGSL shader and create dispatch object
-        let module = ctx.compile_shader(
-            "my_custom_op",
-            include_str!("shader.wgsl"),
-            &HashMap::new(),
-        )?;
-        
-        Ok(Box::new(MyCustomDispatch { module }))
-    }
+fn my_rms_variant(c: &Composite, inputs: &[ValueId], b: &mut GraphBuilder)
+    -> Result<Vec<ValueId>>
+{
+    let (x, w) = (inputs[0], inputs[1]);
+    let eps = c.attrs.float_or("epsilon", 1e-5)?;
+    let sq = b.mul(x, x)?;
+    let ms = b.reduce(ReduceOp::Mean, sq, &[b.ty(x).shape.rank() - 1], true)?;
+    let eps_c = scalar(b, b.ty(x).dtype, eps)?;
+    let inv = b.unary(UnaryOp::Rsqrt, b.add(ms, eps_c)?)?;
+    let normed = b.mul(x, inv)?;
+    Ok(vec![b.mul(normed, w)?])
 }
-
-struct MyCustomDispatch {
-    module: naga::Module,
-}
-
-impl OpDispatch for MyCustomDispatch {
-    fn dispatch(
-        &self,
-        inputs: Vec<RuntimeTensor>,
-        ctx: &mut DispatchCtx,
-    ) -> Result<Vec<RuntimeTensor>> {
-        // Compute output shape from input shapes
-        let output_shape = inputs[0].shape.clone();
-        
-        // Allocate output buffer and dispatch GPU work
-        // ... implementation ...
-        
-        todo!()
-    }
-}
-
-// Register alongside built-in operators
-let mut registry = onyxia_operators::core_operator_registry();
-registry.register("MyCustomOp", MyCustomOperator);
-let mut pipeline = onyxia_compiler::CompilerPipeline::new();
-let compiled = pipeline.compile(&graph, &registry)?;
 ```
+
+Registered via `LoweringRegistry::register(domain, op_type, rule)`; ONNX
+built-ins, Microsoft contrib ops, and your custom ops all enter through the
+same door. A hand-tuned fused kernel can be added per backend later
+(`onyxia-backend-wgpu/src/fused.rs` has the pattern); the decomposition
+remains the correctness reference it is differential-tested against.
 
 ### CLI
 
 ```bash
-# Inspect model structure
-cargo run --bin onyxia -- inspect model.onnx
+# Generate text (Gemma-style chat models; see justfile for a shortcut)
+cargo run --release -- run-model model.onnx --tokenizer <dir> --prompt "Hi" --temperature 0
 
-# Inspect specific nodes
-cargo run --bin onyxia -- inspect-node model.onnx --name "/layer0/attention/query"
+# Scripted multi-turn chat (tests KV/multi-turn decode)
+cargo run --release -- chat model.onnx --tokenizer <dir> -m "first turn" -m "second turn"
 
-# List nodes filtered by op type
-cargo run --bin onyxia -- list-nodes model.onnx --op-type MatMul --show-shapes
+# Validate: parse + lower + shape inference, no GPU
+cargo run -- validate model.onnx -v
 
-# Trace data flow around a node
-cargo run --bin onyxia -- trace-node model.onnx --name "/layer0/ffn/add" --depth 2
+# Inspect the ONNX graph
+cargo run -- inspect model.onnx
+cargo run -- inspect-node model.onnx --name "/model/layers.0/attn/q_rotary/RotaryEmbedding"
+cargo run -- list-nodes model.onnx --op-type MatMul --show-shapes
+cargo run -- trace-node model.onnx --name "/model/layers.0/ffn/add" --depth 2
 
-# Validate model compilation
-cargo run --bin onyxia -- validate model.onnx
+# DOT visualizations (ONNX-level and lowered IR)
+cargo run -- dot model.onnx -o model.dot -s summary
+cargo run -- ir-dot model.onnx -o module.dot
+```
 
-# Generate DOT visualization
-cargo run --bin onyxia -- dot model.onnx -o model.dot -s summary
-dot -Tpng model.dot -o model.png   # requires Graphviz
+## Demos
+
+`demos/gemma-chat` — egui chat UI running Gemma 3 270m fp32, native and in
+the browser (WebGPU, Chrome 149+):
+
+```bash
+cargo run --release -p gemma-chat -- models/gemma-3-270m-it-ONNX   # native
+cd demos/gemma-chat && trunk serve --release                        # web
 ```
 
 ## Prerequisites
 
-### Protocol Buffers Compiler (`protoc`)
+### Protocol Buffers compiler (`protoc`)
 
-Required for building the ONNX parser (`onyxia-onnx` uses `prost-build`). Install via your package manager:
+Required for building the ONNX parser (`onyxia-onnx` uses `prost-build`):
 
 - **macOS**: `brew install protobuf`
 - **Linux (apt)**: `apt install protobuf-compiler`
 - **Linux (dnf)**: `dnf install protobuf-compiler`
-- **Windows (winget)**: `winget install protobuf`
-- **Windows (Chocolatey)**: `choco install protoc`
+- **Windows**: `winget install protobuf` or `choco install protoc`
 
-See [protobuf installation guide](https://protobuf.dev/installation/#package-manager) for more options.
-
-## Building
+## Building and testing
 
 ```bash
 cargo build
+cargo nextest run                 # CPU tests (IR, lowering, interpreter)
+just test-all                     # + GPU tests (kernel-vs-interpreter differentials)
 ```
 
-## Testing
-
-Tests are run with [nextest](https://nexte.st/):
-
-```bash
-cargo nextest run                                   # Non-GPU tests
-cargo nextest run --run-ignored=all --no-fail-fast  # All tests including GPU
-```
-
-GPU-dependent tests are marked `#[ignore]` and require a GPU.
+The reference interpreter is the spec: every GPU kernel differential-tests
+against it, and every fused composite kernel differential-tests against its
+own decomposition on-device.
 
 ## Profiling
 
-Onyxia includes built-in support for performance profiling with [Tracy](https://github.com/wolfpld/tracy). The runtime and all major operators are instrumented with tracing spans.
+The CLI has a `tracy` feature that installs a
+[Tracy](https://github.com/wolfpld/tracy) tracing subscriber
+(`just trace-prompt "..."`). Note: the new execution stack is not yet
+instrumented with per-op spans; re-instrumentation is tracked as follow-up
+work.
 
-```bash
-# Build with Tracy profiling enabled
-cargo build --release -p onyxia-cli --features tracy
+## Example models
 
-# Run with profiling (Tracy GUI must be running)
-cargo run --release -p onyxia-cli --features tracy -- run-model [args]
-```
+The `models/` directory contains models used by tests and demos:
 
-See [PROFILING.md](PROFILING.md) for detailed setup instructions and usage guide.
-
-## Example Models
-
-The `models/` directory contains sample ONNX models for testing:
-
-- **Gemma 3 270m** (quantized LLM): `models/gemma-3-270m-it-ONNX/onnx/model_q4.onnx`
-  — 18 transformer layers, 4 attention heads, vocab size 262K.
-  Uses `MatMulNBits`, `GroupQueryAttention`, `RotaryEmbedding`.
-
-- **Gemma 3 1B** (larger model): `models/gemma-3-1b-it-ONNX/onnx/`
+- **Gemma 3 270m** — `models/gemma-3-270m-it-ONNX/onnx/model.onnx` (fp32).
+  Use fp32: the community q4 quantization badly degrades this small model.
+- **Gemma 3 1B** — `models/gemma-3-1b-it-ONNX/onnx/`
 
 ## License
 

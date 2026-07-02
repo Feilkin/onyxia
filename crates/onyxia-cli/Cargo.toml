@@ -14,11 +14,10 @@ name = "onyxia"
 path = "src/main.rs"
 
 [dependencies]
-onyxia-core.workspace = true
 onyxia-onnx.workspace = true
-onyxia-compiler.workspace = true
-onyxia-operators.workspace = true
-onyxia-runtime.workspace = true
+onyxia-ir.workspace = true
+onyxia-lower.workspace = true
+onyxia-backend-wgpu.workspace = true
 clap = { version = "4.5.58", features = ["derive"] }
 pollster = "0.4.0"
 anyhow = "1.0.101"
@@ -35,7 +34,4 @@ default = []
 tracy = ["dep:tracing-tracy"]
 
 [dev-dependencies]
-onyxia-ir.workspace = true
-onyxia-lower.workspace = true
 onyxia-backend-ref.workspace = true
-onyxia-backend-wgpu.workspace = true

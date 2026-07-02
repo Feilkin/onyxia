@@ -32,7 +32,7 @@ mod inference;
 mod sampling;
 mod tokenizer;
 
-use inference::{LlmConfig, LlmSession};
+use inference::LlmSession;
 use sampling::{SamplingConfig, sample};
 use tokenizer::{ChatMessage, Tokenizer};
 
@@ -44,7 +44,6 @@ type ModelSource = String;
 
 const MAX_TOKENS: usize = 512;
 const MAX_SEQ_LEN: usize = 2048;
-const NUM_LAYERS: usize = 26;
 
 // ── inter-thread communication ──────────────────────────────────────────────
 
@@ -473,7 +472,7 @@ async fn yield_to_browser() {
 async fn yield_to_browser() {}
 
 /// Build a session from an already-parsed graph + tokenizer (shared by both
-/// platforms). Compilation and GPU init are async so this works on the web.
+/// platforms). Lowering and GPU init are async so this works on the web.
 async fn build_session(
     graph: onyxia_onnx::Graph,
     tokenizer: Tokenizer,
@@ -481,28 +480,21 @@ async fn build_session(
 ) -> Result<(LlmSession, Tokenizer, String)> {
     progress("Initializing GPU…");
     yield_to_browser().await;
-    let runtime = onyxia_runtime::Runtime::new()
+    let ctx = onyxia_backend_wgpu::GpuContext::new()
         .await
-        .context("Failed to initialise GPU runtime")?;
-    let gpu_name = runtime.adapter_info().name.clone();
+        .context("Failed to initialise GPU context")?;
+    let gpu_name = ctx.adapter_info.name.clone();
 
-    progress("Compiling model…");
+    progress("Lowering model to IR…");
     yield_to_browser().await;
-    let registry = onyxia_operators::core_operator_registry();
-    let compiled = onyxia_compiler::compile_async(&graph, &registry, runtime.gpu())
-        .await
-        .context("Compilation failed")?;
+    let module = onyxia_lower::lower(graph, &onyxia_lower::standard_registry())
+        .context("Lowering failed")?;
 
     progress("Uploading weights to GPU…");
     yield_to_browser().await;
-    let executor = runtime.load_model(compiled).context("Failed to load model")?;
-    let session = LlmSession::new(
-        executor,
-        &LlmConfig {
-            max_seq_len: MAX_SEQ_LEN,
-            num_layers: NUM_LAYERS,
-        },
-    );
+    let backend = onyxia_backend_wgpu::WgpuBackend::new(ctx);
+    let session = LlmSession::new(&backend, module, MAX_SEQ_LEN)
+        .context("Failed to prepare session")?;
     Ok((session, tokenizer, gpu_name))
 }
 
