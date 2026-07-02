@@ -249,6 +249,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs models/gemma-3-270m-it-ONNX (not in git); run via `just test-all`"]
     fn test_tokenizer_special_token_checks() {
         // Get workspace root by going up from CARGO_MANIFEST_DIR
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");

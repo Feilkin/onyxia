@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Dense debuginfo is useless in CI and slows the build.
+  CARGO_PROFILE_DEV_DEBUG: 0
+
+jobs:
+  test:
+    name: Build, lint, and test (CPU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable + wasm32 + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test (CPU — GPU differentials are `#[ignore]`d, run locally via `just test-all`)
+        run: cargo nextest run --workspace
+
+      - name: Doctests (not covered by nextest)
+        run: cargo test --doc --workspace
+
+      - name: wasm32 check (core crates + web demo)
+        run: cargo check --target wasm32-unknown-unknown -p onyxia-ir -p onyxia-lower -p onyxia-backend-wgpu -p gemma-chat
+
+      - name: Docs (deny rustdoc warnings)
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings

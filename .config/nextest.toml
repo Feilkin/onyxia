@@ -1,14 +1,15 @@
 # Nextest configuration for Onyxia
 #
-# GPU tests must run serially to avoid memory exhaustion from parallel model loading.
+# GPU tests must run serially: each test prepares its own device sessions,
+# and parallel model loading exhausts GPU memory.
 
-# Define test groups
 [test-groups]
-# All GPU tests go into the "serial" group which runs with max_threads=1
 gpu-tests = { max-threads = 1 }
 
 [profile.default]
-# Assign GPU-intensive tests to the serial group
+# Every GPU differential suite lives in a test binary named `gpu_test`
+# (onyxia-backend-wgpu, onyxia-backend-cubecl). They are `#[ignore]`d, so
+# they only run under `--run-ignored=all` (`just test-all`).
 [[profile.default.overrides]]
-filter = 'test(~generation) + test(~gemma) + test(~llm) + test(~e2e)'
+filter = 'binary(gpu_test)'
 test-group = 'gpu-tests'
