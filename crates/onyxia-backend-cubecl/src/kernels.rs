@@ -14,6 +14,13 @@
 //! - Physical dtypes mirror the wgpu backend: f32, i32 (logical I64), u32
 //!   (logical Bool).
 
+// `#[cube]` fns are eDSL code, not plain Rust: the macro requires the
+// `let mut r = 0; if comptime… { r = … }` shape (branch typing) and does
+// not expand compound assignment, so clippy's suggestions here would not
+// compile or would fight the macro.
+#![allow(clippy::assign_op_pattern)]
+#![allow(unused_assignments)]
+
 use cubecl::prelude::*;
 
 pub const MAX_RANK: usize = 8;

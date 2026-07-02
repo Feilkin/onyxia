@@ -14,7 +14,6 @@ use tokenizers::Tokenizer as HfTokenizer;
 pub struct SpecialTokens {
     pub bos: u32,
     pub eos: u32,
-    pub pad: u32,
     /// Gemma's turn terminator `<end_of_turn>`. Instruction-tuned chat models
     /// end each turn with this token rather than `<eos>`, so generation must
     /// stop on it. `None` for base models that don't define it.
@@ -26,7 +25,6 @@ impl Default for SpecialTokens {
         Self {
             bos: 2, // <bos> token
             eos: 1, // <eos> token
-            pad: 0, // <pad> token
             end_of_turn: None,
         }
     }
@@ -60,6 +58,7 @@ impl Tokenizer {
     /// let tokenizer = Tokenizer::from_file("models/gemma-3-270m-it-ONNX/tokenizer.json")?;
     /// # Ok::<(), anyhow::Error>(())
     /// ```
+    #[allow(dead_code)] // native-only; wasm fetches bytes and uses `from_bytes`
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let inner = HfTokenizer::from_file(path)
             .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
@@ -107,6 +106,7 @@ impl Tokenizer {
     ///     .with_chat_template_file("models/gemma-3-270m-it-ONNX/chat_template.jinja")?;
     /// # Ok::<(), anyhow::Error>(())
     /// ```
+    #[allow(dead_code)] // native-only; wasm fetches the template and uses `with_chat_template`
     pub fn with_chat_template_file<P: AsRef<Path>>(mut self, path: P) -> Result<Self> {
         let template =
             std::fs::read_to_string(path).context("Failed to read chat template file")?;
@@ -115,14 +115,9 @@ impl Tokenizer {
     }
 
     /// Set a chat template string directly.
+    #[allow(dead_code)] // used on wasm (template arrives over HTTP); native reads the file
     pub fn with_chat_template(mut self, template: String) -> Self {
         self.chat_template = Some(template);
-        self
-    }
-
-    /// Set custom special token IDs.
-    pub fn with_special_tokens(mut self, special_tokens: SpecialTokens) -> Self {
-        self.special_tokens = special_tokens;
         self
     }
 
@@ -177,30 +172,10 @@ impl Tokenizer {
         Ok(text)
     }
 
-    /// Get the vocabulary size.
-    pub fn vocab_size(&self) -> usize {
-        self.inner.get_vocab_size(false)
-    }
-
     /// Check if a token ID is the EOS (end-of-sequence) token.
     pub fn is_eos(&self, token_id: i64) -> bool {
         token_id == self.special_tokens.eos as i64
             || self.special_tokens.end_of_turn == Some(token_id as u32)
-    }
-
-    /// Get the EOS token ID.
-    pub fn eos_token_id(&self) -> i64 {
-        self.special_tokens.eos as i64
-    }
-
-    /// Get the BOS token ID.
-    pub fn bos_token_id(&self) -> i64 {
-        self.special_tokens.bos as i64
-    }
-
-    /// Get the PAD token ID.
-    pub fn pad_token_id(&self) -> i64 {
-        self.special_tokens.pad as i64
     }
 
     /// Apply the chat template to format a conversation.
@@ -262,50 +237,15 @@ impl Tokenizer {
     }
 }
 
-/// Format a user message with the Gemma instruction chat template (simple version).
-///
-/// Gemma uses the format:
-/// ```text
-/// <start_of_turn>user
-/// {user_message}<end_of_turn>
-/// <start_of_turn>model
-/// ```
-///
-/// This is a simple fallback if you don't want to use the full Jinja template.
-///
-/// # Example
-/// ```
-/// use onyxia_cli::tokenizer::format_chat_prompt;
-/// let prompt = format_chat_prompt("What is the capital of France?");
-/// assert!(prompt.contains("<start_of_turn>user"));
-/// assert!(prompt.contains("<start_of_turn>model"));
-/// ```
-pub fn format_chat_prompt(user_message: &str) -> String {
-    format!(
-        "<start_of_turn>user\n{}<end_of_turn>\n<start_of_turn>model\n",
-        user_message
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_format_chat_prompt() {
-        let prompt = format_chat_prompt("Hello!");
-        assert!(prompt.contains("<start_of_turn>user"));
-        assert!(prompt.contains("Hello!"));
-        assert!(prompt.contains("<end_of_turn>"));
-        assert!(prompt.contains("<start_of_turn>model"));
-    }
 
     #[test]
     fn test_special_tokens_default() {
         let tokens = SpecialTokens::default();
         assert_eq!(tokens.bos, 2);
         assert_eq!(tokens.eos, 1);
-        assert_eq!(tokens.pad, 0);
     }
 
     #[test]
@@ -333,9 +273,6 @@ mod tests {
 
         assert!(tokenizer.is_eos(1));
         assert!(!tokenizer.is_eos(2));
-        assert_eq!(tokenizer.eos_token_id(), 1);
-        assert_eq!(tokenizer.bos_token_id(), 2);
-        assert_eq!(tokenizer.pad_token_id(), 0);
     }
 
     #[test]

@@ -17,7 +17,8 @@
 //!   becomes a late-bound symbol; one that is consumed by an actual runtime
 //!   tensor operation is materialized when constant, and is an error
 //!   otherwise (transformer graphs don't do this).
-//! - Weight initializers move (not copy) into the module's [`ConstPool`].
+//! - Weight initializers move (not copy) into the module's
+//!   [`ConstPool`](onyxia_ir::ConstPool).
 //!
 //! Version handling: `onyxia-onnx` does not currently expose opset imports,
 //! so rules detect old-vs-new op forms *structurally* (e.g. Reduce axes as
@@ -138,7 +139,7 @@ impl LowerCtx<'_> {
         match self.lowered(i)?.clone() {
             Lowered::Value(v) => Ok(v),
             Lowered::Content(c) => {
-                let consts: Option<Vec<i64>> = c.elems.iter().map(|e| signed_const_of(e)).collect();
+                let consts: Option<Vec<i64>> = c.elems.iter().map(signed_const_of).collect();
                 let Some(vals) = consts else {
                     return Err(Error::Unsupported(format!(
                         "node '{}': a symbolic shape value is consumed by a runtime \

@@ -6,12 +6,18 @@
 //! application layer — the runtime itself knows nothing about LLMs.
 //!
 //! Usage:
-//!   gemma-chat <model-dir>
 //!
-//! Where <model-dir> contains:
-//!   onnx/model.onnx          — full-precision ONNX model (+ .onnx_data)
-//!   tokenizer.json           — HuggingFace tokenizer
-//!   chat_template.jinja      — Jinja2 chat template (optional)
+//! ```text
+//! gemma-chat <model-dir>
+//! ```
+//!
+//! Where `<model-dir>` contains:
+//!
+//! ```text
+//! onnx/model.onnx          — full-precision ONNX model (+ .onnx_data)
+//! tokenizer.json           — HuggingFace tokenizer
+//! chat_template.jinja      — Jinja2 chat template (optional)
+//! ```
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -199,7 +205,7 @@ impl eframe::App for ChatApp {
         let is_ready = matches!(self.status, AppStatus::Ready);
 
         // ── header ──────────────────────────────────────────────────────────
-        egui::TopBottomPanel::top("header").show_inside(ui, |ui| {
+        egui::Panel::top("header").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Gemma 3 270M · Onyxia");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -228,7 +234,7 @@ impl eframe::App for ChatApp {
         });
 
         // ── input panel ─────────────────────────────────────────────────────
-        egui::TopBottomPanel::bottom("input_panel").show_inside(ui, |ui| {
+        egui::Panel::bottom("input_panel").show_inside(ui, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 let input_resp = ui.add_enabled(
@@ -396,7 +402,10 @@ async fn run_inference(
                     }
                 };
 
-                let mut rng = StdRng::from_seed(rand::random());
+                let mut rng = match sampling.seed {
+                    Some(seed) => rand::SeedableRng::seed_from_u64(seed),
+                    None => StdRng::from_seed(rand::random()),
+                };
                 let mut token = sample(&logits, &sampling, &mut rng);
                 let mut response_tokens: Vec<i64> = Vec::new();
 

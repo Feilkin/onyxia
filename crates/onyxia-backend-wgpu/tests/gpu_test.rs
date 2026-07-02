@@ -408,7 +408,7 @@ fn fused_kernels_match_decompositions() {
     b.output("out", soft);
     let module = b.finish().unwrap();
 
-    let inputs = vec![
+    let inputs = [
         (
             "x",
             Tensor::from_f32(&f32s(48, |i| (i as f32 * 0.37).sin() * 3.0), &[3, 16]).unwrap(),

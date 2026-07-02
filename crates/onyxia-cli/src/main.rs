@@ -771,8 +771,6 @@ async fn cmd_run_model(
     stream: bool,
     backend: BackendKind,
 ) -> Result<()> {
-    use onyxia_cli::llm::LlmSession;
-
     println!("Loading model from {}...", model_path.display());
     let graph = onyxia_onnx::load_and_parse_model(&model_path)
         .with_context(|| format!("Failed to load model from {}", model_path.display()))?;
