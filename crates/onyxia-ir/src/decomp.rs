@@ -280,7 +280,21 @@ fn rotary_embedding(
         )));
     }
     let (bsz, seq, hidden) = (x_dims[0].clone(), x_dims[1].clone(), x_dims[2].clone());
-    let heads = c.attrs.int_or("num_heads", 1)?.max(1) as u64;
+    // num_heads=0 (the common export) means "infer": the cache fixes the
+    // rotary width R; when hidden splits evenly into R-wide heads, rotation
+    // is per head (matches the old kernel and onnxruntime).
+    let heads = match c.attrs.int_or("num_heads", 0)? {
+        n if n > 0 => n as u64,
+        _ => {
+            let cache_r = b.ty(cos_cache).shape.dims()[1]
+                .as_const()
+                .map(|half| half * 2);
+            match (hidden.as_const(), cache_r) {
+                (Some(h), Some(r)) if r > 0 && h % r == 0 => h / r,
+                _ => 1,
+            }
+        }
+    };
     let d = hidden
         .clone()
         .div_exact(&DimExpr::constant(heads))
@@ -712,6 +726,29 @@ mod tests {
         );
         // x1=(1,2), x2=(3,4): out1 = x1·0 − x2·1 = (−3,−4); out2 = x2·0 + x1·1 = (1,2).
         assert_close(&rot[0].1.to_f32().unwrap(), &[-3., -4., 1., 2.], 1e-6);
+    }
+
+    #[test]
+    fn rotary_infers_heads_from_cache_width() {
+        // num_heads=0 (as exported by optimum for Gemma): hidden=8 with a
+        // cache half-width of 2 (R=4) must infer 2 heads and rotate BOTH,
+        // not treat the input as one 8-wide head. Regression test for the
+        // C4 parity failure (only head 0 was rotated).
+        let x = Tensor::from_f32(&[1., 2., 3., 4., 5., 6., 7., 8.], &[1, 1, 8]).unwrap();
+        let cos = Tensor::from_f32(&[1., 1., 0., 0.], &[2, 2]).unwrap();
+        let sin = Tensor::from_f32(&[0., 0., 1., 1.], &[2, 2]).unwrap();
+        let pos1 = Tensor::from_i64(&[1], &[1, 1]).unwrap();
+        let rot = run_composite(
+            "com.microsoft.RotaryEmbedding",
+            Attrs::new().with("num_heads", AttrValue::Int(0)),
+            vec![("x", x), ("pos", pos1), ("cos", cos), ("sin", sin)],
+            vec![TensorType::of(DataType::F32, &[1, 1, 8])],
+        );
+        assert_close(
+            &rot[0].1.to_f32().unwrap(),
+            &[-3., -4., 1., 2., -7., -8., 5., 6.],
+            1e-6,
+        );
     }
 
     /// Naive attention in plain Rust, for GQA cross-checking.

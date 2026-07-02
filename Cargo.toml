@@ -35,6 +35,10 @@ onyxia-onnx = { path = "crates/onyxia-onnx" }
 onyxia-operators = { path = "crates/onyxia-operators" }
 onyxia-compiler = { path = "crates/onyxia-compiler" }
 onyxia-runtime = { path = "crates/onyxia-runtime" }
+onyxia-ir = { path = "crates/onyxia-ir" }
+onyxia-lower = { path = "crates/onyxia-lower" }
+onyxia-backend-ref = { path = "crates/onyxia-backend-ref" }
+onyxia-backend-wgpu = { path = "crates/onyxia-backend-wgpu" }
 
 # 3rd party
 tracing = "0.1.44"
