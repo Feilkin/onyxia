@@ -147,17 +147,6 @@ cargo run --release -p gemma-chat -- models/gemma-3-270m-it-ONNX   # native
 cd demos/gemma-chat && trunk serve --release                        # web
 ```
 
-## Prerequisites
-
-### Protocol Buffers compiler (`protoc`)
-
-Required for building the ONNX parser (`onyxia-onnx` uses `prost-build`):
-
-- **macOS**: `brew install protobuf`
-- **Linux (apt)**: `apt install protobuf-compiler`
-- **Linux (dnf)**: `dnf install protobuf-compiler`
-- **Windows**: `winget install protobuf` or `choco install protoc`
-
 ## Building and testing
 
 ```bash
