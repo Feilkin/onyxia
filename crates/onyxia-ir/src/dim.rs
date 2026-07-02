@@ -88,6 +88,11 @@ impl SymbolTable {
     pub fn is_empty(&self) -> bool {
         self.names.is_empty()
     }
+
+    /// All symbol names, in allocation (SymId) order.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.names.iter().map(String::as_str)
+    }
 }
 
 /// Concrete values for dimension symbols, established at binding time.

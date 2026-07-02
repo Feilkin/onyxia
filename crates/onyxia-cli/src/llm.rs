@@ -1,235 +1,206 @@
 //! LLM-specific session management with KV cache support.
+//!
+//! Wraps a wgpu-backend [`Session`] (onyxia-lower + onyxia-backend-wgpu) and
+//! manages the KV cache **on-device**: `present.*` output handles are stored
+//! and fed back as `past_key_values.*` inputs on the next call — no host
+//! round-trip. Only the logits are downloaded.
+//!
+//! This is generic iterative-model plumbing built on public session APIs
+//! (device-resident tensors, symbol binding from input shapes); onyxia itself
+//! knows nothing about LLMs.
 
-use anyhow::{Context, Result};
-use onyxia_runtime::{DispatchExecutor, Tensor};
+use anyhow::{Context, Result, bail};
+use onyxia_backend_wgpu::{GpuTensor, WgpuBackend, WgpuSession};
+use onyxia_ir::interp::Tensor;
+use onyxia_ir::{Backend, Bindings, DataType, Module, Session, SymbolTable, SymbolicShape};
+use std::collections::HashMap;
 
-/// Configuration for LLM session.
-#[derive(Debug, Clone)]
-pub struct LlmConfig {
-    /// Maximum sequence length (buffers pre-allocated to this size).
-    pub max_seq_len: usize,
-    /// Number of transformer layers (for KV cache discovery).
-    pub num_layers: usize,
+/// One module input: everything needed to construct a bound tensor for it.
+struct InputSpec {
+    name: String,
+    dtype: DataType,
+    shape: SymbolicShape,
 }
 
-/// High-level LLM inference session with KV cache management.
-///
-/// Wraps a `DispatchExecutor` and manages KV cache via explicit CPU-side storage.
-/// After each forward pass, present.* outputs are downloaded and stored,
-/// then uploaded as past_key_values.* inputs on the next call.
+/// High-level LLM inference session with device-resident KV cache.
 pub struct LlmSession {
-    executor: DispatchExecutor,
-    /// Current past sequence length (grows each decode step).
-    past_seq_len: usize,
-    /// Maximum sequence length (buffers pre-allocated to this).
-    max_seq_len: usize,
+    session: WgpuSession,
+    inputs: Vec<InputSpec>,
+    symbols: SymbolTable,
     /// KV cache tensor name pairs: (present_output_name, past_input_name).
     kv_pairs: Vec<(String, String)>,
-    /// Stored KV cache tensors (downloaded from present.* after each forward pass).
-    /// Keyed by past_key_values.*.* name.
-    kv_cache: std::collections::HashMap<String, Tensor>,
+    /// Device-resident KV handles, keyed by past_key_values.* name.
+    kv_cache: HashMap<String, GpuTensor>,
+    /// Current past sequence length (grows each call).
+    past_seq_len: usize,
+    /// Hard bound on total sequence length (clean error, not a GPU fault).
+    max_seq_len: usize,
 }
 
 impl LlmSession {
-    /// Create from a loaded DispatchExecutor + model config.
+    /// Prepare `module` on `backend` and set up KV-cache plumbing.
     ///
-    /// Discovers KV cache pairs by scanning tensor names in the compiled model
-    /// and initializes them with zeros.
-    pub fn new(executor: DispatchExecutor, config: &LlmConfig) -> Self {
-        let kv_pairs = discover_kv_pairs(&executor);
-
-        // Initialize KV cache with empty HashMap - will be populated after first run
-        let kv_cache = std::collections::HashMap::new();
-
-        Self {
-            executor,
-            past_seq_len: 0,
-            max_seq_len: config.max_seq_len,
+    /// Input specs and KV pairs are extracted before `prepare` consumes the
+    /// module, so the (potentially GiB-sized) constant pool is never cloned.
+    pub fn new(backend: &WgpuBackend, module: Module, max_seq_len: usize) -> Result<Self> {
+        let inputs: Vec<InputSpec> = module
+            .inputs
+            .iter()
+            .map(|(name, id)| {
+                let ty = &module.value(*id).ty;
+                InputSpec {
+                    name: name.clone(),
+                    dtype: ty.dtype,
+                    shape: ty.shape.clone(),
+                }
+            })
+            .collect();
+        let kv_pairs = discover_kv_pairs(&module);
+        let symbols = module.symbols.clone();
+        let session = backend
+            .prepare(module)
+            .context("Failed to prepare model on the wgpu backend")?;
+        Ok(Self {
+            session,
+            inputs,
+            symbols,
             kv_pairs,
-            kv_cache,
-        }
+            kv_cache: HashMap::new(),
+            past_seq_len: 0,
+            max_seq_len,
+        })
     }
 
-    /// Prefill: process the full prompt.
-    ///
-    /// - Passes past_sequence_length = 0 via model inputs
-    /// - Runs with seq_len = prompt_len
-    /// - After run, downloads present.* outputs and stores as KV cache for next step
-    /// - Returns logits \[vocab_size\] for last position
+    /// Prefill: process the full prompt. Returns logits \[vocab_size\] for
+    /// the last position.
     pub fn prefill(&mut self, input_ids: &[i64]) -> Result<Vec<f32>> {
-        let prompt_len = input_ids.len();
-
-        if prompt_len == 0 {
-            anyhow::bail!("Cannot prefill with empty input_ids");
+        if input_ids.is_empty() {
+            bail!("Cannot prefill with empty input_ids");
         }
-
-        if prompt_len > self.max_seq_len {
-            anyhow::bail!(
+        if input_ids.len() > self.max_seq_len {
+            bail!(
                 "Input length {} exceeds max_seq_len {}",
-                prompt_len,
+                input_ids.len(),
                 self.max_seq_len
             );
         }
-
-        // Create input tensors including KV caches
-        let mut inputs = create_prefill_inputs(input_ids, 0);
-
-        // Add KV cache tensors
-        // On first run, create empty tensors with shape [1, num_heads, 0, head_dim]
-        for (_present_name, past_name) in &self.kv_pairs {
-            if let Some(tensor) = self.kv_cache.get(past_name) {
-                // Use existing cache from previous iteration
-                inputs.push((past_name.as_str(), tensor.clone()));
-            } else {
-                // First run: create empty KV cache with past_sequence_length=0
-                // Shape: [batch_size=1, num_heads, past_seq_len=0, head_dim]
-                // For Gemma, num_heads=1 for KV, head_dim=256
-                let empty_kv = Tensor::from_vec(Vec::<f32>::new(), &[1, 1, 0, 256]);
-                inputs.push((past_name.as_str(), empty_kv));
-            }
-        }
-
-        // Convert to the format expected by DispatchExecutor::run
-        let input_refs: Vec<(&str, Tensor)> = inputs.into_iter().collect();
-
-        // Run the model
-        let outputs = self.executor.run_blocking(&input_refs).with_context(|| {
-            format!(
-                "Prefill execution failed (prompt_len={}, inputs={:?})",
-                prompt_len,
-                input_refs
-                    .iter()
-                    .map(|(name, tensor)| { format!("{}:{:?}", name, tensor.shape()) })
-                    .collect::<Vec<_>>()
-            )
-        })?;
-
-        // Download and store present.* outputs as KV cache for next step
-        for (present_name, past_name) in &self.kv_pairs {
-            if let Some(tensor) = outputs.get(present_name) {
-                let tensor_clone: Tensor = tensor.clone();
-                self.kv_cache.insert(past_name.clone(), tensor_clone);
-            }
-        }
-
-        // Update sequence length
-        self.past_seq_len = prompt_len;
-
-        // Extract logits for the last position only
-        // Logits shape is [batch=1, seq_len=max_seq_len, vocab_size]
-        // We need logits[0, prompt_len-1, :] (last token of the prompt)
-        let logits_tensor = outputs.get("logits").context("Missing logits output")?;
-        let logits_full = logits_tensor
-            .to_vec::<f32>()
-            .context("Failed to convert logits to f32")?;
-
-        // Extract the vocab_size from the shape
-        let shape = logits_tensor.shape();
-        if shape.len() != 3 || shape[0] != 1 {
-            anyhow::bail!(
-                "Expected logits shape [1, seq_len, vocab_size], got {:?}",
-                shape
-            );
-        }
-
-        let vocab_size = shape[2];
-
-        // Calculate offset to last valid position: [0, prompt_len-1, :]
-        let last_pos = prompt_len - 1;
-        let offset = last_pos * vocab_size;
-        let logits = logits_full[offset..offset + vocab_size].to_vec();
-
-        Ok(logits)
+        let positions: Vec<i64> = (0..input_ids.len() as i64).collect();
+        pollster::block_on(self.step(input_ids, &positions))
     }
 
-    /// Decode: generate one next-token logit vector.
-    ///
-    /// - Increments past_sequence_length
-    /// - Runs with seq_len = 1
-    /// - After run, downloads present.* outputs and stores as KV cache
-    /// - Returns logits \\[vocab_size\\]
+    /// Decode: generate one next-token logit vector \[vocab_size\].
     pub fn decode(&mut self, token_id: i64) -> Result<Vec<f32>> {
         if self.past_seq_len >= self.max_seq_len {
-            anyhow::bail!(
+            bail!(
                 "Sequence length {} would exceed max_seq_len {}",
                 self.past_seq_len + 1,
                 self.max_seq_len
             );
         }
+        let position = self.past_seq_len as i64;
+        pollster::block_on(self.step(&[token_id], &[position]))
+    }
 
-        // Create input tensors including KV caches
-        let mut inputs = create_decode_inputs(token_id, self.past_seq_len);
+    /// One forward pass over `ids`. Uploads bound inputs, feeds stored KV
+    /// handles back, stores the new `present.*` handles, downloads logits.
+    async fn step(&mut self, ids: &[i64], positions: &[i64]) -> Result<Vec<f32>> {
+        let seq = ids.len();
+        let bindings = self.bindings_for(seq)?;
 
-        // Add KV cache tensors
-        for (_present_name, past_name) in &self.kv_pairs {
-            if let Some(tensor) = self.kv_cache.get(past_name) {
-                inputs.push((past_name.as_str(), tensor.clone()));
-            }
+        let mut inputs: Vec<(String, GpuTensor)> = Vec::with_capacity(self.inputs.len());
+        for i in 0..self.inputs.len() {
+            let (name, dtype) = (self.inputs[i].name.clone(), self.inputs[i].dtype);
+            let tensor = if name == "input_ids" {
+                self.session.upload(&Tensor::from_i64(ids, &[1, seq])?)?
+            } else if name == "position_ids" {
+                self.session
+                    .upload(&Tensor::from_i64(positions, &[1, seq])?)?
+            } else if name.starts_with("past_key_values.") {
+                if let Some(t) = self.kv_cache.get(&name) {
+                    t.clone()
+                } else {
+                    // First step: empty cache in the declared shape (past=0).
+                    let dims = self.inputs[i].shape.eval(&bindings)?;
+                    let numel: usize = dims.iter().product();
+                    match dtype {
+                        DataType::F32 => self
+                            .session
+                            .upload(&Tensor::from_f32(&vec![0.0; numel], &dims)?)?,
+                        dt => bail!("KV input '{name}' has unsupported dtype {dt}"),
+                    }
+                }
+            } else {
+                // Masks and friends: all-ones in the declared shape.
+                let dims = self.inputs[i].shape.eval(&bindings)?;
+                let numel: usize = dims.iter().product();
+                match dtype {
+                    DataType::I64 => self
+                        .session
+                        .upload(&Tensor::from_i64(&vec![1; numel], &dims)?)?,
+                    DataType::F32 => self
+                        .session
+                        .upload(&Tensor::from_f32(&vec![1.0; numel], &dims)?)?,
+                    dt => bail!("input '{name}' has unsupported dtype {dt}"),
+                }
+            };
+            inputs.push((name, tensor));
         }
 
-        // Convert to the format expected by DispatchExecutor::run
-        let input_refs: Vec<(&str, Tensor)> = inputs.into_iter().collect();
-
-        // Run the model
-        let outputs = self.executor.run_blocking(&input_refs).with_context(|| {
+        let refs: Vec<(&str, GpuTensor)> = inputs
+            .iter()
+            .map(|(n, t)| (n.as_str(), t.clone()))
+            .collect();
+        let outputs = self.session.run(&refs).await.with_context(|| {
             format!(
-                "Decode execution failed (token={}, past_seq_len={}, inputs={:?})",
-                token_id,
-                self.past_seq_len,
-                input_refs
-                    .iter()
-                    .map(|(name, tensor)| { format!("{}:{:?}", name, tensor.shape()) })
-                    .collect::<Vec<_>>()
+                "Model execution failed (seq={seq}, past={})",
+                self.past_seq_len
             )
         })?;
 
-        // Download and store present.* outputs as KV cache for next step
-        for (present_name, past_name) in &self.kv_pairs {
-            if let Some(tensor) = outputs.get(present_name) {
-                let tensor_clone: Tensor = tensor.clone();
-                self.kv_cache.insert(past_name.clone(), tensor_clone);
-            }
+        // Keep the new present.* handles on-device for the next call.
+        for (present, past) in self.kv_pairs.clone() {
+            let (_, t) = outputs
+                .iter()
+                .find(|(n, _)| *n == present)
+                .with_context(|| format!("output '{present}' missing"))?;
+            self.kv_cache.insert(past, t.clone());
         }
+        self.past_seq_len += seq;
 
-        // Update sequence length
-        self.past_seq_len += 1;
-
-        // Extract logits for the current position (position 0 in decode mode)
-        // Logits shape is [batch=1, seq_len=1, vocab_size] in decode mode
-        let logits_tensor = outputs.get("logits").context("Missing logits output")?;
-        let logits_full = logits_tensor
-            .to_vec::<f32>()
-            .context("Failed to convert logits to f32")?;
-
-        // Extract the vocab_size from the shape
-        let shape = logits_tensor.shape();
-        if shape.len() != 3 || shape[0] != 1 {
-            anyhow::bail!(
-                "Expected logits shape [1, seq_len, vocab_size], got {:?}",
-                shape
-            );
-        }
-
-        let vocab_size = shape[2];
-
-        // For decode with seq_len=1, we want position 0: [0, 0, :]
-        let offset = 0;
-        let logits = logits_full[offset..offset + vocab_size].to_vec();
-
-        Ok(logits)
+        // Download logits; return the last position ([1, S, V] → [V]).
+        let (_, logits) = outputs
+            .iter()
+            .find(|(n, _)| n == "logits")
+            .context("output 'logits' missing")?;
+        let logits = self.session.download(logits).await?;
+        let vocab = *logits.shape().last().context("scalar logits output")?;
+        let all = logits.to_f32()?;
+        Ok(all[(seq - 1) * vocab..seq * vocab].to_vec())
     }
 
-    /// Reset state for a new conversation.
+    fn bindings_for(&self, seq: usize) -> Result<Bindings> {
+        let mut bindings = Bindings::new();
+        for (name, value) in [
+            ("batch_size", 1u64),
+            ("sequence_length", seq as u64),
+            ("past_sequence_length", self.past_seq_len as u64),
+            ("total_sequence_length", (self.past_seq_len + seq) as u64),
+        ] {
+            if let Some(sym) = self.symbols.get(name) {
+                bindings.bind(sym, value)?;
+            }
+        }
+        Ok(bindings)
+    }
+
+    /// Reset the position counter but keep the KV cache (diagnostics only;
+    /// the stale cache no longer matches the bound shapes and will error).
     pub fn reset(&mut self) {
         self.past_seq_len = 0;
     }
 
     /// Reset state and clear the KV cache for a completely fresh prefill.
-    ///
-    /// Unlike `reset()`, this drops the stored KV tensors so the next
-    /// `prefill()` starts from an empty context rather than reusing stale
-    /// cache from the previous conversation. Required when re-prefilling a
-    /// full conversation each turn (multi-turn chat).
+    /// Required when re-prefilling a full conversation each turn.
     pub fn reset_full(&mut self) {
         self.past_seq_len = 0;
         self.kv_cache.clear();
@@ -246,82 +217,20 @@ impl LlmSession {
     }
 }
 
-/// Create input tensors for prefill phase.
-fn create_prefill_inputs(input_ids: &[i64], _past_seq_len: usize) -> Vec<(&'static str, Tensor)> {
-    let prompt_len = input_ids.len();
-    // total_sequence_length = prompt_len (no past tokens during prefill)
-    let total_seq_len = prompt_len;
-
-    vec![
-        (
-            "input_ids",
-            Tensor::from_vec(input_ids.to_vec(), &[1, prompt_len]),
-        ),
-        (
-            "attention_mask",
-            Tensor::from_vec(vec![1i64; prompt_len], &[1, prompt_len]),
-        ),
-        (
-            "position_ids",
-            Tensor::from_vec((0..prompt_len as i64).collect::<Vec<_>>(), &[1, prompt_len]),
-        ),
-    ]
-}
-
-/// Create input tensors for decode phase.
-fn create_decode_inputs(token_id: i64, past_seq_len: usize) -> Vec<(&'static str, Tensor)> {
-    // total_sequence_length = past_seq_len (already generated) + 1 (current token)
-    let total_seq_len = past_seq_len + 1;
-
-    vec![
-        ("input_ids", Tensor::from_vec(vec![token_id], &[1, 1])),
-        // attention_mask covers all tokens: past + current
-        (
-            "attention_mask",
-            Tensor::from_vec(vec![1i64; total_seq_len], &[1, total_seq_len]),
-        ),
-        (
-            "position_ids",
-            Tensor::from_vec(vec![past_seq_len as i64], &[1, 1]),
-        ),
-    ]
-}
-
-/// Discover KV cache tensor pairs by scanning the compiled model's input/output registers.
-///
-/// Matches patterns like:
-/// - Output: `present.{N}.key`, `present.{N}.value`
-/// - Input: `past_key_values.{N}.key`, `past_key_values.{N}.value`
-fn discover_kv_pairs(executor: &DispatchExecutor) -> Vec<(String, String)> {
-    let mut pairs = Vec::new();
-
-    let input_names = executor.input_names();
-    let output_names = executor.output_names();
-
-    // Create a set of input names for fast lookup
-    let input_set: std::collections::HashSet<&str> = input_names.into_iter().collect();
-
-    // Scan output names for present.* patterns
-    for &output_name in &output_names {
-        // Look for tensors with pattern "present.{layer}.{type}"
-        if output_name.starts_with("present.") {
-            // Extract the layer number and type (key or value)
-            // Example: "present.0.key" -> layer=0, type="key"
-            let parts: Vec<&str> = output_name.split('.').collect();
-            if parts.len() == 3 && parts[0] == "present" {
-                let layer = parts[1];
-                let kv_type = parts[2]; // "key" or "value"
-
-                // Construct the corresponding past_key_values name
-                let past_name = format!("past_key_values.{}.{}", layer, kv_type);
-
-                // Verify that the past tensor exists in the inputs
-                if input_set.contains(past_name.as_str()) {
-                    pairs.push((output_name.to_string(), past_name));
-                }
-            }
-        }
-    }
-
-    pairs
+/// Discover KV cache pairs by name: `present.{N}.{key|value}` outputs paired
+/// with `past_key_values.{N}.{key|value}` inputs.
+fn discover_kv_pairs(module: &Module) -> Vec<(String, String)> {
+    let input_names: std::collections::HashSet<&str> =
+        module.inputs.iter().map(|(n, _)| n.as_str()).collect();
+    module
+        .outputs
+        .iter()
+        .filter_map(|(out, _)| {
+            let rest = out.strip_prefix("present.")?;
+            let past = format!("past_key_values.{rest}");
+            input_names
+                .contains(past.as_str())
+                .then(|| (out.clone(), past))
+        })
+        .collect()
 }

@@ -22,6 +22,8 @@ pub const WORKGROUP_SIZE: u32 = 256;
 pub struct GpuContext {
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
+    /// Adapter description (name, backend) for display/diagnostics.
+    pub adapter_info: wgpu::AdapterInfo,
 }
 
 impl GpuContext {
@@ -35,6 +37,7 @@ impl GpuContext {
             })
             .await
             .map_err(|e| Error::Runtime(format!("no suitable GPU adapter: {e}")))?;
+        let adapter_info = adapter.get_info();
         // Take the adapter's full limits: model weights (embedding tables)
         // exceed the 128/256 MiB downlevel buffer defaults.
         let (device, queue) = adapter
@@ -52,6 +55,7 @@ impl GpuContext {
         Ok(Self {
             device: Arc::new(device),
             queue: Arc::new(queue),
+            adapter_info,
         })
     }
 
