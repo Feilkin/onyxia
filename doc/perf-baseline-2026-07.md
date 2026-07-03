@@ -5,6 +5,18 @@ comes from, measured on an RTX 3060 Ti (Vulkan) with the new benchmark
 tooling. Numbers below are the baseline to beat; re-run after every kernel
 change.
 
+> **Status update 2 (same day):** fix 4 is in as well — fused
+> RotaryEmbedding (1 dispatch, was ~10) and GroupQueryAttention
+> (3 dispatches with a chunked online-softmax attention pass, was ~20,
+> with no materialized score/mask tensors). Measured:
+> **decode 17.4 ms/tok (57 tok/s)**, GPU busy 7.8 ms/tok, prefill
+> 287 ms, dispatches ~1090 → ~526/token. Remaining GPU time: lm_head
+> matvec 3.5 ms (vec4 loads would help), split-K matvecs + their
+> reduce pass 2.4 ms, RMS-norm 0.6 ms. The ~9.7 ms CPU gap per token
+> (bind-group creation, 500+ pass encodes, blocking logits readback)
+> is now half the wall time — the next lever is dispatch-count and
+> encode-cost reduction, not kernel math.
+>
 > **Status update (same day):** fixes 1–3 below are implemented
 > (`fold_transpose_into_matmul` in the IR, split-K matvec kernels for
 > M=1, shared-memory tiled matmul for M>1). Measured after:
