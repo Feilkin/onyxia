@@ -35,6 +35,9 @@ pub struct LlmSession {
     past_seq_len: usize,
     /// Hard bound on total sequence length (clean error, not a GPU fault).
     max_seq_len: usize,
+    /// Total bytes of constant weight data uploaded to the GPU — the dominant
+    /// component of resident VRAM.
+    weights_bytes: u64,
 }
 
 impl LlmSession {
@@ -58,6 +61,8 @@ impl LlmSession {
             .collect();
         let kv_pairs = discover_kv_pairs(&module);
         let symbols = module.symbols.clone();
+        // Sum the constant pool before `prepare` consumes the module.
+        let weights_bytes = module.consts.total_bytes() as u64;
         let session = backend
             .prepare(module)
             .context("Failed to prepare model on the wgpu backend")?;
@@ -69,7 +74,19 @@ impl LlmSession {
             kv_cache: HashMap::new(),
             past_seq_len: 0,
             max_seq_len,
+            weights_bytes,
         })
+    }
+
+    /// Total constant weight bytes resident on the GPU.
+    ///
+    /// This is the dominant component of VRAM but not the whole story: it
+    /// excludes the KV cache and the backend's transient buffer pool. A fully
+    /// accurate resident-memory figure needs byte-level accounting in
+    /// `onyxia-backend-wgpu` (its `pool_stats` reports allocation counts, not
+    /// bytes) — tracked as a separate task.
+    pub fn weights_bytes(&self) -> u64 {
+        self.weights_bytes
     }
 
     /// Prefill: process the full prompt. Returns logits \[vocab_size\] for

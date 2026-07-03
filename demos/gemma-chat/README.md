@@ -1,9 +1,10 @@
 # gemma-chat
 
-A minimal egui chatbot demonstrating Gemma 3 270M inference on the Onyxia
-runtime. Self-contained example code (sampling, tokenizer, KV-cache session are
-vendored here, not part of onyxia) that runs on **desktop** and **web (WASM)**
-from the same source.
+An egui chatbot demonstrating Gemma 3 270M inference on the Onyxia runtime.
+Self-contained example code (sampling, tokenizer, KV-cache session are vendored
+here, not part of onyxia) that runs on **desktop** and **web (WASM)** from the
+same source. The UI (two themes, staged loader, streaming, per-answer metrics)
+lives in `theme.rs` + `main.rs`.
 
 The demo loads the full-precision `onnx/model.onnx`. The community
 `model_q4.onnx` 4-bit quantization badly degrades this small model — verified
@@ -16,6 +17,9 @@ cargo run --release -p gemma-chat -- ../../models/gemma-3-270m-it-ONNX
 ```
 
 (the model dir defaults to `models/gemma-3-270m-it-ONNX` relative to the cwd).
+
+To preview the interface without a model, `cargo run -p gemma-chat -- --demo`
+drives the UI with scripted load stages and a canned streamed answer.
 
 ## Web (WASM)
 
