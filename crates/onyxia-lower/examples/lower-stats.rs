@@ -1,6 +1,7 @@
-//! Whole-model lowering gate (plan step B5).
+//! Whole-model lowering gate: lower a real model end to end and report
+//! statistics.
 //!
-//! Run in a worktree that has the model files:
+//! Requires the model files (see the README):
 //!
 //! ```sh
 //! cargo run -p onyxia-lower --example lower-stats -- \

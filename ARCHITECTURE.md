@@ -4,10 +4,7 @@ Onyxia is a **GPU compute shader runtime for ONNX models**, built in Rust.
 ONNX graphs are lowered into a small backend-neutral IR; backends consume the
 IR and execute it — today via WGSL compute shaders on wgpu.
 
-This document describes the crates and how data flows through them. The
-*reasoning* behind the design (why primitives + composites, why two
-registries, what this dissolves) lives in `doc/ir-design.md`; the build order
-and milestone history in `doc/ir-implementation-plan.md`.
+This document describes the crates and how data flows through them.
 
 ## The stack
 
@@ -22,8 +19,9 @@ onyxia-ir            Primitive enum, composites, symbolic shapes, SSA values.
         │            No wgpu, no naga — compiles anywhere, tests without a GPU.
         ▼  Backend::prepare(Module) → Session
 onyxia-backend-wgpu  Generated primitive kernels, fused composite kernels,
-onyxia-backend-ref   pipeline cache, buffer pool, symbol binding,
-        │            device-resident tensors. (ref = interpreter adapter.)
+onyxia-backend-cubecl  pipeline cache, buffer pool, symbol binding,
+onyxia-backend-ref   device-resident tensors. (cubecl = primitives only,
+        │            ref = interpreter adapter.)
         ▼
 onyxia-cli, demos/   Generation loop, KV plumbing, tokenizer, UI.
 ```
@@ -71,10 +69,9 @@ accumulation internally). When a kernel and the interpreter disagree, the
 kernel is wrong until proven otherwise. `onyxia-backend-ref` wraps it behind
 the `Backend` trait so backend tests are backend-shaped.
 
-Caveat learned at the C4 gate: interpreter-vs-GPU differentials share any
-*lowering* bug (both execute the same IR). Semantics changes should also be
-checked against an independent implementation (onnxruntime, or previously
-the old pipeline).
+One caveat: interpreter-vs-GPU differentials share any *lowering* bug (both
+execute the same IR). Semantics changes should also be checked against an
+independent implementation such as onnxruntime.
 
 ### Symbolic shapes, bound at run time
 
@@ -104,7 +101,8 @@ event loop; native callers wrap with `pollster`.
 | `onyxia-onnx` | `Graph`/`Node`/`TensorInfo` (stable API over protobuf), external-data loading, ONNX-level DOT export |
 | `onyxia-ir` | `graph.rs` Module/values/nodes/ConstPool · `prim.rs` the primitive enum · `dim.rs` DimExpr/SymbolTable/Bindings · `types.rs` dtypes incl. Q4/Q8 layout · `builder.rs` GraphBuilder · `infer.rs` shape inference · `fold.rs` constant folding + symbolic shape values · `decomp.rs` standard decompositions + legalization · `interp.rs` reference interpreter · `backend.rs` Backend/Session traits · `validate.rs`, `dot.rs`, `attrs.rs` |
 | `onyxia-lower` | `LoweringRegistry`, `lower()` driver (symbols from dim_param, initializers moved — not copied — into the ConstPool, inference + folding at the end), `rules.rs` for the standard op set |
-| `onyxia-backend-wgpu` | `session.rs` prepare/run/upload/download, register file, liveness-driven pooling · `kernels.rs` generated one-thread-per-element WGSL for primitives · `fused.rs` CompositeKernel trait + registry (Softmax, RMS-norm, Gelu as one-workgroup-per-row reductions) · `gpu.rs` device/queue, pipeline cache (immediates via naga reflection — the wgpu-29 fix; where the adapter lacks `IMMEDIATES` — all browsers, core WebGPU has no push constants — kernels are rewritten to take params as a storage buffer; `ONYXIA_NO_IMMEDIATES=1` forces this for native testing, and every GPU differential test runs in both modes), buffer pool · `legacy-shaders/` old hand-written WGSL kept as porting reference |
+| `onyxia-backend-wgpu` | `session.rs` prepare/run/upload/download, register file, liveness-driven pooling · `kernels.rs` generated one-thread-per-element WGSL for primitives · `fused.rs` CompositeKernel trait + registry (Softmax, RMS-norm, Gelu as one-workgroup-per-row reductions) · `gpu.rs` device/queue, pipeline cache (bind group layouts built by reflecting shader bindings via naga; where the adapter lacks `IMMEDIATES` — all browsers, core WebGPU has no push constants — kernels are rewritten to take params as a storage buffer; `ONYXIA_NO_IMMEDIATES=1` forces this for native testing, and every GPU differential test runs in both modes), buffer pool · `legacy-shaders/` hand-written WGSL kept as reference for fused kernels not yet written |
+| `onyxia-backend-cubecl` | `Backend`/`Session` over [CubeCL](https://github.com/tracel-ai/cubecl) (`#[cube]` Rust kernels, JIT-compiled; runs on `cubecl-wgpu`). Primitives only — every composite legalizes through its decomposition, which is the demonstration that the primitive set is the whole backend contract |
 | `onyxia-backend-ref` | `run_once(module, inputs)` + `Backend` impl over the interpreter |
 | `onyxia-cli` | `run-model`/`chat` generation (`llm.rs` device-resident KV session, `generate.rs`, `sampling.rs`, `tokenizer.rs`), `validate` (parse + lower, no GPU), ONNX inspection (`inspect.rs`), `dot`/`ir-dot` |
 | `demos/gemma-chat` | egui chat UI, native + wasm32 (trunk); vendors its own async LLM session, sampling, tokenizer — application-layer by design |
@@ -116,22 +114,21 @@ as `i32` on device (range-checked at upload), `Bool` as `u32`.
 
 - `onyxia-ir`: unit tests per pass; golden + property tests for the
   interpreter; decomposition-vs-hand-computed tests per composite.
-- `onyxia-backend-wgpu` (GPU, `#[ignore]`d, `just test-all`): every generated
-  kernel differential-vs-interpreter at atol=1e-4/rtol=1e-3 (f32); fused
-  kernels vs their decompositions; GQA with symbolic dims, past-KV, and
-  sliding window.
-- Whole-model gates (main worktree, model files required):
-  `onyxia-cli --example debug-prefill` compares per-position prefill argmax
-  GPU-vs-reference on a real chat prompt.
+- `onyxia-backend-wgpu` and `onyxia-backend-cubecl` (GPU, `#[ignore]`d,
+  `just test-all`): every generated kernel differential-vs-interpreter at
+  atol=1e-4/rtol=1e-3 (f32); fused kernels vs their decompositions; GQA
+  with symbolic dims, past-KV, and sliding window.
+- Whole-model gates (model files required, see the README):
+  `cargo run -p onyxia-cli --example debug-prefill` compares per-position
+  prefill argmax GPU-vs-reference on a real chat prompt.
 
-## Known gaps (tracked in doc/ir-implementation-plan.md)
+## Known gaps
 
-- Fused GQA / RotaryEmbedding / MatMulNBits kernels not yet ported to the
-  new registry (decompositions execute instead — correct, slower than
-  optimal); no tiled MatMul yet.
+- No fused GQA / RotaryEmbedding / MatMulNBits kernels yet (their
+  decompositions execute instead — correct, slower than optimal); no tiled
+  MatMul yet.
 - No Dequantize GPU kernel (q4 models run only on the reference backend).
 - f16, late-bound dims on GPU (data-dependent shapes), >65535-row fused
   reductions.
-- Per-op tracing spans (Tracy) were lost with the old pipeline;
-  re-instrumentation pending.
+- No per-op tracing spans (Tracy) yet.
 - ONNX `If`/`Loop`/`Scan` (regions) intentionally not designed yet.

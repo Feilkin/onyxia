@@ -8,3 +8,6 @@
 # trunk / wasm build output
 /dist
 **/dist
+# RustConf talk-prep notes, kept locally but untracked
+/doc/cubecl-experience.md
+/doc/rustconf-2026-session.md

@@ -151,8 +151,8 @@ enum Commands {
         #[arg(long)]
         print_prompt: bool,
 
-        /// Use reset() instead of reset_full() between turns (to demonstrate
-        /// the KV-cache carryover bug). For diagnostics only.
+        /// Keep the KV cache between turns instead of clearing it before
+        /// each re-prefill. Diagnostic only: the stale cache corrupts output.
         #[arg(long)]
         buggy_reset: bool,
     },

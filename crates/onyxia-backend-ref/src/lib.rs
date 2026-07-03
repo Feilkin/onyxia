@@ -2,7 +2,7 @@
 //! [`Backend`]/[`Session`] traits.
 //!
 //! This is the correctness oracle every other backend differential-tests
-//! against (plan, pinned decisions 3–4). It supports no fused kernels —
+//! against. It supports no fused kernels —
 //! `supports` is always false, so preparation inlines every composite down
 //! to primitives — and it is deliberately never optimized.
 //!

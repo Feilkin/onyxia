@@ -1,4 +1,4 @@
-//! The backend contract (`doc/ir-design.md` §4).
+//! The backend contract.
 //!
 //! A backend consumes an IR [`Module`] and produces a [`Session`] that
 //! executes it. Preparation typically legalizes the module first
@@ -12,10 +12,9 @@
 //! keep iterative state (KV caches, diffusion latents) on-device without
 //! onyxia knowing anything about the use case.
 //!
-//! `run`/`download` are async for the same reason the interpreter's
-//! ancestors were (see the web-async design notes): WebGPU readback cannot
-//! block the browser event loop. Native callers can wrap with a blocking
-//! executor.
+//! `run`/`download` are async because WebGPU readback cannot block the
+//! browser event loop. Native callers can wrap with a blocking executor
+//! such as `pollster`.
 
 use crate::Result;
 use crate::graph::Module;

@@ -1,5 +1,5 @@
 //! Fused composite kernels — the backend's half of the two-registry design
-//! (`doc/ir-design.md` §2).
+//! (see the repository's ARCHITECTURE.md).
 //!
 //! A composite whose name is registered here survives legalization intact
 //! and executes through its [`CompositeKernel`] instead of its
@@ -11,8 +11,9 @@
 //! Currently registered: `Softmax` and `SimplifiedLayerNormalization`
 //! (one-workgroup-per-row with shared-memory tree reductions — one
 //! dispatch instead of ~5), and `Gelu` (single elementwise pass).
-//! Designated ports for the same pattern: `com.microsoft.GroupQueryAttention`
-//! (the old 9-shader pipeline), `RotaryEmbedding`, `MatMulNBits`.
+//! Planned next, following the same pattern:
+//! `com.microsoft.GroupQueryAttention`, `RotaryEmbedding`, `MatMulNBits`
+//! (reference WGSL for all three lives in `legacy-shaders/`).
 
 use crate::gpu::WORKGROUP_SIZE;
 use crate::kernels::{self, Imm};

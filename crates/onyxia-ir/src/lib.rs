@@ -1,6 +1,6 @@
 //! Backend-neutral intermediate representation for Onyxia.
 //!
-//! This crate is the foundation described in `doc/ir-design.md`. It contains:
+//! This crate contains:
 //!
 //! - **Types and symbolic shapes** ([`DataType`], [`DimExpr`], [`SymbolicShape`],
 //!   [`TensorType`]) — shapes are polynomials over named dimension symbols,
@@ -8,7 +8,7 @@
 //! - **The graph** ([`Module`], [`Node`], [`Prim`], [`Composite`]) — an SSA
 //!   value graph. Primitives are a *closed* enum with fully specified
 //!   semantics; composites are named, attribute-carrying nodes whose
-//!   decompositions live in a registry (see milestone B).
+//!   decompositions live in a registry ([`decomp`]).
 //! - **Shape inference** ([`infer`]) — one total function over the primitive
 //!   set. Adding a primitive without a shape rule is a compile error.
 //! - **The reference interpreter** ([`interp`]) — the executable

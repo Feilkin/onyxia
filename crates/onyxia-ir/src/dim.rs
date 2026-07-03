@@ -10,8 +10,7 @@
 //! and **exact** division by a monomial (needed to resolve ONNX `Reshape`
 //! `-1` targets like `[B*S*4096] / 64`). There is no general division,
 //! no min/max, no modulo — anything that escapes this fragment becomes a
-//! fresh *late-bound* symbol whose value is learned at run time
-//! (`doc/ir-design.md` §3).
+//! fresh *late-bound* symbol whose value is learned at run time.
 //!
 //! Coefficients are signed (`i64`) so intermediate shape arithmetic can
 //! subtract (`total_len - past_len`); a dimension must evaluate to a

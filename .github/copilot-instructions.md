@@ -10,7 +10,6 @@ kept current:
 
 - [README.md](../README.md) — crate map, usage, CLI, build & test commands
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — the stack, core ideas, testing strategy
-- `doc/ir-design.md` — the reasoning behind the primitives + composites design
 
 ## Architecture in one paragraph
 
@@ -44,7 +43,7 @@ No `protoc` needed: `onyxia-onnx`'s build script compiles the vendored
 - Every GPU kernel must have a differential test against the interpreter;
   every fused composite kernel differential-tests against its decomposition.
 - Growing the primitive enum is a design decision — surface it, don't
-  improvise (see the discipline rule in `doc/ir-design.md` §7).
+  improvise. The closed set is the point of the design.
 - Library crates must not panic on user input (model files, tensors);
   return the crate's typed errors. `unreachable!`/`expect` only for local,
   structurally-guaranteed invariants.

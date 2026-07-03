@@ -37,12 +37,9 @@ pub struct ChatMessage {
     pub content: String,
 }
 
-/// High-level tokenizer for LLM text processing.
-///
-/// Wraps HuggingFace's `tokenizers` crate and provides methods for:
-/// - Encoding text to token IDs (for model input)
-/// - Decoding token IDs back to text (for generation output)
-/// - Formatting chat templates for instruction-tuned models
+/// High-level tokenizer: encodes text to token IDs, decodes IDs back to
+/// text, and renders chat templates for instruction-tuned models. Wraps
+/// HuggingFace's `tokenizers` crate.
 pub struct Tokenizer {
     inner: HfTokenizer,
     special_tokens: SpecialTokens,
@@ -51,13 +48,6 @@ pub struct Tokenizer {
 
 impl Tokenizer {
     /// Load a tokenizer from a `tokenizer.json` file.
-    ///
-    /// # Example
-    /// ```no_run
-    /// use onyxia_cli::tokenizer::Tokenizer;
-    /// let tokenizer = Tokenizer::from_file("models/gemma-3-270m-it-ONNX/tokenizer.json")?;
-    /// # Ok::<(), anyhow::Error>(())
-    /// ```
     #[allow(dead_code)] // native-only; wasm fetches bytes and uses `from_bytes`
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let inner = HfTokenizer::from_file(path)
@@ -98,14 +88,6 @@ impl Tokenizer {
     }
 
     /// Load a chat template from a Jinja file.
-    ///
-    /// # Example
-    /// ```no_run
-    /// use onyxia_cli::tokenizer::Tokenizer;
-    /// let tokenizer = Tokenizer::from_file("models/gemma-3-270m-it-ONNX/tokenizer.json")?
-    ///     .with_chat_template_file("models/gemma-3-270m-it-ONNX/chat_template.jinja")?;
-    /// # Ok::<(), anyhow::Error>(())
-    /// ```
     #[allow(dead_code)] // native-only; wasm fetches the template and uses `with_chat_template`
     pub fn with_chat_template_file<P: AsRef<Path>>(mut self, path: P) -> Result<Self> {
         let template =
@@ -122,17 +104,7 @@ impl Tokenizer {
     }
 
     /// Encode text to a vector of token IDs (as i64 for ONNX models).
-    ///
-    /// Optionally adds a BOS (beginning-of-sequence) token at the start.
-    ///
-    /// # Example
-    /// ```no_run
-    /// # use onyxia_cli::tokenizer::Tokenizer;
-    /// # let tokenizer = Tokenizer::from_file("tokenizer.json")?;
-    /// let token_ids = tokenizer.encode("Hello, world!", true)?;
-    /// assert!(token_ids[0] == 2); // BOS token
-    /// # Ok::<(), anyhow::Error>(())
-    /// ```
+    /// With `add_bos`, a BOS (beginning-of-sequence) token is prepended.
     pub fn encode(&self, text: &str, add_bos: bool) -> Result<Vec<i64>> {
         let encoding = self
             .inner
@@ -148,18 +120,9 @@ impl Tokenizer {
         Ok(token_ids)
     }
 
-    /// Decode a sequence of token IDs back to text.
-    ///
-    /// If `skip_special_tokens` is true, special tokens (BOS, EOS, PAD) are
-    /// removed from the output.
-    ///
-    /// # Example
-    /// ```no_run
-    /// # use onyxia_cli::tokenizer::Tokenizer;
-    /// # let tokenizer = Tokenizer::from_file("tokenizer.json")?;
-    /// let text = tokenizer.decode(&[2, 4521, 235269, 2134, 235341], true)?;
-    /// # Ok::<(), anyhow::Error>(())
-    /// ```
+    /// Decode a sequence of token IDs back to text. With
+    /// `skip_special_tokens`, special tokens (BOS, EOS, PAD) are removed
+    /// from the output.
     pub fn decode(&self, token_ids: &[i64], skip_special_tokens: bool) -> Result<String> {
         // Convert i64 back to u32 for the tokenizer
         let ids: Vec<u32> = token_ids.iter().map(|&id| id as u32).collect();
@@ -178,25 +141,9 @@ impl Tokenizer {
             || self.special_tokens.end_of_turn == Some(token_id as u32)
     }
 
-    /// Apply the chat template to format a conversation.
-    ///
-    /// Uses minijinja to render the Jinja template with the provided messages.
-    ///
-    /// # Arguments
-    /// - `messages`: List of chat messages with role and content
-    /// - `add_generation_prompt`: Whether to add the model turn prompt at the end
-    ///
-    /// # Example
-    /// ```no_run
-    /// use onyxia_cli::tokenizer::{Tokenizer, ChatMessage};
-    /// # let tokenizer = Tokenizer::from_file("tokenizer.json")?
-    /// #     .with_chat_template_file("chat_template.jinja")?;
-    /// let messages = vec![
-    ///     ChatMessage { role: "user".to_string(), content: "Hello!".to_string() }
-    /// ];
-    /// let prompt = tokenizer.apply_chat_template(&messages, true)?;
-    /// # Ok::<(), anyhow::Error>(())
-    /// ```
+    /// Render the conversation through the Jinja chat template (via
+    /// minijinja). With `add_generation_prompt`, the model-turn prompt is
+    /// appended so the model continues as the assistant.
     pub fn apply_chat_template(
         &self,
         messages: &[ChatMessage],

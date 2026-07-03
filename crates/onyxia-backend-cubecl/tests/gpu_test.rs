@@ -146,7 +146,7 @@ fn reduce_mean_and_max() {
 }
 
 /// Softmax + RMS-norm run as composites on the wgpu backend; here they MUST
-/// legalize through their decompositions — the spike's core claim.
+/// legalize through their decompositions — this backend's core claim.
 #[test]
 #[ignore = "requires GPU"]
 fn softmax_and_rmsnorm_decompose() {

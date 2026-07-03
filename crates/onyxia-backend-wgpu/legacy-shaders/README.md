@@ -1,12 +1,11 @@
 # Legacy WGSL shaders (reference only)
 
-Hand-written kernels from the pre-IR pipeline (`onyxia-operators`, deleted at
-the C5 cutover). **Nothing compiles these** — they use the old binding/
-immediates conventions and won't run against the current session as-is.
+Hand-written kernels from an earlier version of this backend. **Nothing
+compiles these** — they use different binding/immediates conventions and
+won't run against the current session as-is.
 
 They are kept because they encode tested, correct math for the fused
-composite kernels still to be ported to `src/fused.rs` (see
-`doc/ir-implementation-plan.md`, milestone C notes):
+composite kernels still to be written in `src/fused.rs`:
 
 - `gqa_*.wgsl` — the nine-kernel fused GroupQueryAttention path
 - `rotary_embedding.wgsl` — fused RoPE

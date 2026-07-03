@@ -8,8 +8,7 @@ use crate::dim::SymbolicShape;
 /// shape while their storage is bit-packed, two elements per byte, padded to
 /// a whole byte per innermost row. Only [`Prim::Dequantize`](crate::prim::Prim)
 /// and [`Prim::Cast`](crate::prim::Prim) interpret the packing; all other
-/// code treats such buffers as opaque bytes (pinned decision 2 in
-/// `doc/ir-implementation-plan.md`).
+/// code treats such buffers as opaque bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DataType {
     F32,

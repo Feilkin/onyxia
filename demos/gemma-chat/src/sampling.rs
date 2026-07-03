@@ -1,11 +1,7 @@
-//! Token sampling strategies for LLM generation.
+//! Token sampling: turning model logits into the next token id.
 //!
-//! Implements various methods for selecting the next token from model logits:
-//! - Greedy (argmax) - deterministic selection of highest probability token
-//! - Top-K - sample from top K tokens by probability
-//! - Top-P (nucleus) - sample from smallest set of tokens with cumulative probability >= p
-//!
-//! All sampling methods support temperature scaling for controlling randomness.
+//! Greedy (argmax), top-k, and top-p (nucleus) selection, each combined
+//! with temperature scaling — see [`SamplingConfig`].
 
 use rand::prelude::*;
 
@@ -33,18 +29,13 @@ impl Default for SamplingConfig {
     }
 }
 
-/// Sample the next token from logits according to the configuration.
+/// Sample the next token id from raw logits (`[vocab_size]`) per `config`.
 ///
-/// # Arguments
-/// * `logits` - Raw logits from the model \[vocab_size\]
-/// * `config` - Sampling configuration
-/// * `rng` - Random number generator (for reproducibility)
-///
-/// # Returns
-/// Token ID (index into logits)
+/// Temperature ≤ 0 selects greedily; otherwise logits are
+/// temperature-scaled and filtered by top-k or top-p before sampling.
 ///
 /// # Panics
-/// Panics if logits is empty or contains all NaN/Inf values
+/// Panics if `logits` is empty or contains no finite values.
 pub fn sample(logits: &[f32], config: &SamplingConfig, rng: &mut StdRng) -> u32 {
     assert!(!logits.is_empty(), "Cannot sample from empty logits");
 
@@ -73,16 +64,10 @@ pub fn sample(logits: &[f32], config: &SamplingConfig, rng: &mut StdRng) -> u32 
     }
 }
 
-/// Greedy sampling: select the token with the highest logit value (argmax).
-///
-/// # Arguments
-/// * `logits` - Raw logits from the model \\[vocab_size\\]
-///
-/// # Returns
-/// Token ID with highest probability
+/// Greedy sampling: the token id with the highest logit (argmax).
 ///
 /// # Panics
-/// Panics if logits is empty
+/// Panics if `logits` is empty.
 pub fn sample_greedy(logits: &[f32]) -> u32 {
     assert!(!logits.is_empty(), "Cannot sample_greedy from empty logits");
 
@@ -94,15 +79,8 @@ pub fn sample_greedy(logits: &[f32]) -> u32 {
         .expect("max_by should never return None for non-empty iterator")
 }
 
-/// Top-K sampling: sample from the top K tokens by probability.
-///
-/// # Arguments
-/// * `logits` - Temperature-scaled logits \\[vocab_size\\] (will be modified in-place)
-/// * `k` - Number of top tokens to keep
-/// * `rng` - Random number generator
-///
-/// # Returns
-/// Sampled token ID
+/// Top-K sampling: sample among the `k` highest-scoring tokens; all
+/// others are masked out. `logits` must already be temperature-scaled.
 pub fn sample_top_k(logits: &mut [f32], k: usize, rng: &mut StdRng) -> u32 {
     if k >= logits.len() {
         return sample_from_distribution(logits, rng);
@@ -126,15 +104,9 @@ pub fn sample_top_k(logits: &mut [f32], k: usize, rng: &mut StdRng) -> u32 {
     sample_from_distribution(&filtered_logits, rng)
 }
 
-/// Top-P (nucleus) sampling: sample from the smallest set of tokens with cumulative probability >= p.
-///
-/// # Arguments
-/// * `logits` - Temperature-scaled logits \\[vocab_size\\] (will be modified in-place)
-/// * `p` - Cumulative probability threshold (e.g., 0.9)
-/// * `rng` - Random number generator
-///
-/// # Returns
-/// Sampled token ID
+/// Top-P (nucleus) sampling: sample within the smallest set of tokens
+/// whose cumulative probability reaches `p`; all others are masked out.
+/// `logits` must already be temperature-scaled.
 pub fn sample_top_p(logits: &mut [f32], p: f32, rng: &mut StdRng) -> u32 {
     // Sort indices by descending logit value
     let mut indexed: Vec<(usize, f32)> = logits.iter().copied().enumerate().collect();
@@ -177,16 +149,8 @@ pub fn sample_top_p(logits: &mut [f32], p: f32, rng: &mut StdRng) -> u32 {
     sample_from_distribution(&filtered_logits, rng)
 }
 
-/// Sample from a probability distribution defined by logits.
-///
-/// Applies softmax to logits and samples according to the resulting probabilities.
-///
-/// # Arguments
-/// * `logits` - Temperature-scaled logits \[vocab_size\]
-/// * `rng` - Random number generator
-///
-/// # Returns
-/// Sampled token ID
+/// Softmax the logits and sample a token id from the resulting
+/// distribution.
 fn sample_from_distribution(logits: &[f32], rng: &mut StdRng) -> u32 {
     // Compute softmax with numerical stability (subtract max)
     let max_logit = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);

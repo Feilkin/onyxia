@@ -1,12 +1,10 @@
 //! Device/queue initialization and the pipeline machinery.
 //!
-//! The pipeline-layout construction is ported from the old
-//! `onyxia-core::dispatch` **including the wgpu-29 immediates fix**: bind
-//! group layouts are built by reflecting the shader's group-0 buffer
-//! bindings from the `naga::Module`, because an auto layout hardcodes
-//! `immediate_size: 0` (breaking `set_immediates`) and auto layouts can't
-//! be reused in explicit pipeline layouts. Do not replace this with
-//! `layout: None`.
+//! Bind group layouts are built by reflecting the shader's group-0 buffer
+//! bindings from the `naga::Module`, because (as of wgpu 29) an auto layout
+//! hardcodes `immediate_size: 0` (breaking `set_immediates`) and auto
+//! layouts can't be reused in explicit pipeline layouts. Do not replace
+//! this with `layout: None`.
 //!
 //! **Immediates are a progressive feature.** Core WebGPU has no push
 //! constants, so browsers never offer `Features::IMMEDIATES`. When the

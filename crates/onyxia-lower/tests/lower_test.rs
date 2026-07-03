@@ -127,7 +127,7 @@ fn lowers_and_evaluates_simple_graph() {
     assert_eq!(outs[0].1.to_f32().unwrap(), vec![11., 44., 99., 176.]);
 }
 
-/// B3 acceptance: the Gemma-style token-count chain
+/// The Gemma-style token-count chain
 /// `Shape → Gather → Unsqueeze → Concat → Reshape` lowers to a single
 /// Reshape with a symbolic target — zero runtime shape nodes.
 #[test]

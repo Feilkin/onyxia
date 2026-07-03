@@ -1,7 +1,7 @@
 //! ONNX frontend: lowers a parsed [`onyxia_onnx::Graph`] into an
 //! [`onyxia_ir::Module`].
 //!
-//! Lowering is where all ONNX-isms die (`doc/ir-design.md` §4):
+//! Lowering is where all ONNX-isms die:
 //!
 //! - Every op enters the IR through the [`LoweringRegistry`] — built-ins and
 //!   custom ops through the same door. A rule either emits primitives or a

@@ -34,12 +34,9 @@ pub struct ChatMessage {
     pub content: String,
 }
 
-/// High-level tokenizer for LLM text processing.
-///
-/// Wraps HuggingFace's `tokenizers` crate and provides methods for:
-/// - Encoding text to token IDs (for model input)
-/// - Decoding token IDs back to text (for generation output)
-/// - Formatting chat templates for instruction-tuned models
+/// High-level tokenizer: encodes text to token IDs, decodes IDs back to
+/// text, and renders chat templates for instruction-tuned models. Wraps
+/// HuggingFace's `tokenizers` crate.
 pub struct Tokenizer {
     inner: HfTokenizer,
     special_tokens: SpecialTokens,
@@ -170,13 +167,9 @@ impl Tokenizer {
         self.special_tokens.pad as i64
     }
 
-    /// Apply the chat template to format a conversation.
-    ///
-    /// Uses minijinja to render the Jinja template with the provided messages.
-    ///
-    /// # Arguments
-    /// - `messages`: List of chat messages with role and content
-    /// - `add_generation_prompt`: Whether to add the model turn prompt at the end
+    /// Render the conversation through the Jinja chat template (via
+    /// minijinja). With `add_generation_prompt`, the model-turn prompt is
+    /// appended so the model continues as the assistant.
     ///
     /// # Example
     /// ```no_run
@@ -229,16 +222,14 @@ impl Tokenizer {
     }
 }
 
-/// Format a user message with the Gemma instruction chat template (simple version).
+/// Format a single user message with Gemma's turn markers — a fallback
+/// for when no Jinja chat template is available:
 ///
-/// Gemma uses the format:
 /// ```text
 /// <start_of_turn>user
 /// {user_message}<end_of_turn>
 /// <start_of_turn>model
 /// ```
-///
-/// This is a simple fallback if you don't want to use the full Jinja template.
 ///
 /// # Example
 /// ```

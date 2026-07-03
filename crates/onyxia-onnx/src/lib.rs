@@ -87,17 +87,10 @@ pub enum OnnxError {
 /// Result type for ONNX operations.
 pub type Result<T> = std::result::Result<T, OnnxError>;
 
-/// Load an ONNX model from a file.
+/// Load an ONNX model file into its raw protobuf form (`ModelProto`).
 ///
-/// # Arguments
-///
-/// * `path` - Path to the ONNX model file
-///
-/// # Returns
-///
-/// Returns the parsed `ModelProto` or an error if loading/parsing fails.
-///
-/// # Example
+/// Most callers want [`load_and_parse_model`] instead, which continues on
+/// to the structured [`Graph`] representation.
 ///
 /// ```no_run
 /// use onyxia_onnx::load_model;
@@ -111,20 +104,10 @@ pub fn load_model<P: AsRef<Path>>(path: P) -> Result<ModelProto> {
     Ok(model)
 }
 
-/// Load and parse an ONNX model from a file into a Graph.
+/// Load and parse an ONNX model file into a [`Graph`].
 ///
-/// This function handles external data files automatically by resolving
-/// relative paths based on the model file's directory.
-///
-/// # Arguments
-///
-/// * `path` - Path to the ONNX model file
-///
-/// # Returns
-///
-/// Returns the parsed `Graph` or an error if loading/parsing fails.
-///
-/// # Example
+/// External tensor data (`.onnx_data` files) is resolved relative to the
+/// model file's directory.
 ///
 /// ```no_run
 /// use onyxia_onnx::load_and_parse_model;
@@ -158,32 +141,15 @@ pub fn parse_model_from_bytes(
     parse_model(&model, None)
 }
 
-/// Convert an ONNX model to Graphviz DOT format.
-///
-/// Generates a directed graph representing the computation graph structure
-/// of the ONNX model, showing operators as nodes and tensors as edges.
-///
-/// # Arguments
-///
-/// * `model` - The ONNX model to convert
-///
-/// # Returns
-///
-/// Returns a String containing the DOT format representation.
+/// Render an ONNX model as Graphviz DOT: operators as nodes, tensors as
+/// edges. Equivalent to [`to_dot_with_options`] with
+/// [`DotSimplification::Full`].
 pub fn to_dot(model: &ModelProto) -> String {
     to_dot_with_options(model, DotSimplification::Full)
 }
 
-/// Convert an ONNX model to Graphviz DOT format with simplification options.
-///
-/// # Arguments
-///
-/// * `model` - The ONNX model to convert
-/// * `simplification` - Level of simplification to apply
-///
-/// # Returns
-///
-/// Returns a String containing the DOT format representation.
+/// Render an ONNX model as Graphviz DOT at the chosen
+/// [`DotSimplification`] level.
 pub fn to_dot_with_options(model: &ModelProto, simplification: DotSimplification) -> String {
     match simplification {
         DotSimplification::Full => to_dot_full(model),

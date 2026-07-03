@@ -1,4 +1,6 @@
-//! Onyxia CLI library - shared functionality for testing and binary.
+//! Library half of the Onyxia CLI: generation, sampling, tokenization,
+//! inspection, and validation, shared by the `onyxia-cli` binary and its
+//! tests.
 
 pub mod generate;
 pub mod inspect;

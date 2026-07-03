@@ -2,10 +2,9 @@
 //!
 //! One total function over the closed primitive set: [`infer_prim`]. There
 //! is no default arm and no per-operator opt-in — adding a primitive without
-//! a shape rule is a compile error. This is the structural fix for the
-//! adoption problem described in the July 2026 review (an open trait meant
-//! every analysis needed every operator's cooperation; a closed enum makes
-//! analyses total by construction).
+//! a shape rule is a compile error. (An open operator trait would make every
+//! analysis depend on every operator's cooperation; a closed enum makes
+//! analyses total by construction.)
 //!
 //! Symbolic policy: two dimensions are considered equal when their canonical
 //! polynomials are equal. Dims that *could* coincide at run time but are not

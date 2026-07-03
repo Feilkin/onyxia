@@ -2,7 +2,7 @@
 //!
 //! These sixteen operations are the entire backend contract: a backend that
 //! executes them can run any model, because every composite is required to
-//! decompose into them (`doc/ir-design.md` §2). The enum is deliberately
+//! decompose into them (see [`crate::decomp`]). The enum is deliberately
 //! closed — passes match on it exhaustively, and adding a variant makes the
 //! compiler point at every pass that needs updating.
 //!
@@ -96,8 +96,8 @@ pub enum CmpOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReduceOp {
     Sum,
-    /// Arithmetic mean. Included as a first-class kind so backends keep
-    /// numerical-stability latitude (plan, pinned decision 9).
+    /// Arithmetic mean. A first-class kind (rather than Sum ÷ count) so
+    /// backends keep numerical-stability latitude.
     Mean,
     Max,
     Min,
@@ -200,10 +200,6 @@ pub enum Prim {
     /// signed. `out_shape` must have the same element count as `data`
     /// (typically `[..., n_blocks*block_size]`). Output dtype is the
     /// scales' dtype.
-    ///
-    /// NOTE: signature is provisional until the `MatMulNBits` decomposition
-    /// lands (plan step B4) — the blob layout used by
-    /// `com.microsoft.MatMulNBits` may need dedicated handling.
     Dequantize {
         block_size: usize,
         out_shape: Vec<DimExpr>,

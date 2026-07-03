@@ -20,7 +20,7 @@ onyxia-ir                 Module: ~16 primitives (closed set), composites
      │                    CPU reference interpreter = the spec. No GPU deps.
      ▼  Backend::prepare(Module) → Session
 onyxia-backend-wgpu       generated WGSL primitive kernels + fused composite
-(onyxia-backend-ref)      kernels, memory planning, device-resident tensors
+(-cubecl, -ref)           kernels, memory planning, device-resident tensors
      │
      ▼
 onyxia-cli, demos/        generation loop, KV-cache plumbing, tokenizer —
@@ -33,11 +33,11 @@ onyxia-cli, demos/        generation loop, KV-cache plumbing, tokenizer —
 | `onyxia-ir` | Backend-neutral IR: primitives, composites, symbolic shapes, passes, CPU reference interpreter, `Backend`/`Session` traits |
 | `onyxia-lower` | ONNX → IR lowering registry (built-in + contrib ops enter through the same door) |
 | `onyxia-backend-wgpu` | wgpu backend: generated primitive kernels, fused composite kernels, symbol binding, device-resident tensors |
+| `onyxia-backend-cubecl` | [CubeCL](https://github.com/tracel-ai/cubecl) backend: primitives only — every composite runs via its decomposition, demonstrating that the primitive set is the whole backend contract |
 | `onyxia-backend-ref` | Reference backend over the interpreter — the differential-testing oracle |
 | `onyxia-cli` | Text generation, model inspection, validation, DOT export |
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and
-`doc/ir-design.md` for the reasoning behind it.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the design.
 
 ## The design in one paragraph
 
@@ -163,17 +163,20 @@ own decomposition on-device.
 
 The CLI has a `tracy` feature that installs a
 [Tracy](https://github.com/wolfpld/tracy) tracing subscriber
-(`just trace-prompt "..."`). Note: the new execution stack is not yet
-instrumented with per-op spans; re-instrumentation is tracked as follow-up
-work.
+(`just trace-prompt "..."`). Per-op GPU spans are not instrumented yet, so
+traces currently show whole-run timing only.
 
 ## Example models
 
-The `models/` directory contains models used by tests and demos:
+Tests and demos look for models under `models/` (not tracked in git — fetch
+them from Hugging Face):
 
-- **Gemma 3 270m** — `models/gemma-3-270m-it-ONNX/onnx/model.onnx` (fp32).
-  Use fp32: the community q4 quantization badly degrades this small model.
-- **Gemma 3 1B** — `models/gemma-3-1b-it-ONNX/onnx/`
+```bash
+git clone https://huggingface.co/onnx-community/gemma-3-270m-it-ONNX models/gemma-3-270m-it-ONNX
+```
+
+Use the fp32 `onnx/model.onnx`: the community q4 quantization badly degrades
+this small model.
 
 ## License
 

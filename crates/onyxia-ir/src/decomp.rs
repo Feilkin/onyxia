@@ -4,7 +4,7 @@
 //! composites) registered here. A backend executes a composite either with
 //! a hand-written kernel from its own registry, or by asking
 //! [`inline_composites`] to expand it — recursively — until only nodes it
-//! supports remain (`doc/ir-design.md` §2). A brand-new backend with zero
+//! supports remain. A brand-new backend with zero
 //! kernels runs everything through these decompositions; they are also the
 //! correctness reference that fused kernels differential-test against.
 //!
@@ -732,8 +732,8 @@ mod tests {
     fn rotary_infers_heads_from_cache_width() {
         // num_heads=0 (as exported by optimum for Gemma): hidden=8 with a
         // cache half-width of 2 (R=4) must infer 2 heads and rotate BOTH,
-        // not treat the input as one 8-wide head. Regression test for the
-        // C4 parity failure (only head 0 was rotated).
+        // not treat the input as one 8-wide head. Regression test for a
+        // whole-model parity failure where only head 0 was rotated.
         let x = Tensor::from_f32(&[1., 2., 3., 4., 5., 6., 7., 8.], &[1, 1, 8]).unwrap();
         let cos = Tensor::from_f32(&[1., 1., 0., 0.], &[2, 2]).unwrap();
         let sin = Tensor::from_f32(&[0., 0., 1., 1.], &[2, 2]).unwrap();

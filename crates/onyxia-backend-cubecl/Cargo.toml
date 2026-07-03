@@ -1,6 +1,6 @@
 [package]
 name = "onyxia-backend-cubecl"
-description = "CubeCL backend for Onyxia — the second-backend spike: primitives only, composites legalize away"
+description = "CubeCL backend for Onyxia — primitives only, composites legalize away"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

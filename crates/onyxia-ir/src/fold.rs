@@ -1,6 +1,6 @@
 //! Constant folding and the compile-time value domain.
 //!
-//! Three cooperating pieces (`doc/ir-design.md` §3):
+//! Three cooperating pieces:
 //!
 //! 1. **Constant folding** — a node whose inputs are all constants is
 //!    evaluated with the [reference interpreter](crate::interp) at compile
@@ -11,9 +11,9 @@
 //!    it). [`eval_content`] evaluates a primitive over contents without
 //!    executing anything, so ONNX shape-arithmetic chains
 //!    (`Shape → Gather → Concat → Reshape`) resolve at lowering into
-//!    symbolic `Reshape` targets instead of runtime nodes. Lowering
-//!    (milestone B) is the main caller; [`fold`] also propagates content
-//!    across any such nodes remaining in the graph.
+//!    symbolic `Reshape` targets instead of runtime nodes. Lowering is the
+//!    main caller; [`fold`] also propagates content across any such nodes
+//!    remaining in the graph.
 //! 3. **Dead-code elimination** — nodes whose outputs nobody consumes are
 //!    removed (typically the shape plumbing made redundant by 2).
 
@@ -454,7 +454,7 @@ mod tests {
         crate::validate::validate(&m).unwrap();
     }
 
-    /// The A5 acceptance test: the Gemma-style token-count chain
+    /// The Gemma-style token-count chain
     /// `Shape(x) → Gather[1] → Concat with consts → (Reshape target)`
     /// evaluates symbolically into `[1, S, 4, 64]` — zero runtime nodes.
     #[test]

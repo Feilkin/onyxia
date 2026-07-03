@@ -1,4 +1,5 @@
-//! Parser to convert ONNX models to internal graph representation.
+//! Conversion from ONNX protobuf (`ModelProto`) to the structured
+//! [`Graph`] representation.
 
 use crate::graph::*;
 use crate::onnx::{AttributeProto, ModelProto, NodeProto, TensorProto, tensor_proto};
@@ -8,12 +9,11 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-/// Parse an ONNX ModelProto into a Graph.
+/// Parse an ONNX `ModelProto` into a [`Graph`].
 ///
-/// # Arguments
-///
-/// * `model` - The ONNX ModelProto to parse
-/// * `base_dir` - Optional base directory for resolving external data files (relative to model file location)
+/// `base_dir` is the directory external tensor data files are resolved
+/// against (usually the model file's directory); pass `None` when the
+/// model has no external data or it has already been inlined.
 pub fn parse_model(model: &ModelProto, base_dir: Option<&Path>) -> Result<Graph> {
     let graph_proto = model
         .graph

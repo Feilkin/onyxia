@@ -1,10 +1,6 @@
-//! Text generation loop for LLM inference.
-//!
-//! Implements the full generation workflow:
-//! 1. Encode prompt to token IDs
-//! 2. Prefill: process full prompt through model
-//! 3. Decode: generate tokens one at a time until EOS or max_tokens
-//! 4. Stream output as tokens are generated
+//! The text generation loop: encode the prompt, prefill, then decode one
+//! token at a time (optionally streaming to stdout) until a stop token or
+//! the token budget ends generation.
 
 use crate::llm::LlmSession;
 use crate::sampling::{SamplingConfig, sample};
@@ -30,19 +26,12 @@ pub struct GenerationStats {
     pub total_time: f64,
 }
 
-/// Generate text from a prompt using an LLM session.
+/// Generate up to `max_tokens` tokens of text from `prompt`, returning the
+/// generated text and timing statistics.
 ///
-/// # Arguments
-/// * `session` - LLM session with loaded model and KV cache
-/// * `tokenizer` - Tokenizer for encoding/decoding text
-/// * `prompt` - Input text to generate from
-/// * `max_tokens` - Maximum number of tokens to generate (not including prompt)
-/// * `config` - Sampling configuration (temperature, top-k, top-p, seed)
-/// * `stream` - Whether to print tokens as they're generated
-/// * `stop_token_ids` - Token IDs that stop generation when sampled
-///
-/// # Returns
-/// Generated text and statistics
+/// Generation stops early when any of `stop_token_ids` (or the tokenizer's
+/// EOS) is sampled. With `stream`, tokens are printed to stdout as they are
+/// generated.
 pub fn generate<S: onyxia_ir::Session>(
     session: &mut LlmSession<S>,
     tokenizer: &Tokenizer,

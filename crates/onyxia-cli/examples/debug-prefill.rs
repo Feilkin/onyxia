@@ -3,7 +3,7 @@
 //!
 //! `gpu != ref` at some position ⇒ kernel bug at whatever op differs;
 //! `gpu == ref` but generation looks wrong ⇒ suspect lowering semantics
-//! (compare against onnxruntime — see the differential-testing notes).
+//! (both backends share it — compare against onnxruntime instead).
 //!
 //! ```sh
 //! cargo run --release -p onyxia-cli --example debug-prefill

@@ -1,4 +1,4 @@
-//! CubeCL backend for Onyxia — the second-backend spike (plan milestone E).
+//! CubeCL backend for Onyxia.
 //!
 //! Implements **primitives only**: `supports()` returns false for every
 //! composite, so legalization inlines all decompositions. This is the proof
@@ -11,7 +11,7 @@
 //! `cubecl-wgpu` here, but nothing in this crate names a graphics API —
 //! switching to `cubecl-cuda` is a type-parameter change.
 //!
-//! Spike simplifications (vs the wgpu backend): no fused composites, no
+//! Deliberately simpler than the wgpu backend: no fused composites, no
 //! buffer liveness/pooling (CubeCL's own allocator handles reuse),
 //! blocking readback (native only), and no Scatter/Dequantize/f16.
 

@@ -4,7 +4,7 @@
 //! once) and a list of *nodes* (operations producing values). There is no
 //! aliasing and no mutation: a node consumes values and produces new ones.
 //! Buffer reuse is a backend concern derived from liveness, never
-//! represented here (`doc/ir-design.md` §3).
+//! represented here.
 //!
 //! Weights live out-of-line in the [`ConstPool`], referenced by
 //! [`ConstId`] — values born from the pool have [`Origin::Const`]. There is
@@ -70,8 +70,8 @@ pub enum Origin {
 
 /// Compile-time known content of a small integer value.
 ///
-/// This is the *compile-time value domain* (`doc/ir-design.md` §3): shape
-/// arithmetic (`Shape → Gather → Concat → …`) evaluates at lowering into
+/// This is the *compile-time value domain*: shape arithmetic
+/// (`Shape → Gather → Concat → …`) evaluates at lowering into
 /// tensors of [`DimExpr`]s instead of runtime nodes. Only rank-0 and rank-1
 /// i64 values participate — exactly what ONNX shape plumbing produces.
 #[derive(Debug, Clone, PartialEq)]
@@ -118,8 +118,9 @@ pub struct ValueDef {
 pub enum NodeKind {
     /// A primitive — closed set, fully specified semantics.
     Prim(crate::prim::Prim),
-    /// A composite — open set; its decomposition lives in the lowering
-    /// registry, keyed by `name` (see `doc/ir-design.md` §2).
+    /// A composite — open set; its decomposition lives in a
+    /// [`DecompositionRegistry`](crate::decomp::DecompositionRegistry),
+    /// keyed by `name`.
     Composite(Composite),
 }
 
@@ -166,8 +167,7 @@ pub struct ConstEntry {
 /// Out-of-line storage for constant tensor data (weights, folded results).
 ///
 /// Kept behind accessors so the storage representation can later become
-/// zero-copy (`Arc<[u8]>` slices or mmap views) without touching callers
-/// (plan, pinned decision 7).
+/// zero-copy (`Arc<[u8]>` slices or mmap views) without touching callers.
 #[derive(Debug, Clone, Default)]
 pub struct ConstPool {
     entries: Vec<ConstEntry>,

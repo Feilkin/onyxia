@@ -1,8 +1,7 @@
 //! Reference interpreter — the executable specification of the primitives.
 //!
-//! Written for obvious correctness, never for speed (plan, pinned decision
-//! 3). Every backend kernel must match this interpreter within the pinned
-//! tolerances.
+//! Written for obvious correctness, never for speed. Every backend kernel
+//! must match this interpreter within the pinned tolerances.
 //!
 //! **Precision model:** floating-point operations are evaluated internally
 //! in `f64` and rounded to the value's dtype on store. The specification a
@@ -388,7 +387,7 @@ pub fn bind_shapes(module: &Module, inputs: &[(&str, DataType, &[usize])]) -> Re
 /// Evaluate a module on concrete inputs, returning the named outputs.
 ///
 /// The module must contain only primitive nodes — composites must be
-/// inlined first (legalization, milestone C).
+/// inlined first (see [`crate::decomp::inline_composites`]).
 pub fn eval(module: &Module, inputs: &[(&str, Tensor)]) -> Result<Vec<(String, Tensor)>> {
     let mut bindings = bind_inputs(module, inputs)?;
     let mut slots: Vec<Option<Tensor>> = vec![None; module.values.len()];

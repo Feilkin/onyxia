@@ -4,8 +4,8 @@
 //! Composites with a kernel in the [`crate::fused`] registry survive
 //! legalization and execute fused; everything else inlines through its
 //! decomposition down to primitives, which run as generated
-//! one-thread-per-element kernels (correctness-first). Remaining fused
-//! ports: GQA, RotaryEmbedding, MatMulNBits — see `fused.rs`.
+//! one-thread-per-element kernels (correctness-first). Fused GQA,
+//! RotaryEmbedding, and MatMulNBits kernels are planned — see `fused.rs`.
 
 use crate::gpu::{
     BufferPool, GpuContext, IMMEDIATE_SIZE, PipelineCache, WORKGROUP_SIZE, dispatch_size,

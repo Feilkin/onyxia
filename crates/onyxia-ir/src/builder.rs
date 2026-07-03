@@ -177,8 +177,8 @@ impl GraphBuilder {
     }
 
     /// Add a composite node. Output types must be declared by the caller —
-    /// deriving them through the decomposition is a registry concern
-    /// (milestone B).
+    /// they are not derived through the decomposition here (inlining
+    /// cross-checks them later).
     pub fn composite(
         &mut self,
         name: &str,
