@@ -236,6 +236,32 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Benchmark prefill/decode throughput on the wgpu backend
+    Bench {
+        /// Path to the ONNX model file
+        #[arg(value_name = "MODEL")]
+        model: PathBuf,
+
+        /// Prompt length for the measured prefill
+        #[arg(long, default_value = "64")]
+        prefill_len: usize,
+
+        /// Number of measured single-token decode steps
+        #[arg(long, default_value = "32")]
+        decode_tokens: usize,
+
+        /// Maximum sequence length (KV cache size)
+        #[arg(long, default_value = "2048")]
+        max_seq_len: usize,
+
+        /// Record a per-kernel GPU-time breakdown (timestamp queries)
+        #[arg(long)]
+        profile: bool,
+
+        /// Write the report as JSON to this file
+        #[arg(long, value_name = "FILE")]
+        json: Option<PathBuf>,
+    },
     /// Validate a model: parse, lower to IR, infer shapes — no GPU needed
     Validate {
         /// Path to the ONNX model file
@@ -261,8 +287,8 @@ enum BackendKind {
 /// tensor type, so this can't be a trait object — dispatch once here and
 /// stay generic downstream.
 enum AnySession {
-    Wgpu(onyxia_cli::llm::LlmSession<onyxia_backend_wgpu::WgpuSession>),
-    Cubecl(onyxia_cli::llm::LlmSession<onyxia_backend_cubecl::CubeclSession>),
+    Wgpu(Box<onyxia_cli::llm::LlmSession<onyxia_backend_wgpu::WgpuSession>>),
+    Cubecl(Box<onyxia_cli::llm::LlmSession<onyxia_backend_cubecl::CubeclSession>>),
 }
 
 async fn prepare_session(
@@ -279,13 +305,13 @@ async fn prepare_session(
                 .with_context(|| "Failed to create GPU context")?;
             let backend = onyxia_backend_wgpu::WgpuBackend::new(ctx);
             println!("Preparing session (uploading weights)...");
-            AnySession::Wgpu(LlmSession::new(&backend, module, max_seq_len)?)
+            AnySession::Wgpu(Box::new(LlmSession::new(&backend, module, max_seq_len)?))
         }
         BackendKind::Cubecl => {
             println!("Initializing GPU (cubecl backend, primitives only)...");
             let backend = onyxia_backend_cubecl::CubeclBackend::new();
             println!("Preparing session (uploading weights)...");
-            AnySession::Cubecl(LlmSession::new(&backend, module, max_seq_len)?)
+            AnySession::Cubecl(Box::new(LlmSession::new(&backend, module, max_seq_len)?))
         }
     })
 }
@@ -415,6 +441,23 @@ fn main() -> Result<()> {
             output,
         } => {
             cmd_trace_node(model, name, depth, direction, format, output)?;
+        }
+        Commands::Bench {
+            model,
+            prefill_len,
+            decode_tokens,
+            max_seq_len,
+            profile,
+            json,
+        } => {
+            pollster::block_on(cmd_bench(
+                model,
+                prefill_len,
+                decode_tokens,
+                max_seq_len,
+                profile,
+                json,
+            ))?;
         }
         Commands::Validate { model, verbose } => {
             onyxia_cli::validate::validate_model(&model, verbose)?;
@@ -782,7 +825,7 @@ async fn cmd_run_model(
     let session = prepare_session(backend, module, max_seq_len).await?;
     match session {
         AnySession::Wgpu(session) => run_model_with_session(
-            session,
+            *session,
             tokenizer_path,
             prompt,
             max_tokens,
@@ -793,7 +836,7 @@ async fn cmd_run_model(
             stream,
         ),
         AnySession::Cubecl(session) => run_model_with_session(
-            session,
+            *session,
             tokenizer_path,
             prompt,
             max_tokens,
@@ -930,7 +973,7 @@ async fn cmd_chat(
     let session = prepare_session(backend, module, max_seq_len).await?;
     match session {
         AnySession::Wgpu(session) => chat_with_session(
-            session,
+            *session,
             tokenizer_path,
             messages,
             max_tokens,
@@ -942,7 +985,7 @@ async fn cmd_chat(
             buggy_reset,
         ),
         AnySession::Cubecl(session) => chat_with_session(
-            session,
+            *session,
             tokenizer_path,
             messages,
             max_tokens,
@@ -1069,6 +1112,47 @@ fn chat_with_session<S: onyxia_ir::Session>(
 
     println!();
     Ok(())
+}
+
+/// Benchmark prefill/decode throughput on the wgpu backend.
+async fn cmd_bench(
+    model_path: PathBuf,
+    prefill_len: usize,
+    decode_tokens: usize,
+    max_seq_len: usize,
+    profile: bool,
+    json: Option<PathBuf>,
+) -> Result<()> {
+    println!("Loading model from {}...", model_path.display());
+    let graph = onyxia_onnx::load_and_parse_model(&model_path)
+        .with_context(|| format!("Failed to load model from {}", model_path.display()))?;
+
+    println!("Lowering to IR...");
+    let module = onyxia_lower::lower(graph, &onyxia_lower::standard_registry())
+        .with_context(|| "Failed to lower model")?;
+
+    println!("Initializing GPU (wgpu backend)...");
+    let ctx = onyxia_backend_wgpu::GpuContext::new()
+        .await
+        .with_context(|| "Failed to create GPU context")?;
+    let adapter = format!(
+        "{} ({:?})",
+        ctx.adapter_info.name, ctx.adapter_info.backend
+    );
+    let backend = onyxia_backend_wgpu::WgpuBackend::new(ctx);
+    println!("Preparing session (uploading weights)...");
+    let mut session = onyxia_cli::llm::LlmSession::new(&backend, module, max_seq_len)?;
+
+    onyxia_cli::bench::run(
+        &mut session,
+        &onyxia_cli::bench::BenchConfig {
+            prefill_len,
+            decode_tokens,
+            profile,
+            json,
+            adapter,
+        },
+    )
 }
 
 /// Inspect specific nodes in an ONNX model.

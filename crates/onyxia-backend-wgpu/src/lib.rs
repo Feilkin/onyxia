@@ -16,8 +16,10 @@
 pub mod fused;
 pub mod gpu;
 pub mod kernels;
+pub mod profile;
 pub mod session;
 
 pub use fused::{CompositeKernel, KernelRegistry};
 pub use gpu::GpuContext;
+pub use profile::KernelTiming;
 pub use session::{GpuTensor, WgpuBackend, WgpuSession};

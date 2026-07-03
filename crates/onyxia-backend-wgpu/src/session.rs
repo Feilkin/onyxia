@@ -8,9 +8,11 @@
 //! RotaryEmbedding, and MatMulNBits kernels are planned — see `fused.rs`.
 
 use crate::gpu::{
-    BufferPool, GpuContext, IMMEDIATE_SIZE, PipelineCache, WORKGROUP_SIZE, dispatch_size,
+    BufferPool, GpuContext, IMMEDIATE_SIZE, MemCounter, PipelineCache, TrackedBuffer,
+    WORKGROUP_SIZE, dispatch_size,
 };
 use crate::kernels::{self, Imm, MAX_RANK};
+use crate::profile::{KernelTiming, Profiler};
 use onyxia_ir::graph::{Module, NodeId, NodeKind, Origin, ValueId};
 use onyxia_ir::interp::{Tensor, bind_shapes};
 use onyxia_ir::prim::{BinaryOp, CmpOp, Prim, ReduceOp, UnaryOp};
@@ -21,7 +23,7 @@ use std::sync::Arc;
 /// A device-resident tensor handle. Cheap to clone (buffer is shared).
 #[derive(Clone)]
 pub struct GpuTensor {
-    pub(crate) buffer: Arc<wgpu::Buffer>,
+    pub(crate) buffer: Arc<TrackedBuffer>,
     /// Logical dtype (the physical GPU layout is backend-private).
     pub dtype: DataType,
     pub shape: Vec<usize>,
@@ -160,6 +162,7 @@ impl onyxia_ir::Backend for WgpuBackend {
         }
 
         // Upload constants once.
+        let mem = Arc::new(MemCounter::default());
         let mut consts: HashMap<ValueId, GpuTensor> = HashMap::new();
         for id in module.value_ids() {
             let def = module.value(id);
@@ -181,7 +184,7 @@ impl onyxia_ir::Backend for WgpuBackend {
             consts.insert(
                 id,
                 GpuTensor {
-                    buffer: Arc::new(buffer),
+                    buffer: Arc::new(TrackedBuffer::new(buffer, &mem)),
                     dtype: def.ty.dtype,
                     shape: host.shape().to_vec(),
                 },
@@ -202,10 +205,12 @@ impl onyxia_ir::Backend for WgpuBackend {
                 0
             }),
             pool: BufferPool::default(),
+            mem,
             encoder: None,
             use_immediates: self.ctx.use_immediates,
             imm_buffers: Vec::new(),
             imm_free: Vec::new(),
+            profiler: None,
         })
     }
 }
@@ -221,6 +226,8 @@ pub struct WgpuSession {
     kernels: crate::fused::KernelRegistry,
     pipelines: PipelineCache,
     pool: BufferPool,
+    /// Live/peak byte accounting for every buffer this session creates.
+    mem: Arc<MemCounter>,
     encoder: Option<wgpu::CommandEncoder>,
     /// False → params bind as a storage buffer instead of `set_immediates`
     /// (the web path; see `gpu.rs` module docs).
@@ -230,15 +237,74 @@ pub struct WgpuSession {
     /// `imm_free` at submit. MUST NOT come from the tensor pool: a params
     /// `write_buffer` executes before the batch, so sharing a buffer with a
     /// tensor that dies mid-batch lets the tensor write clobber the params.
-    imm_buffers: Vec<Arc<wgpu::Buffer>>,
+    imm_buffers: Vec<Arc<TrackedBuffer>>,
     /// Free list of `IMMEDIATE_SIZE` params buffers (fallback mode only).
-    imm_free: Vec<Arc<wgpu::Buffer>>,
+    imm_free: Vec<Arc<TrackedBuffer>>,
+    /// Per-dispatch GPU timing, when enabled (see [`Self::enable_profiling`]).
+    profiler: Option<Profiler>,
 }
 
 impl WgpuSession {
     /// Buffer-pool statistics `(fresh_allocations, reuses)`.
     pub fn pool_stats(&self) -> (usize, usize) {
         (self.pool.allocations, self.pool.reuses)
+    }
+
+    /// Total bytes of live GPU buffers created by this session: uploaded
+    /// weights, pooled intermediates, params buffers, and tensor handles
+    /// the caller still holds (e.g. a device-resident KV cache). Grows
+    /// with context length as the KV cache does.
+    pub fn resident_bytes(&self) -> u64 {
+        self.mem.live()
+    }
+
+    /// High-water mark of [`Self::resident_bytes`] since `prepare`.
+    pub fn peak_resident_bytes(&self) -> u64 {
+        self.mem.peak()
+    }
+
+    /// Enable per-dispatch GPU timing. Returns `false` (and stays off)
+    /// when the device lacks timestamp queries — core WebGPU makes them
+    /// optional, so callers must treat profiling as best-effort.
+    ///
+    /// While enabled, every dispatch's GPU execution time is recorded;
+    /// drain the measurements with [`Self::take_timings`].
+    pub fn enable_profiling(&mut self) -> bool {
+        if !self
+            .device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY)
+        {
+            return false;
+        }
+        if self.profiler.is_none() {
+            self.profiler = Some(Profiler::new(&self.queue));
+        }
+        true
+    }
+
+    /// Drain per-dispatch GPU timings recorded since the last call
+    /// (flushes in-flight work first). Empty when profiling is disabled.
+    pub async fn take_timings(&mut self) -> Result<Vec<KernelTiming>> {
+        self.submit();
+        match &mut self.profiler {
+            Some(p) => p.collect(&self.device).await,
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Flush pending work and block until the GPU is idle. Benchmarks use
+    /// this to time dispatch batches without a readback.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn wait_idle(&mut self) -> Result<()> {
+        self.submit();
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|e| Error::Runtime(format!("GPU poll failed: {e:?}")))?;
+        Ok(())
     }
 
     pub(crate) fn dispatch(
@@ -321,18 +387,21 @@ impl WgpuSession {
     /// In fallback mode: a storage buffer holding this dispatch's params
     /// blob, bound where `set_immediates` would have put it. Drawn from a
     /// dedicated free list, never the tensor pool (see `imm_buffers`).
-    fn imm_fallback_buffer(&mut self, imm: &Imm) -> Option<Arc<wgpu::Buffer>> {
+    fn imm_fallback_buffer(&mut self, imm: &Imm) -> Option<Arc<TrackedBuffer>> {
         if self.use_immediates {
             return None;
         }
         debug_assert!(imm.bytes().len() <= IMMEDIATE_SIZE as usize);
         let buf = self.imm_free.pop().unwrap_or_else(|| {
-            Arc::new(self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("params"),
-                size: IMMEDIATE_SIZE as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }))
+            Arc::new(TrackedBuffer::new(
+                self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("params"),
+                    size: IMMEDIATE_SIZE as u64,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }),
+                &self.mem,
+            ))
         });
         self.queue.write_buffer(&buf, 0, imm.bytes());
         Some(buf)
@@ -346,6 +415,19 @@ impl WgpuSession {
         imm: &Imm,
         wg: [u32; 3],
     ) {
+        let ts = self
+            .profiler
+            .as_mut()
+            .map(|p| p.begin_pass(&self.device, label));
+        let timestamp_writes = ts.map(|(set, base)| wgpu::ComputePassTimestampWrites {
+            query_set: self
+                .profiler
+                .as_ref()
+                .expect("profiler present when ts is")
+                .query_set(set),
+            beginning_of_pass_write_index: Some(base),
+            end_of_pass_write_index: Some(base + 1),
+        });
         let encoder = self.encoder.get_or_insert_with(|| {
             self.device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -354,7 +436,7 @@ impl WgpuSession {
         });
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some(label),
-            timestamp_writes: None,
+            timestamp_writes,
         });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bind_group, &[]);
@@ -365,7 +447,10 @@ impl WgpuSession {
     }
 
     fn submit(&mut self) {
-        if let Some(encoder) = self.encoder.take() {
+        if let Some(mut encoder) = self.encoder.take() {
+            if let Some(p) = &mut self.profiler {
+                p.resolve(&self.device, &mut encoder);
+            }
             self.queue.submit([encoder.finish()]);
         }
         // Safe to recycle now: a later batch's `write_buffer`s are queue-
@@ -374,9 +459,9 @@ impl WgpuSession {
     }
 
     pub(crate) fn alloc_out(&mut self, dtype: DataType, shape: Vec<usize>) -> GpuTensor {
-        let buffer = self
-            .pool
-            .acquire(&self.device, phys_bytes(shape.iter().product()));
+        let buffer =
+            self.pool
+                .acquire(&self.device, phys_bytes(shape.iter().product()), &self.mem);
         GpuTensor {
             buffer,
             dtype,
@@ -418,7 +503,7 @@ impl onyxia_ir::Session for WgpuSession {
         });
         self.queue.write_buffer(&buffer, 0, &data);
         Ok(GpuTensor {
-            buffer: Arc::new(buffer),
+            buffer: Arc::new(TrackedBuffer::new(buffer, &self.mem)),
             dtype: tensor.dtype(),
             shape: tensor.shape().to_vec(),
         })
@@ -465,6 +550,10 @@ impl onyxia_ir::Session for WgpuSession {
         // 4. Dispatch.
         for step in 0..self.order.len() {
             let node_id = self.order[step];
+            if let Some(p) = &mut self.profiler {
+                let node = self.module.node(node_id);
+                p.tag = node.loc.name.clone().unwrap_or_default();
+            }
             self.run_node(node_id, &regs, &shapes, &bindings)
                 .map(|outs| {
                     for (out, &out_id) in outs.into_iter().zip(&self.module.node(node_id).outputs) {

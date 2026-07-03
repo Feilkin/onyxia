@@ -219,6 +219,12 @@ impl<S: Session> LlmSession<S> {
     pub fn kv_pairs(&self) -> &[(String, String)] {
         &self.kv_pairs
     }
+
+    /// Direct access to the backend session, for backend-specific
+    /// diagnostics (profiling, memory accounting).
+    pub fn backend_mut(&mut self) -> &mut S {
+        &mut self.session
+    }
 }
 
 /// Discover KV cache pairs by name: `present.{N}.{key|value}` outputs paired

@@ -2,6 +2,7 @@
 //! inspection, and validation, shared by the `onyxia-cli` binary and its
 //! tests.
 
+pub mod bench;
 pub mod generate;
 pub mod inspect;
 pub mod llm;

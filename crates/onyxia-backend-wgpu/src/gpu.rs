@@ -19,6 +19,7 @@
 use onyxia_ir::{Error, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Reserved immediate (push-constant) space per pipeline, in bytes.
 pub const IMMEDIATE_SIZE: u32 = 256;
@@ -60,16 +61,23 @@ impl GpuContext {
         let adapter_info = adapter.get_info();
         let use_immediates =
             allow_immediates && adapter.features().contains(wgpu::Features::IMMEDIATES);
+        let mut required_features = if use_immediates {
+            wgpu::Features::IMMEDIATES
+        } else {
+            wgpu::Features::empty()
+        };
+        // Timestamp queries power the opt-in per-dispatch profiler
+        // (`WgpuSession::enable_profiling`); requesting the feature is
+        // free when unused.
+        if adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+            required_features |= wgpu::Features::TIMESTAMP_QUERY;
+        }
         // Take the adapter's full limits: model weights (embedding tables)
         // exceed the 128/256 MiB downlevel buffer defaults.
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("onyxia"),
-                required_features: if use_immediates {
-                    wgpu::Features::IMMEDIATES
-                } else {
-                    wgpu::Features::empty()
-                },
+                required_features,
                 required_limits: wgpu::Limits {
                     max_immediate_size: if use_immediates { IMMEDIATE_SIZE } else { 0 },
                     ..adapter.limits()
@@ -252,10 +260,69 @@ pub fn dispatch_size(linear_workgroups: u32) -> ([u32; 3], u32) {
     }
 }
 
+/// Live/peak byte counters for the GPU buffers of one session.
+///
+/// Every buffer a session creates ([`TrackedBuffer`]) adds its allocated
+/// size on creation and subtracts it on drop, so `live` is the session's
+/// true resident footprint: weights, pooled intermediates, params
+/// buffers, and tensor handles the caller still holds (e.g. a KV cache).
+#[derive(Default, Debug)]
+pub struct MemCounter {
+    live: AtomicU64,
+    peak: AtomicU64,
+}
+
+impl MemCounter {
+    fn add(&self, bytes: u64) {
+        let live = self.live.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        self.peak.fetch_max(live, Ordering::Relaxed);
+    }
+
+    /// Bytes currently allocated.
+    pub fn live(&self) -> u64 {
+        self.live.load(Ordering::Relaxed)
+    }
+
+    /// High-water mark of [`Self::live`].
+    pub fn peak(&self) -> u64 {
+        self.peak.load(Ordering::Relaxed)
+    }
+}
+
+/// A `wgpu::Buffer` counted against a [`MemCounter`] for its whole
+/// lifetime. Derefs to the underlying buffer.
+pub struct TrackedBuffer {
+    buffer: wgpu::Buffer,
+    mem: Arc<MemCounter>,
+}
+
+impl TrackedBuffer {
+    pub fn new(buffer: wgpu::Buffer, mem: &Arc<MemCounter>) -> Self {
+        mem.add(buffer.size());
+        Self {
+            buffer,
+            mem: Arc::clone(mem),
+        }
+    }
+}
+
+impl std::ops::Deref for TrackedBuffer {
+    type Target = wgpu::Buffer;
+    fn deref(&self) -> &wgpu::Buffer {
+        &self.buffer
+    }
+}
+
+impl Drop for TrackedBuffer {
+    fn drop(&mut self) {
+        self.mem.live.fetch_sub(self.buffer.size(), Ordering::Relaxed);
+    }
+}
+
 /// Size-bucketed free list of GPU buffers (power-of-two buckets, ≥4 bytes).
 #[derive(Default)]
 pub struct BufferPool {
-    free: HashMap<u64, Vec<Arc<wgpu::Buffer>>>,
+    free: HashMap<u64, Vec<Arc<TrackedBuffer>>>,
     /// Fresh allocations made (diagnostics).
     pub allocations: usize,
     /// Buffers served from the pool (diagnostics).
@@ -268,25 +335,33 @@ impl BufferPool {
     }
 
     /// Acquire a storage buffer of at least `size` bytes.
-    pub fn acquire(&mut self, device: &wgpu::Device, size: u64) -> Arc<wgpu::Buffer> {
+    pub fn acquire(
+        &mut self,
+        device: &wgpu::Device,
+        size: u64,
+        mem: &Arc<MemCounter>,
+    ) -> Arc<TrackedBuffer> {
         let bucket = Self::bucket(size);
         if let Some(buf) = self.free.get_mut(&bucket).and_then(Vec::pop) {
             self.reuses += 1;
             return buf;
         }
         self.allocations += 1;
-        Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: bucket,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        }))
+        Arc::new(TrackedBuffer::new(
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: bucket,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            mem,
+        ))
     }
 
-    /// Return a buffer to the pool.
-    pub fn release(&mut self, buffer: Arc<wgpu::Buffer>) {
+    /// Return a buffer to the pool (it stays resident, and counted).
+    pub fn release(&mut self, buffer: Arc<TrackedBuffer>) {
         self.free
             .entry(Self::bucket(buffer.size()))
             .or_default()
