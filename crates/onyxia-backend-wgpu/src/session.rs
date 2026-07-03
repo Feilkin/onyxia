@@ -352,6 +352,19 @@ impl WgpuSession {
         imm: &Imm,
         rows: usize,
     ) -> Result<()> {
+        self.dispatch_grid(label, wgsl, buffers, imm, [rows.max(1) as u32, 1, 1])
+    }
+
+    /// Dispatch with an explicit workgroup grid (kernels that don't map
+    /// one thread per output element).
+    pub(crate) fn dispatch_grid(
+        &mut self,
+        label: &str,
+        wgsl: &str,
+        buffers: &[&wgpu::Buffer],
+        imm: &Imm,
+        wg: [u32; 3],
+    ) -> Result<()> {
         let (pipeline, layout) = self.pipelines.get_or_create(&self.device, label, wgsl)?;
         let imm_buf = self.imm_fallback_buffer(imm);
         let mut entries: Vec<wgpu::BindGroupEntry> = buffers
@@ -373,13 +386,7 @@ impl WgpuSession {
             layout: &layout,
             entries: &entries,
         });
-        self.encode_pass(
-            label,
-            &pipeline,
-            &bind_group,
-            imm,
-            [rows.max(1) as u32, 1, 1],
-        );
+        self.encode_pass(label, &pipeline, &bind_group, imm, wg);
         self.imm_buffers.extend(imm_buf);
         Ok(())
     }
@@ -679,6 +686,86 @@ impl WgpuSession {
         }
     }
 
+    /// M=1 matmul via the split-K matvec kernels (see the matvec section
+    /// of `kernels.rs`). When K is sliced (`ks > 1`) partial sums land in
+    /// a pooled scratch buffer and a second dispatch folds them into the
+    /// output; within a batch the queue orders the two dispatches, so the
+    /// scratch can return to the pool as soon as both are encoded.
+    fn matvec(
+        &mut self,
+        a: &GpuTensor,
+        b: &GpuTensor,
+        out: GpuTensor,
+        n: usize,
+        k: usize,
+        trans_b: bool,
+    ) -> Result<GpuTensor> {
+        /// Workgroups needed to fill a discrete GPU.
+        const TARGET_WG: usize = 512;
+        const MAX_KS: usize = 64;
+        let base_wg = if trans_b { n } else { n.div_ceil(64) };
+        let ks = if base_wg >= TARGET_WG {
+            1
+        } else {
+            let per_slice = if trans_b { 256 } else { 64 };
+            TARGET_WG
+                .div_ceil(base_wg)
+                .min(k.div_ceil(per_slice))
+                .clamp(1, MAX_KS)
+        };
+        let chunk = k.div_ceil(ks);
+
+        let scratch = (ks > 1)
+            .then(|| self.pool.acquire(&self.device, (ks * n * 4) as u64, &self.mem));
+        let dst: &wgpu::Buffer = scratch.as_deref().unwrap_or(&out.buffer);
+
+        if trans_b {
+            let total = (n * ks) as u32;
+            let x_wgs = total.min(65535);
+            let y = total.div_ceil(x_wgs);
+            let imm = Imm::new()
+                .u(n as u32)
+                .u(k as u32)
+                .u(ks as u32)
+                .u(chunk as u32)
+                .u(x_wgs);
+            self.dispatch_grid(
+                "matvec_transb_f32",
+                &kernels::matvec_transb(),
+                &[&a.buffer, &b.buffer, dst],
+                &imm,
+                [x_wgs, y, 1],
+            )?;
+        } else {
+            let imm = Imm::new()
+                .u(n as u32)
+                .u(k as u32)
+                .u(ks as u32)
+                .u(chunk as u32);
+            self.dispatch_grid(
+                "matvec_kn_f32",
+                &kernels::matvec_kn(),
+                &[&a.buffer, &b.buffer, dst],
+                &imm,
+                [n.div_ceil(64) as u32, ks as u32, 1],
+            )?;
+        }
+
+        if let Some(scratch) = scratch {
+            let (imm, size) = size_imm(n);
+            let imm = imm.u(ks as u32);
+            self.dispatch(
+                "matvec_reduce_f32",
+                &kernels::matvec_reduce(),
+                &[&scratch, &out.buffer],
+                &imm,
+                size,
+            )?;
+            self.pool.release(scratch);
+        }
+        Ok(out)
+    }
+
     /// Execute one primitive node, returning its output tensor.
     fn run_prim(
         &mut self,
@@ -851,6 +938,41 @@ impl WgpuSession {
                 };
                 let a_bs = stride_of(a.shape[..ar - 2].iter().product(), m * k, "lhs")?;
                 let b_bs = stride_of(b.shape[..br - 2].iter().product(), k * n, "rhs")?;
+
+                // Fast paths (f32): unbatched matrix × vector for decode-
+                // step projections (`trans_a` is irrelevant at m == 1 —
+                // `[K,1]` and `[1,K]` share a memory layout), tiled matmul
+                // for everything else. Grid dims cap at 65535 workgroups;
+                // anything larger falls through to the generic kernel.
+                if t == "f32" && k > 0 && n > 0 {
+                    if batch == 1 && m == 1 && n.div_ceil(64) <= 65535 {
+                        let out = self.alloc_out(out_dtype, out_shape);
+                        return self.matvec(&a, &b, out, n, k, *trans_b);
+                    }
+                    let grid = [n.div_ceil(16), m.div_ceil(16), batch];
+                    if grid.iter().all(|&g| g <= 65535) {
+                        let out = self.alloc_out(out_dtype, out_shape);
+                        let imm = Imm::new()
+                            .u(m as u32)
+                            .u(n as u32)
+                            .u(k as u32)
+                            .u(a_bs)
+                            .u(b_bs);
+                        self.dispatch_grid(
+                            &format!(
+                                "matmul_tiled_f32_{}{}",
+                                if *trans_a { "t" } else { "n" },
+                                if *trans_b { "t" } else { "n" },
+                            ),
+                            &kernels::matmul_tiled(*trans_a, *trans_b),
+                            &[&a.buffer, &b.buffer, &out.buffer],
+                            &imm,
+                            grid.map(|g| g as u32),
+                        )?;
+                        return Ok(out);
+                    }
+                }
+
                 let out = self.alloc_out(out_dtype, out_shape);
                 let (imm, size) = size_imm(out.numel());
                 let imm = imm

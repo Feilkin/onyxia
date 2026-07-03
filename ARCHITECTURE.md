@@ -125,9 +125,11 @@ as `i32` on device (range-checked at upload), `Bool` as `u32`.
 ## Known gaps
 
 - No fused GQA / RotaryEmbedding / MatMulNBits kernels yet (their
-  decompositions execute instead — correct, slower than optimal); no tiled
-  MatMul yet. Decode-speed impact quantified in
-  `doc/perf-baseline-2026-07.md`.
+  decompositions execute instead — correct, slower than optimal). MatMul
+  itself is covered: split-K matvec kernels for M=1, shared-memory tiled
+  kernel for M>1. Decode-speed history in
+  `doc/perf-baseline-2026-07.md`; the current bottleneck is CPU-side
+  dispatch overhead, which the fused kernels would cut.
 - No Dequantize GPU kernel (q4 models run only on the reference backend).
 - f16, late-bound dims on GPU (data-dependent shapes), >65535-row fused
   reductions.

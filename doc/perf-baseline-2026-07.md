@@ -5,6 +5,17 @@ comes from, measured on an RTX 3060 Ti (Vulkan) with the new benchmark
 tooling. Numbers below are the baseline to beat; re-run after every kernel
 change.
 
+> **Status update (same day):** fixes 1–3 below are implemented
+> (`fold_transpose_into_matmul` in the IR, split-K matvec kernels for
+> M=1, shared-memory tiled matmul for M>1). Measured after:
+> **decode 37 ms/tok (27 tok/s)** wall with GPU busy down to 11.4 ms/tok,
+> prefill 345 ms, VRAM 1.07 GiB resident (transpose intermediate gone).
+> Decode is now CPU-overhead-bound (GPU is 31 % of wall), exactly as
+> predicted — fix 4 (fused GQA/rotary, dispatch-count reduction) is the
+> next lever. Kernel microbenches after: trans_b lm_head 26.9 → 3.6 ms
+> (176 GiB/s), down_proj 720 → 92 µs (≈15 µs kernel + fixed submit
+> overhead), prefill lm_head 100 → 31 ms.
+
 ## How to reproduce
 
 ```sh
