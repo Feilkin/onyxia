@@ -8,9 +8,11 @@
 //! RotaryEmbedding, and MatMulNBits kernels are planned — see `fused.rs`.
 
 use crate::gpu::{
-    BufferPool, GpuContext, IMMEDIATE_SIZE, PipelineCache, WORKGROUP_SIZE, dispatch_size,
+    BindGroupCache, BufferPool, GpuContext, IMMEDIATE_SIZE, MemCounter, PipelineCache,
+    TrackedBuffer, WORKGROUP_SIZE, dispatch_size,
 };
 use crate::kernels::{self, Imm, MAX_RANK};
+use crate::profile::{KernelTiming, Profiler};
 use onyxia_ir::graph::{Module, NodeId, NodeKind, Origin, ValueId};
 use onyxia_ir::interp::{Tensor, bind_shapes};
 use onyxia_ir::prim::{BinaryOp, CmpOp, Prim, ReduceOp, UnaryOp};
@@ -21,7 +23,7 @@ use std::sync::Arc;
 /// A device-resident tensor handle. Cheap to clone (buffer is shared).
 #[derive(Clone)]
 pub struct GpuTensor {
-    pub(crate) buffer: Arc<wgpu::Buffer>,
+    pub(crate) buffer: Arc<TrackedBuffer>,
     /// Logical dtype (the physical GPU layout is backend-private).
     pub dtype: DataType,
     pub shape: Vec<usize>,
@@ -148,7 +150,9 @@ impl onyxia_ir::Backend for WgpuBackend {
         let order = module.topo_order()?;
 
         // Liveness: the last step index that reads each value. Module
-        // outputs (and inputs) are never freed within a run.
+        // outputs (and inputs) are never freed within a run. Inverted
+        // into per-step death lists so the run loop touches only the
+        // values that actually die at each step.
         let mut last_use: Vec<Option<usize>> = vec![Some(0); module.values.len()];
         for (step, &node_id) in order.iter().enumerate() {
             for &v in &module.node(node_id).inputs {
@@ -158,8 +162,15 @@ impl onyxia_ir::Backend for WgpuBackend {
         for (_, id) in module.outputs.iter().chain(module.inputs.iter()) {
             last_use[id.index()] = None;
         }
+        let mut deaths: Vec<Vec<u32>> = vec![Vec::new(); order.len()];
+        for (vi, lu) in last_use.iter().enumerate() {
+            if let Some(step) = lu {
+                deaths[*step].push(vi as u32);
+            }
+        }
 
         // Upload constants once.
+        let mem = Arc::new(MemCounter::default());
         let mut consts: HashMap<ValueId, GpuTensor> = HashMap::new();
         for id in module.value_ids() {
             let def = module.value(id);
@@ -181,7 +192,7 @@ impl onyxia_ir::Backend for WgpuBackend {
             consts.insert(
                 id,
                 GpuTensor {
-                    buffer: Arc::new(buffer),
+                    buffer: Arc::new(TrackedBuffer::new(buffer, &mem)),
                     dtype: def.ty.dtype,
                     shape: host.shape().to_vec(),
                 },
@@ -193,7 +204,7 @@ impl onyxia_ir::Backend for WgpuBackend {
             queue: Arc::clone(&self.ctx.queue),
             module,
             order,
-            last_use,
+            deaths,
             consts,
             kernels: self.kernels.clone(),
             pipelines: PipelineCache::new(if self.ctx.use_immediates {
@@ -201,11 +212,15 @@ impl onyxia_ir::Backend for WgpuBackend {
             } else {
                 0
             }),
+            bind_groups: BindGroupCache::default(),
             pool: BufferPool::default(),
+            mem,
             encoder: None,
+            pass: None,
             use_immediates: self.ctx.use_immediates,
             imm_buffers: Vec::new(),
             imm_free: Vec::new(),
+            profiler: None,
         })
     }
 }
@@ -216,12 +231,19 @@ pub struct WgpuSession {
     queue: Arc<wgpu::Queue>,
     module: Module,
     order: Vec<NodeId>,
-    last_use: Vec<Option<usize>>,
+    /// Value indices whose last read is at each step (freed to the pool).
+    deaths: Vec<Vec<u32>>,
     consts: HashMap<ValueId, GpuTensor>,
     kernels: crate::fused::KernelRegistry,
     pipelines: PipelineCache,
+    bind_groups: BindGroupCache,
     pool: BufferPool,
+    /// Live/peak byte accounting for every buffer this session creates.
+    mem: Arc<MemCounter>,
     encoder: Option<wgpu::CommandEncoder>,
+    /// Shared compute pass for the in-flight batch (non-profiling mode);
+    /// ended (dropped) at submit, before the encoder finishes.
+    pass: Option<wgpu::ComputePass<'static>>,
     /// False → params bind as a storage buffer instead of `set_immediates`
     /// (the web path; see `gpu.rs` module docs).
     use_immediates: bool,
@@ -230,9 +252,11 @@ pub struct WgpuSession {
     /// `imm_free` at submit. MUST NOT come from the tensor pool: a params
     /// `write_buffer` executes before the batch, so sharing a buffer with a
     /// tensor that dies mid-batch lets the tensor write clobber the params.
-    imm_buffers: Vec<Arc<wgpu::Buffer>>,
+    imm_buffers: Vec<Arc<TrackedBuffer>>,
     /// Free list of `IMMEDIATE_SIZE` params buffers (fallback mode only).
-    imm_free: Vec<Arc<wgpu::Buffer>>,
+    imm_free: Vec<Arc<TrackedBuffer>>,
+    /// Per-dispatch GPU timing, when enabled (see [`Self::enable_profiling`]).
+    profiler: Option<Profiler>,
 }
 
 impl WgpuSession {
@@ -241,79 +265,108 @@ impl WgpuSession {
         (self.pool.allocations, self.pool.reuses)
     }
 
+    /// Total bytes of live GPU buffers created by this session: uploaded
+    /// weights, pooled intermediates, params buffers, and tensor handles
+    /// the caller still holds (e.g. a device-resident KV cache). Grows
+    /// with context length as the KV cache does.
+    pub fn resident_bytes(&self) -> u64 {
+        self.mem.live()
+    }
+
+    /// High-water mark of [`Self::resident_bytes`] since `prepare`.
+    pub fn peak_resident_bytes(&self) -> u64 {
+        self.mem.peak()
+    }
+
+    /// Enable per-dispatch GPU timing. Returns `false` (and stays off)
+    /// when the device lacks timestamp queries — core WebGPU makes them
+    /// optional, so callers must treat profiling as best-effort.
+    ///
+    /// While enabled, every dispatch's GPU execution time is recorded;
+    /// drain the measurements with [`Self::take_timings`].
+    pub fn enable_profiling(&mut self) -> bool {
+        if !self
+            .device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY)
+        {
+            return false;
+        }
+        if self.profiler.is_none() {
+            self.profiler = Some(Profiler::new(&self.queue));
+        }
+        true
+    }
+
+    /// Drain per-dispatch GPU timings recorded since the last call
+    /// (flushes in-flight work first). Empty when profiling is disabled.
+    pub async fn take_timings(&mut self) -> Result<Vec<KernelTiming>> {
+        self.submit();
+        match &mut self.profiler {
+            Some(p) => p.collect(&self.device).await,
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Flush pending work and block until the GPU is idle. Benchmarks use
+    /// this to time dispatch batches without a readback.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn wait_idle(&mut self) -> Result<()> {
+        self.submit();
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|e| Error::Runtime(format!("GPU poll failed: {e:?}")))?;
+        Ok(())
+    }
+
     pub(crate) fn dispatch(
         &mut self,
         label: &str,
-        wgsl: &str,
-        buffers: &[&wgpu::Buffer],
+        wgsl: impl FnOnce() -> String,
+        buffers: &[&Arc<TrackedBuffer>],
         imm: &Imm,
         size: usize,
     ) -> Result<()> {
-        let (pipeline, layout) = self.pipelines.get_or_create(&self.device, label, wgsl)?;
-        let imm_buf = self.imm_fallback_buffer(imm);
-        let mut entries: Vec<wgpu::BindGroupEntry> = buffers
-            .iter()
-            .enumerate()
-            .map(|(i, b)| wgpu::BindGroupEntry {
-                binding: i as u32,
-                resource: b.as_entire_binding(),
-            })
-            .collect();
-        if let Some(buf) = &imm_buf {
-            entries.push(wgpu::BindGroupEntry {
-                binding: buffers.len() as u32,
-                resource: buf.as_entire_binding(),
-            });
-        }
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some(label),
-            layout: &layout,
-            entries: &entries,
-        });
         let linear = (size as u32).div_ceil(WORKGROUP_SIZE);
         let (wg, _x_stride) = dispatch_size(linear);
-        self.encode_pass(label, &pipeline, &bind_group, imm, wg);
-        self.imm_buffers.extend(imm_buf);
-        Ok(())
+        self.dispatch_grid(label, wgsl, buffers, imm, wg)
     }
 
     /// Dispatch a row-reduction kernel: exactly `rows` workgroups.
     pub(crate) fn dispatch_rows(
         &mut self,
         label: &str,
-        wgsl: &str,
-        buffers: &[&wgpu::Buffer],
+        wgsl: impl FnOnce() -> String,
+        buffers: &[&Arc<TrackedBuffer>],
         imm: &Imm,
         rows: usize,
     ) -> Result<()> {
+        self.dispatch_grid(label, wgsl, buffers, imm, [rows.max(1) as u32, 1, 1])
+    }
+
+    /// Dispatch with an explicit workgroup grid (kernels that don't map
+    /// one thread per output element). `wgsl` runs only on a
+    /// pipeline-cache miss; bind groups are cached by buffer identity.
+    pub(crate) fn dispatch_grid(
+        &mut self,
+        label: &str,
+        wgsl: impl FnOnce() -> String,
+        buffers: &[&Arc<TrackedBuffer>],
+        imm: &Imm,
+        wg: [u32; 3],
+    ) -> Result<()> {
         let (pipeline, layout) = self.pipelines.get_or_create(&self.device, label, wgsl)?;
         let imm_buf = self.imm_fallback_buffer(imm);
-        let mut entries: Vec<wgpu::BindGroupEntry> = buffers
-            .iter()
-            .enumerate()
-            .map(|(i, b)| wgpu::BindGroupEntry {
-                binding: i as u32,
-                resource: b.as_entire_binding(),
-            })
-            .collect();
-        if let Some(buf) = &imm_buf {
-            entries.push(wgpu::BindGroupEntry {
-                binding: buffers.len() as u32,
-                resource: buf.as_entire_binding(),
-            });
-        }
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some(label),
-            layout: &layout,
-            entries: &entries,
-        });
-        self.encode_pass(
-            label,
-            &pipeline,
-            &bind_group,
-            imm,
-            [rows.max(1) as u32, 1, 1],
-        );
+        let bind_group = {
+            let mut all: Vec<&Arc<TrackedBuffer>> = buffers.to_vec();
+            all.extend(&imm_buf);
+            self.bind_groups
+                .get_or_create(&self.device, label, &layout, &all)
+        };
+        self.encode_pass(label, &pipeline, &bind_group, imm, wg);
         self.imm_buffers.extend(imm_buf);
         Ok(())
     }
@@ -321,18 +374,21 @@ impl WgpuSession {
     /// In fallback mode: a storage buffer holding this dispatch's params
     /// blob, bound where `set_immediates` would have put it. Drawn from a
     /// dedicated free list, never the tensor pool (see `imm_buffers`).
-    fn imm_fallback_buffer(&mut self, imm: &Imm) -> Option<Arc<wgpu::Buffer>> {
+    fn imm_fallback_buffer(&mut self, imm: &Imm) -> Option<Arc<TrackedBuffer>> {
         if self.use_immediates {
             return None;
         }
         debug_assert!(imm.bytes().len() <= IMMEDIATE_SIZE as usize);
         let buf = self.imm_free.pop().unwrap_or_else(|| {
-            Arc::new(self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("params"),
-                size: IMMEDIATE_SIZE as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }))
+            Arc::new(TrackedBuffer::new(
+                self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("params"),
+                    size: IMMEDIATE_SIZE as u64,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }),
+                &self.mem,
+            ))
         });
         self.queue.write_buffer(&buf, 0, imm.bytes());
         Some(buf)
@@ -352,9 +408,36 @@ impl WgpuSession {
                     label: Some("onyxia_batch"),
                 })
         });
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some(label),
-            timestamp_writes: None,
+        // Profiling needs pass-granularity timestamps, so each dispatch
+        // gets its own pass. Otherwise every dispatch in the batch shares
+        // one pass — per-pass begin/end costs real CPU in wgpu-core and
+        // the driver, and WebGPU already orders dispatches within a pass.
+        if let Some(p) = self.profiler.as_mut() {
+            self.pass = None;
+            let (set, base) = p.begin_pass(&self.device, label);
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some(label),
+                timestamp_writes: Some(wgpu::ComputePassTimestampWrites {
+                    query_set: p.query_set(set),
+                    beginning_of_pass_write_index: Some(base),
+                    end_of_pass_write_index: Some(base + 1),
+                }),
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, bind_group, &[]);
+            if self.use_immediates {
+                pass.set_immediates(0, imm.bytes());
+            }
+            pass.dispatch_workgroups(wg[0], wg[1], wg[2]);
+            return;
+        }
+        let pass = self.pass.get_or_insert_with(|| {
+            encoder
+                .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("onyxia_batch"),
+                    timestamp_writes: None,
+                })
+                .forget_lifetime()
         });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bind_group, &[]);
@@ -365,7 +448,12 @@ impl WgpuSession {
     }
 
     fn submit(&mut self) {
-        if let Some(encoder) = self.encoder.take() {
+        // End the shared pass first: it records into the encoder on drop.
+        self.pass = None;
+        if let Some(mut encoder) = self.encoder.take() {
+            if let Some(p) = &mut self.profiler {
+                p.resolve(&self.device, &mut encoder);
+            }
             self.queue.submit([encoder.finish()]);
         }
         // Safe to recycle now: a later batch's `write_buffer`s are queue-
@@ -374,9 +462,9 @@ impl WgpuSession {
     }
 
     pub(crate) fn alloc_out(&mut self, dtype: DataType, shape: Vec<usize>) -> GpuTensor {
-        let buffer = self
-            .pool
-            .acquire(&self.device, phys_bytes(shape.iter().product()));
+        let buffer =
+            self.pool
+                .acquire(&self.device, phys_bytes(shape.iter().product()), &self.mem);
         GpuTensor {
             buffer,
             dtype,
@@ -418,7 +506,7 @@ impl onyxia_ir::Session for WgpuSession {
         });
         self.queue.write_buffer(&buffer, 0, &data);
         Ok(GpuTensor {
-            buffer: Arc::new(buffer),
+            buffer: Arc::new(TrackedBuffer::new(buffer, &self.mem)),
             dtype: tensor.dtype(),
             shape: tensor.shape().to_vec(),
         })
@@ -465,6 +553,10 @@ impl onyxia_ir::Session for WgpuSession {
         // 4. Dispatch.
         for step in 0..self.order.len() {
             let node_id = self.order[step];
+            if let Some(p) = &mut self.profiler {
+                let node = self.module.node(node_id);
+                p.tag = node.loc.name.clone().unwrap_or_default();
+            }
             self.run_node(node_id, &regs, &shapes, &bindings)
                 .map(|outs| {
                     for (out, &out_id) in outs.into_iter().zip(&self.module.node(node_id).outputs) {
@@ -478,12 +570,10 @@ impl onyxia_ir::Session for WgpuSession {
                 })?;
 
             // Release dead intermediates to the pool.
-            for (vi, lu) in self.last_use.iter().enumerate() {
-                if *lu == Some(step) {
-                    if let Some(t) = regs[vi].take() {
-                        if let Ok(buffer) = Arc::try_unwrap(t.buffer) {
-                            self.pool.release(Arc::new(buffer));
-                        }
+            for &vi in &self.deaths[step] {
+                if let Some(t) = regs[vi as usize].take() {
+                    if let Ok(buffer) = Arc::try_unwrap(t.buffer) {
+                        self.pool.release(Arc::new(buffer));
                     }
                 }
             }
@@ -590,6 +680,118 @@ impl WgpuSession {
         }
     }
 
+    /// M=1 matmul via the split-K matvec kernels (see the matvec section
+    /// of `kernels.rs`). When K is sliced (`ks > 1`) partial sums land in
+    /// a pooled scratch buffer and a second dispatch folds them into the
+    /// output; within a batch the queue orders the two dispatches, so the
+    /// scratch can return to the pool as soon as both are encoded.
+    fn matvec(
+        &mut self,
+        a: &GpuTensor,
+        b: &GpuTensor,
+        out: GpuTensor,
+        n: usize,
+        k: usize,
+        trans_b: bool,
+    ) -> Result<GpuTensor> {
+        /// Workgroups needed to fill a discrete GPU.
+        const TARGET_WG: usize = 512;
+        const MAX_KS: usize = 64;
+
+        // Vec4 variants when the vectorized axis is 4-aligned (K for the
+        // [N,K] layout, N for [K,N]); the scalar kernels remain as the
+        // fallback for odd sizes.
+        let vec4 = if trans_b { k % 4 == 0 } else { n % 4 == 0 };
+        let base_wg = match (trans_b, vec4) {
+            (true, true) => n.div_ceil(4), // 4 rows per workgroup
+            (true, false) => n,
+            // Both [K,N] kernels tile 64 scalar columns per workgroup.
+            (false, _) => n.div_ceil(64),
+        };
+        let per_slice = if trans_b { 256 } else { 64 };
+        let ks = if base_wg >= TARGET_WG {
+            1
+        } else {
+            TARGET_WG
+                .div_ceil(base_wg)
+                .min(k.div_ceil(per_slice))
+                .clamp(1, MAX_KS)
+        };
+
+        let scratch = (ks > 1)
+            .then(|| self.pool.acquire(&self.device, (ks * n * 4) as u64, &self.mem));
+        let dst: &Arc<TrackedBuffer> = scratch.as_ref().unwrap_or(&out.buffer);
+        let buffers = [&a.buffer, &b.buffer, dst];
+
+        if trans_b {
+            let total = (base_wg * ks) as u32;
+            let x_wgs = total.min(65535);
+            let grid = [x_wgs, total.div_ceil(x_wgs), 1];
+            if vec4 {
+                let k4 = k / 4;
+                let imm = Imm::new()
+                    .u(n as u32)
+                    .u(k4 as u32)
+                    .u(ks as u32)
+                    .u(k4.div_ceil(ks) as u32)
+                    .u(x_wgs);
+                self.dispatch_grid(
+                    "matvec_transb_v4_f32",
+                    kernels::matvec_transb_v4,
+                    &buffers,
+                    &imm,
+                    grid,
+                )?;
+            } else {
+                let imm = Imm::new()
+                    .u(n as u32)
+                    .u(k as u32)
+                    .u(ks as u32)
+                    .u(k.div_ceil(ks) as u32)
+                    .u(x_wgs);
+                self.dispatch_grid(
+                    "matvec_transb_f32",
+                    kernels::matvec_transb,
+                    &buffers,
+                    &imm,
+                    grid,
+                )?;
+            }
+        } else {
+            let grid = [base_wg as u32, ks as u32, 1];
+            let imm = Imm::new()
+                .u(if vec4 { n / 4 } else { n } as u32)
+                .u(k as u32)
+                .u(ks as u32)
+                .u(k.div_ceil(ks) as u32);
+            if vec4 {
+                self.dispatch_grid(
+                    "matvec_kn_v4_f32",
+                    kernels::matvec_kn_v4,
+                    &buffers,
+                    &imm,
+                    grid,
+                )?;
+            } else {
+                self.dispatch_grid("matvec_kn_f32", kernels::matvec_kn, &buffers, &imm, grid)?;
+            }
+        }
+
+        if let Some(scratch) = scratch {
+            let (imm, size) = size_imm(n);
+            let imm = imm.u(ks as u32);
+            self.dispatch(
+                "matvec_reduce_f32",
+                kernels::matvec_reduce,
+                &[&scratch, &out.buffer],
+                &imm,
+                size,
+            )?;
+            self.pool.release(scratch);
+        }
+        Ok(out)
+    }
+
     /// Execute one primitive node, returning its output tensor.
     fn run_prim(
         &mut self,
@@ -638,7 +840,7 @@ impl WgpuSession {
                 let (imm, size) = size_imm(out.numel());
                 self.dispatch(
                     &format!("cast_{ts}_{td}_{out_dtype}"),
-                    &kernels::cast(ts, td, &expr),
+                    || kernels::cast(ts, td, &expr),
                     &[&x.buffer, &out.buffer],
                     &imm,
                     size,
@@ -655,7 +857,7 @@ impl WgpuSession {
                 let (imm, size) = size_imm(out.numel());
                 self.dispatch(
                     &format!("unary_{}_{t}", prim.name()),
-                    &kernels::unary(t, expr, needs_erf),
+                    || kernels::unary(t, expr, needs_erf),
                     &[&x.buffer, &out.buffer],
                     &imm,
                     size,
@@ -678,7 +880,7 @@ impl WgpuSession {
                     .arr8(&b.shape);
                 self.dispatch(
                     &format!("binary_{}_{t}", prim.name()),
-                    &kernels::binary(t, t, expr),
+                    || kernels::binary(t, t, expr),
                     &[&a.buffer, &b.buffer, &out.buffer],
                     &imm,
                     size,
@@ -701,7 +903,7 @@ impl WgpuSession {
                     .arr8(&b.shape);
                 self.dispatch(
                     &format!("compare_{}_{t}", prim.name()),
-                    &kernels::binary(t, "u32", expr),
+                    || kernels::binary(t, "u32", expr),
                     &[&a.buffer, &b.buffer, &out.buffer],
                     &imm,
                     size,
@@ -725,7 +927,7 @@ impl WgpuSession {
                     .arr8(&b.shape);
                 self.dispatch(
                     &format!("select_{t}"),
-                    &kernels::select3(t),
+                    || kernels::select3(t),
                     &[&c.buffer, &a.buffer, &b.buffer, &out.buffer],
                     &imm,
                     size,
@@ -762,6 +964,41 @@ impl WgpuSession {
                 };
                 let a_bs = stride_of(a.shape[..ar - 2].iter().product(), m * k, "lhs")?;
                 let b_bs = stride_of(b.shape[..br - 2].iter().product(), k * n, "rhs")?;
+
+                // Fast paths (f32): unbatched matrix × vector for decode-
+                // step projections (`trans_a` is irrelevant at m == 1 —
+                // `[K,1]` and `[1,K]` share a memory layout), tiled matmul
+                // for everything else. Grid dims cap at 65535 workgroups;
+                // anything larger falls through to the generic kernel.
+                if t == "f32" && k > 0 && n > 0 {
+                    if batch == 1 && m == 1 && n.div_ceil(64) <= 65535 {
+                        let out = self.alloc_out(out_dtype, out_shape);
+                        return self.matvec(&a, &b, out, n, k, *trans_b);
+                    }
+                    let grid = [n.div_ceil(16), m.div_ceil(16), batch];
+                    if grid.iter().all(|&g| g <= 65535) {
+                        let out = self.alloc_out(out_dtype, out_shape);
+                        let imm = Imm::new()
+                            .u(m as u32)
+                            .u(n as u32)
+                            .u(k as u32)
+                            .u(a_bs)
+                            .u(b_bs);
+                        self.dispatch_grid(
+                            &format!(
+                                "matmul_tiled_f32_{}{}",
+                                if *trans_a { "t" } else { "n" },
+                                if *trans_b { "t" } else { "n" },
+                            ),
+                            || kernels::matmul_tiled(*trans_a, *trans_b),
+                            &[&a.buffer, &b.buffer, &out.buffer],
+                            &imm,
+                            grid.map(|g| g as u32),
+                        )?;
+                        return Ok(out);
+                    }
+                }
+
                 let out = self.alloc_out(out_dtype, out_shape);
                 let (imm, size) = size_imm(out.numel());
                 let imm = imm
@@ -774,7 +1011,7 @@ impl WgpuSession {
                     .u(*trans_b as u32);
                 self.dispatch(
                     &format!("matmul_{t}"),
-                    &kernels::matmul(t),
+                    || kernels::matmul(t),
                     &[&a.buffer, &b.buffer, &out.buffer],
                     &imm,
                     size,
@@ -801,7 +1038,7 @@ impl WgpuSession {
                     .arr8(&x.shape);
                 self.dispatch(
                     &format!("reduce_{}_{t}", prim.name()),
-                    &kernels::reduce(t, init, combine, finalize),
+                    || kernels::reduce(t, init, combine, finalize),
                     &[&x.buffer, &out.buffer],
                     &imm,
                     size,
@@ -822,7 +1059,7 @@ impl WgpuSession {
                     .arr8(&out.shape);
                 self.dispatch(
                     &format!("transpose_{t}"),
-                    &kernels::transpose(t),
+                    || kernels::transpose(t),
                     &[&x.buffer, &out.buffer],
                     &imm,
                     size,
@@ -842,7 +1079,7 @@ impl WgpuSession {
                     .arr8(&x.shape);
                 self.dispatch(
                     &format!("broadcast_{t}"),
-                    &kernels::broadcast(t),
+                    || kernels::broadcast(t),
                     &[&x.buffer, &out.buffer],
                     &imm,
                     size,
@@ -865,7 +1102,7 @@ impl WgpuSession {
                         .arr8(&out_shape);
                     self.dispatch(
                         &format!("concat_{t}"),
-                        &kernels::concat_emplace(t),
+                        || kernels::concat_emplace(t),
                         &[&x.buffer, &out.buffer],
                         &imm,
                         size,
@@ -898,7 +1135,7 @@ impl WgpuSession {
                     .arr8(&out.shape);
                 self.dispatch(
                     &format!("slice_{t}"),
-                    &kernels::slice(t),
+                    || kernels::slice(t),
                     &[&x.buffer, &out.buffer],
                     &imm,
                     size,
@@ -920,7 +1157,7 @@ impl WgpuSession {
                     .arr8(&out.shape);
                 self.dispatch(
                     &format!("gather_{t}"),
-                    &kernels::gather(t),
+                    || kernels::gather(t),
                     &[&data.buffer, &indices.buffer, &out.buffer],
                     &imm,
                     size,
@@ -937,7 +1174,7 @@ impl WgpuSession {
                 let (imm, size) = size_imm(data.numel());
                 self.dispatch(
                     &format!("copy_{t}"),
-                    &kernels::copy(t),
+                    || kernels::copy(t),
                     &[&data.buffer, &out.buffer],
                     &imm,
                     size,
@@ -954,7 +1191,7 @@ impl WgpuSession {
                     .arr8(&data.shape);
                 self.dispatch(
                     &format!("scatter_{t}"),
-                    &kernels::scatter(t),
+                    || kernels::scatter(t),
                     &[&indices.buffer, &updates.buffer, &out.buffer],
                     &imm,
                     size,
@@ -968,7 +1205,7 @@ impl WgpuSession {
                 let (imm, size) = size_imm(out.numel());
                 self.dispatch(
                     &format!("iota_{t}"),
-                    &kernels::iota(t),
+                    || kernels::iota(t),
                     &[&out.buffer],
                     &imm,
                     size,

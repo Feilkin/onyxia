@@ -127,6 +127,56 @@ pub fn fold(module: &mut Module, opts: &FoldOptions) -> Result<bool> {
     }
 }
 
+/// Fold a `Transpose` of a matmul operand into the matmul's
+/// `trans_a`/`trans_b` flag, when the permutation swaps the last two dims
+/// and is identity on the batch dims. The orphaned `Transpose` is left
+/// for [`eliminate_dead`]. Returns whether anything changed.
+///
+/// This is a *runtime* optimization, not just cleanup: tied-embedding
+/// exports (e.g. Gemma) feed `lm_head` as `MatMul(h, Transpose(W))`, and
+/// without this fold every run re-materializes the transposed GiB-scale
+/// weight on the device.
+pub fn fold_transpose_into_matmul(module: &mut Module) -> bool {
+    fn swaps_last_two(perm: &[usize]) -> bool {
+        let r = perm.len();
+        r >= 2
+            && perm[..r - 2].iter().enumerate().all(|(i, &p)| p == i)
+            && perm[r - 2] == r - 1
+            && perm[r - 1] == r - 2
+    }
+
+    let mut changed = false;
+    for id in module.node_ids() {
+        let NodeKind::Prim(Prim::MatMul { .. }) = module.node(id).kind else {
+            continue;
+        };
+        for side in 0..2 {
+            let operand = module.node(id).inputs[side];
+            let Origin::Node { node: producer, .. } = module.value(operand).origin else {
+                continue;
+            };
+            let NodeKind::Prim(Prim::Transpose { perm }) = &module.node(producer).kind else {
+                continue;
+            };
+            if !swaps_last_two(perm) {
+                continue;
+            }
+            let src = module.node(producer).inputs[0];
+            let node = &mut module.nodes[id.index()];
+            node.inputs[side] = src;
+            let NodeKind::Prim(Prim::MatMul { trans_a, trans_b }) = &mut node.kind else {
+                unreachable!("checked above");
+            };
+            match side {
+                0 => *trans_a = !*trans_a,
+                _ => *trans_b = !*trans_b,
+            }
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// Remove nodes none of whose outputs are consumed (by nodes or by the
 /// module's outputs). Returns the number of nodes removed.
 pub fn eliminate_dead(module: &mut Module) -> usize {
@@ -388,6 +438,86 @@ mod tests {
     use crate::builder::GraphBuilder;
     use crate::prim::UnaryOp;
     use crate::types::DataType;
+
+    #[test]
+    fn transpose_folds_into_matmul_trans_b() {
+        // out = a[2,3] × transpose(w[4,3]) — the tied-embedding lm_head
+        // pattern, with runtime inputs so constant folding can't hide it.
+        let mut b = GraphBuilder::new();
+        let a = b.input("a", TensorType::of(DataType::F32, &[2, 3]));
+        let w = b.input("w", TensorType::of(DataType::F32, &[4, 3]));
+        let wt = b.transpose(w, &[1, 0]).unwrap();
+        let mm = b.matmul(a, wt).unwrap();
+        b.output("out", mm);
+        let mut m = b.finish().unwrap();
+
+        let expect = crate::interp::eval(
+            &m,
+            &[
+                (
+                    "a",
+                    Tensor::from_f32(&(0..6).map(|i| i as f32).collect::<Vec<_>>(), &[2, 3])
+                        .unwrap(),
+                ),
+                (
+                    "w",
+                    Tensor::from_f32(&(0..12).map(|i| i as f32 * 0.5).collect::<Vec<_>>(), &[4, 3])
+                        .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+
+        assert!(fold_transpose_into_matmul(&mut m));
+        assert_eq!(eliminate_dead(&mut m), 1, "orphaned Transpose removed");
+        assert_eq!(m.nodes.len(), 1);
+        let NodeKind::Prim(Prim::MatMul { trans_a, trans_b }) = m.nodes[0].kind else {
+            panic!("matmul survived");
+        };
+        assert!(!trans_a);
+        assert!(trans_b);
+        crate::validate::validate(&m).unwrap();
+
+        // Semantics preserved.
+        let got = crate::interp::eval(
+            &m,
+            &[
+                (
+                    "a",
+                    Tensor::from_f32(&(0..6).map(|i| i as f32).collect::<Vec<_>>(), &[2, 3])
+                        .unwrap(),
+                ),
+                (
+                    "w",
+                    Tensor::from_f32(&(0..12).map(|i| i as f32 * 0.5).collect::<Vec<_>>(), &[4, 3])
+                        .unwrap(),
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!(expect[0].1.to_f32().unwrap(), got[0].1.to_f32().unwrap());
+    }
+
+    #[test]
+    fn batch_permuting_transpose_does_not_fold() {
+        // perm [1,0,2] moves a batch dim — must NOT fold.
+        let mut b = GraphBuilder::new();
+        let a = b.input("a", TensorType::of(DataType::F32, &[4, 2, 3]));
+        let w = b.input("w", TensorType::of(DataType::F32, &[3, 4, 5]));
+        let wt = b
+            .prim(
+                Prim::Transpose {
+                    perm: vec![1, 0, 2],
+                },
+                &[w],
+            )
+            .unwrap();
+        let mm = b.matmul(a, wt).unwrap();
+        b.output("out", mm);
+        let mut m = b.finish().unwrap();
+        assert!(!fold_transpose_into_matmul(&mut m));
+        assert_eq!(m.nodes.len(), 2);
+    }
 
     #[test]
     fn folds_constant_subgraph_to_pool() {

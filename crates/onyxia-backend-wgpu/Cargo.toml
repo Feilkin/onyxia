@@ -24,3 +24,8 @@ pollster = "0.4.0"
 onyxia-backend-ref.workspace = true
 onyxia-lower.workspace = true
 onyxia-onnx.workspace = true
+criterion = "0.8"
+
+[[bench]]
+name = "kernels"
+harness = false

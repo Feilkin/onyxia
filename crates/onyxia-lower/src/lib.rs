@@ -521,6 +521,9 @@ pub fn lower_with_stats(
     }
 
     let mut module = builder.into_module();
+    // Absorb operand transposes into MatMul's trans flags before folding,
+    // so the orphaned Transpose nodes are DCE'd with everything else.
+    fold::fold_transpose_into_matmul(&mut module);
     fold::fold(&mut module, &fold::FoldOptions::default())?;
     onyxia_ir::validate::validate(&module)?;
 

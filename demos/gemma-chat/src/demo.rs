@@ -79,6 +79,7 @@ pub async fn run(
                 send(InferenceEvent::Done {
                     tokens_per_sec: tps,
                     ttft_ms,
+                    vram_bytes: 1_181_116_006, // matches the Ready placeholder
                 });
             }
         }

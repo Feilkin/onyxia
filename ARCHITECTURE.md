@@ -101,10 +101,10 @@ event loop; native callers wrap with `pollster`.
 | `onyxia-onnx` | `Graph`/`Node`/`TensorInfo` (stable API over protobuf), external-data loading, ONNX-level DOT export |
 | `onyxia-ir` | `graph.rs` Module/values/nodes/ConstPool · `prim.rs` the primitive enum · `dim.rs` DimExpr/SymbolTable/Bindings · `types.rs` dtypes incl. Q4/Q8 layout · `builder.rs` GraphBuilder · `infer.rs` shape inference · `fold.rs` constant folding + symbolic shape values · `decomp.rs` standard decompositions + legalization · `interp.rs` reference interpreter · `backend.rs` Backend/Session traits · `validate.rs`, `dot.rs`, `attrs.rs` |
 | `onyxia-lower` | `LoweringRegistry`, `lower()` driver (symbols from dim_param, initializers moved — not copied — into the ConstPool, inference + folding at the end), `rules.rs` for the standard op set |
-| `onyxia-backend-wgpu` | `session.rs` prepare/run/upload/download, register file, liveness-driven pooling · `kernels.rs` generated one-thread-per-element WGSL for primitives · `fused.rs` CompositeKernel trait + registry (Softmax, RMS-norm, Gelu as one-workgroup-per-row reductions) · `gpu.rs` device/queue, pipeline cache (bind group layouts built by reflecting shader bindings via naga; where the adapter lacks `IMMEDIATES` — all browsers, core WebGPU has no push constants — kernels are rewritten to take params as a storage buffer; `ONYXIA_NO_IMMEDIATES=1` forces this for native testing, and every GPU differential test runs in both modes), buffer pool · `legacy-shaders/` hand-written WGSL kept as reference for fused kernels not yet written |
+| `onyxia-backend-wgpu` | `session.rs` prepare/run/upload/download, register file, liveness-driven pooling, live/peak VRAM accounting (`resident_bytes`) · `kernels.rs` generated one-thread-per-element WGSL for primitives, plus split-K matvec and tiled matmul fast paths · `fused.rs` CompositeKernel trait + registry (Softmax, RMS-norm, Gelu, RotaryEmbedding, GroupQueryAttention with chunked online-softmax) · `profile.rs` opt-in per-dispatch GPU timing via timestamp queries (`enable_profiling`/`take_timings`) · `gpu.rs` device/queue, pipeline cache (bind group layouts built by reflecting shader bindings via naga; where the adapter lacks `IMMEDIATES` — all browsers, core WebGPU has no push constants — kernels are rewritten to take params as a storage buffer; `ONYXIA_NO_IMMEDIATES=1` forces this for native testing, and every GPU differential test runs in both modes), buffer pool · `benches/kernels.rs` criterion microbenchmarks at LLM shapes · `legacy-shaders/` hand-written WGSL kept as reference for fused kernels not yet written |
 | `onyxia-backend-cubecl` | `Backend`/`Session` over [CubeCL](https://github.com/tracel-ai/cubecl) (`#[cube]` Rust kernels, JIT-compiled; runs on `cubecl-wgpu`). Primitives only — every composite legalizes through its decomposition, which is the demonstration that the primitive set is the whole backend contract |
 | `onyxia-backend-ref` | `run_once(module, inputs)` + `Backend` impl over the interpreter |
-| `onyxia-cli` | `run-model`/`chat` generation (`llm.rs` device-resident KV session, `generate.rs`, `sampling.rs`, `tokenizer.rs`), `validate` (parse + lower, no GPU), ONNX inspection (`inspect.rs`), `dot`/`ir-dot` |
+| `onyxia-cli` | `run-model`/`chat` generation (`llm.rs` device-resident KV session, `generate.rs`, `sampling.rs`, `tokenizer.rs`), `bench` (prefill/decode throughput + per-kernel GPU-time breakdown, `bench.rs`; see `doc/perf-baseline-2026-07.md`), `validate` (parse + lower, no GPU), ONNX inspection (`inspect.rs`), `dot`/`ir-dot` |
 | `demos/gemma-chat` | egui chat UI, native + wasm32 (trunk); vendors its own async LLM session, sampling, tokenizer — application-layer by design |
 
 Backend-private layout decisions live in the backend: logical `I64` is stored
@@ -124,11 +124,14 @@ as `i32` on device (range-checked at upload), `Bool` as `u32`.
 
 ## Known gaps
 
-- No fused GQA / RotaryEmbedding / MatMulNBits kernels yet (their
-  decompositions execute instead — correct, slower than optimal); no tiled
-  MatMul yet.
+- No fused MatMulNBits kernel yet (its decomposition executes instead —
+  and the Dequantize primitive below blocks it on GPU anyway). GQA and
+  RotaryEmbedding are fused; MatMul has split-K matvec kernels for M=1
+  and a shared-memory tiled kernel for M>1. Decode-speed history in
+  `doc/perf-baseline-2026-07.md`.
 - No Dequantize GPU kernel (q4 models run only on the reference backend).
 - f16, late-bound dims on GPU (data-dependent shapes), >65535-row fused
   reductions.
-- No per-op tracing spans (Tracy) yet.
+- No CPU-side per-op tracing spans (Tracy) yet; GPU-side per-dispatch
+  timing exists (`profile.rs`).
 - ONNX `If`/`Loop`/`Scan` (regions) intentionally not designed yet.

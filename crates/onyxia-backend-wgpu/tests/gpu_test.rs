@@ -100,6 +100,112 @@ fn elementwise_broadcast_and_unary() {
     );
 }
 
+/// The M=1 matvec fast path, across layouts, split-K depths, and sizes
+/// that don't divide the 64-column tile or the K slices evenly.
+#[test]
+#[ignore = "requires GPU"]
+fn matvec_m1_fast_path() {
+    // (k, n, trans_b): decode-shaped projections both ways, small-N
+    // cases that force ks > 1, awkward remainders, and both sides of
+    // the vec4 alignment gates (K % 4 for [N,K], N % 4 for [K,N]).
+    for (k, n, trans_b) in [
+        (2048usize, 640usize, false), // vec4 [K,N] with ks>1
+        (640, 2048, false),           // gate/up
+        (640, 2048, true),            // vec4 [N,K], ks=1
+        (4096, 96, true),             // vec4 [N,K] with ks>1
+        (4096, 66, true),             // vec4 [N,K], row-group tail
+        (2048, 644, false),           // vec4 [K,N], column-tile tail
+        (2048, 2, true),              // vec4 [N,K], n smaller than a group
+        (130, 100, false),            // scalar [K,N] (N % 4 ≠ 0)
+        (1, 1, false),                // degenerate
+        (257, 65, true),              // scalar [N,K] (K % 4 ≠ 0)
+    ] {
+        let mut b = GraphBuilder::new();
+        let a = b.input("a", TensorType::of(DataType::F32, &[1, k as u64]));
+        let w_dims = if trans_b {
+            [n as u64, k as u64]
+        } else {
+            [k as u64, n as u64]
+        };
+        let w = b.input("w", TensorType::of(DataType::F32, &w_dims));
+        let out = b
+            .prim(
+                onyxia_ir::Prim::MatMul {
+                    trans_a: false,
+                    trans_b,
+                },
+                &[a, w],
+            )
+            .unwrap();
+        b.output("out", out);
+        let m = b.finish().unwrap();
+        diff_test(
+            m,
+            vec![
+                (
+                    "a",
+                    Tensor::from_f32(&f32s(k, |i| (i as f32 * 0.7).sin()), &[1, k]).unwrap(),
+                ),
+                (
+                    "w",
+                    Tensor::from_f32(
+                        &f32s(k * n, |i| ((i % 601) as f32) * 1e-3 - 0.3),
+                        &[w_dims[0] as usize, w_dims[1] as usize],
+                    )
+                    .unwrap(),
+                ),
+            ],
+        );
+    }
+}
+
+/// The tiled m>1 path: all four layout variants, sizes that straddle the
+/// 16×16 tiles, batched lhs with a broadcast rank-2 rhs.
+#[test]
+#[ignore = "requires GPU"]
+fn matmul_tiled_all_layouts() {
+    for (trans_a, trans_b) in [(false, false), (false, true), (true, false), (true, true)] {
+        let (m, k, n) = (33usize, 70usize, 45usize);
+        let a_dims = if trans_a { [k, m] } else { [m, k] };
+        let b_dims = if trans_b { [n, k] } else { [k, n] };
+        let mut bld = GraphBuilder::new();
+        let a = bld.input(
+            "a",
+            TensorType::of(DataType::F32, &[3, a_dims[0] as u64, a_dims[1] as u64]),
+        );
+        let w = bld.input(
+            "w",
+            TensorType::of(DataType::F32, &[b_dims[0] as u64, b_dims[1] as u64]),
+        );
+        let out = bld
+            .prim(onyxia_ir::Prim::MatMul { trans_a, trans_b }, &[a, w])
+            .unwrap();
+        bld.output("out", out);
+        let module = bld.finish().unwrap();
+        diff_test(
+            module,
+            vec![
+                (
+                    "a",
+                    Tensor::from_f32(
+                        &f32s(3 * m * k, |i| (i as f32 * 0.31).sin()),
+                        &[3, a_dims[0], a_dims[1]],
+                    )
+                    .unwrap(),
+                ),
+                (
+                    "w",
+                    Tensor::from_f32(
+                        &f32s(k * n, |i| ((i % 401) as f32) * 2e-3 - 0.4),
+                        &[b_dims[0], b_dims[1]],
+                    )
+                    .unwrap(),
+                ),
+            ],
+        );
+    }
+}
+
 #[test]
 #[ignore = "requires GPU"]
 fn matmul_batched_transposed() {
@@ -191,6 +297,215 @@ fn softmax_and_rmsnorm_composites() {
             ),
         ],
     );
+}
+
+/// Fused rotary embedding vs the interpreter: decode-like offset
+/// positions, inferred head count, and a partial rotary width with a
+/// pass-through tail.
+#[test]
+#[ignore = "requires GPU"]
+fn rotary_fused_matches_interpreter() {
+    // (hidden, num_heads attr, cache half-width): full-width rotation
+    // with inferred heads, and a partial rotation (d=8, R=4) with the
+    // head count pinned by the attribute.
+    for (hidden, heads_attr, half) in [(8usize, 0i64, 2usize), (16, 2, 2)] {
+        let (s, max_seq) = (3usize, 16usize);
+        let mut b = GraphBuilder::new();
+        let x = b.input("x", TensorType::of(DataType::F32, &[1, s as u64, hidden as u64]));
+        let pos = b.input("pos", TensorType::of(DataType::I64, &[1, s as u64]));
+        let cos = b.input(
+            "cos",
+            TensorType::of(DataType::F32, &[max_seq as u64, half as u64]),
+        );
+        let sin = b.input(
+            "sin",
+            TensorType::of(DataType::F32, &[max_seq as u64, half as u64]),
+        );
+        let out = b
+            .composite(
+                "com.microsoft.RotaryEmbedding",
+                Attrs::new().with("num_heads", AttrValue::Int(heads_attr)),
+                &[x, pos, cos, sin],
+                vec![TensorType::of(DataType::F32, &[1, s as u64, hidden as u64])],
+            )
+            .unwrap()[0];
+        b.output("out", out);
+        let m = b.finish().unwrap();
+        diff_test(
+            m,
+            vec![
+                (
+                    "x",
+                    Tensor::from_f32(&f32s(s * hidden, |i| (i as f32 * 0.23).sin()), &[1, s, hidden])
+                        .unwrap(),
+                ),
+                ("pos", Tensor::from_i64(&[5, 6, 7], &[1, s]).unwrap()),
+                (
+                    "cos",
+                    Tensor::from_f32(&f32s(max_seq * half, |i| (i as f32 * 0.05).cos()), &[max_seq, half])
+                        .unwrap(),
+                ),
+                (
+                    "sin",
+                    Tensor::from_f32(&f32s(max_seq * half, |i| (i as f32 * 0.05).sin()), &[max_seq, half])
+                        .unwrap(),
+                ),
+            ],
+        );
+    }
+}
+
+/// Fused rotary + GQA against their decompositions on the same device —
+/// the decomposition is the specification. Batch of 2, grouped heads
+/// (H=4 over KV=2), past KV, and a sliding window, chained the way a
+/// transformer layer uses them.
+#[test]
+#[ignore = "requires GPU"]
+fn gqa_rotary_fused_match_decompositions() {
+    let (bsz, s, h, kv, d, past) = (2usize, 3usize, 4usize, 2usize, 8usize, 5usize);
+    let (hidden, kv_hidden, total, max_seq, half) = (h * d, kv * d, past + s, 16usize, d / 2);
+
+    let mut bld = GraphBuilder::new();
+    let dims = |v: &[usize]| v.iter().map(|&x| x as u64).collect::<Vec<_>>();
+    let q = bld.input("q", TensorType::of(DataType::F32, &dims(&[bsz, s, hidden])));
+    let k = bld.input("k", TensorType::of(DataType::F32, &dims(&[bsz, s, kv_hidden])));
+    let v = bld.input("v", TensorType::of(DataType::F32, &dims(&[bsz, s, kv_hidden])));
+    let pk = bld.input(
+        "pk",
+        TensorType::of(DataType::F32, &dims(&[bsz, kv, past, d])),
+    );
+    let pv = bld.input(
+        "pv",
+        TensorType::of(DataType::F32, &dims(&[bsz, kv, past, d])),
+    );
+    let pos = bld.input("pos", TensorType::of(DataType::I64, &dims(&[bsz, s])));
+    let cos = bld.input(
+        "cos",
+        TensorType::of(DataType::F32, &dims(&[max_seq, half])),
+    );
+    let sin = bld.input(
+        "sin",
+        TensorType::of(DataType::F32, &dims(&[max_seq, half])),
+    );
+
+    let rotary = |bld: &mut GraphBuilder, x, width: usize| {
+        bld.composite(
+            "com.microsoft.RotaryEmbedding",
+            Attrs::new(),
+            &[x, pos, cos, sin],
+            vec![TensorType::of(DataType::F32, &dims(&[bsz, s, width]))],
+        )
+        .unwrap()[0]
+    };
+    let rq = rotary(&mut bld, q, hidden);
+    let rk = rotary(&mut bld, k, kv_hidden);
+    let present_ty = TensorType::of(DataType::F32, &dims(&[bsz, kv, total, d]));
+    let outs = bld
+        .composite(
+            "com.microsoft.GroupQueryAttention",
+            Attrs::new()
+                .with("num_heads", AttrValue::Int(h as i64))
+                .with("kv_num_heads", AttrValue::Int(kv as i64))
+                .with("local_window_size", AttrValue::Int(4)),
+            &[rq, rk, v, pk, pv],
+            vec![
+                TensorType::of(DataType::F32, &dims(&[bsz, s, hidden])),
+                present_ty.clone(),
+                present_ty,
+            ],
+        )
+        .unwrap();
+    bld.output("out", outs[0]);
+    bld.output("present_k", outs[1]);
+    bld.output("present_v", outs[2]);
+    let module = bld.finish().unwrap();
+
+    let inputs: Vec<(&str, Tensor)> = vec![
+        (
+            "q",
+            Tensor::from_f32(&f32s(bsz * s * hidden, |i| (i as f32 * 0.11).sin()), &[bsz, s, hidden])
+                .unwrap(),
+        ),
+        (
+            "k",
+            Tensor::from_f32(
+                &f32s(bsz * s * kv_hidden, |i| (i as f32 * 0.2).cos()),
+                &[bsz, s, kv_hidden],
+            )
+            .unwrap(),
+        ),
+        (
+            "v",
+            Tensor::from_f32(
+                &f32s(bsz * s * kv_hidden, |i| (i as f32 * 0.017).sin() * 2.0),
+                &[bsz, s, kv_hidden],
+            )
+            .unwrap(),
+        ),
+        (
+            "pk",
+            Tensor::from_f32(
+                &f32s(bsz * kv * past * d, |i| 0.4 - (i as f32 * 0.31).sin() * 0.5),
+                &[bsz, kv, past, d],
+            )
+            .unwrap(),
+        ),
+        (
+            "pv",
+            Tensor::from_f32(
+                &f32s(bsz * kv * past * d, |i| (i as f32 * 0.07).cos()),
+                &[bsz, kv, past, d],
+            )
+            .unwrap(),
+        ),
+        (
+            "pos",
+            Tensor::from_i64(&[5, 6, 7, 5, 6, 7], &[bsz, s]).unwrap(),
+        ),
+        (
+            "cos",
+            Tensor::from_f32(&f32s(max_seq * half, |i| (i as f32 * 0.09).cos()), &[max_seq, half])
+                .unwrap(),
+        ),
+        (
+            "sin",
+            Tensor::from_f32(&f32s(max_seq * half, |i| (i as f32 * 0.09).sin()), &[max_seq, half])
+                .unwrap(),
+        ),
+    ];
+
+    let run = |backend: WgpuBackend, module: Module| -> Vec<(String, Vec<f32>)> {
+        pollster::block_on(async {
+            let mut session = backend.prepare(module).unwrap();
+            let dev: Vec<(&str, _)> = inputs
+                .iter()
+                .map(|(n, t)| (*n, session.upload(t).unwrap()))
+                .collect();
+            let outs = session.run(&dev).await.unwrap();
+            let mut host = Vec::new();
+            for (n, t) in outs {
+                host.push((n, session.download(&t).await.unwrap().to_f32().unwrap()));
+            }
+            host
+        })
+    };
+
+    let fused = run(
+        WgpuBackend::new(pollster::block_on(GpuContext::new()).unwrap()),
+        module.clone(),
+    );
+    let decomposed = run(
+        WgpuBackend::without_fused_kernels(pollster::block_on(GpuContext::new()).unwrap()),
+        module,
+    );
+    for ((name, f), (_, dec)) in fused.iter().zip(&decomposed) {
+        for (i, (a, b)) in f.iter().zip(dec).enumerate() {
+            assert!(
+                (a - b).abs() <= ATOL + RTOL * b.abs(),
+                "'{name}'[{i}]: fused {a} vs decomposed {b}"
+            );
+        }
+    }
 }
 
 /// The money test: GQA with symbolic S and T, past KV, and a sliding

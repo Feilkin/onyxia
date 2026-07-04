@@ -97,6 +97,16 @@ impl Tensor {
 
     /// Read out as f32 (must be a float tensor).
     pub fn to_f32(&self) -> Result<Vec<f32>> {
+        // Direct byte read for f32 — hot on the generation path (the
+        // full logits vector every token); the f64 detour below serves
+        // the interpreter's remaining float dtypes.
+        if self.dtype == DataType::F32 {
+            return Ok(self
+                .data
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect());
+        }
         match self.decode()? {
             Values::F(v) => Ok(v.into_iter().map(|x| x as f32).collect()),
             _ => Err(Error::Interp(format!(

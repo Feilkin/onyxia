@@ -68,7 +68,7 @@ enum InferenceEvent {
     Progress { stage: usize, label: String },
     Ready { gpu_name: String, vram_bytes: u64 },
     Token(String),
-    Done { tokens_per_sec: f64, ttft_ms: f64 },
+    Done { tokens_per_sec: f64, ttft_ms: f64, vram_bytes: u64 },
     Error(String),
 }
 
@@ -103,7 +103,8 @@ struct ChatApp {
     last_tokens_per_sec: Option<f64>,
     /// Time-to-first-token for the most recent answer.
     last_ttft_ms: Option<f64>,
-    /// Resident weight bytes reported by the session (0 until ready).
+    /// Resident GPU bytes reported by the session (weights + KV cache +
+    /// buffer pool; 0 until ready, refreshed after every answer).
     vram_bytes: u64,
     /// Active visual theme (night / day), toggled from the header.
     theme: Theme,
@@ -291,13 +292,14 @@ impl eframe::App for ChatApp {
                 InferenceEvent::Token(text) => {
                     self.current_response.push_str(&text);
                 }
-                InferenceEvent::Done { tokens_per_sec, ttft_ms } => {
+                InferenceEvent::Done { tokens_per_sec, ttft_ms, vram_bytes } => {
                     self.history.push((
                         "assistant".to_string(),
                         std::mem::take(&mut self.current_response),
                     ));
                     self.last_tokens_per_sec = Some(tokens_per_sec);
                     self.last_ttft_ms = Some(ttft_ms);
+                    self.vram_bytes = vram_bytes;
                     self.status = AppStatus::Ready;
                 }
                 InferenceEvent::Error(e) => {
@@ -914,7 +916,7 @@ async fn run_inference(
         }
     };
 
-    let vram_bytes = session.weights_bytes();
+    let vram_bytes = session.vram_bytes();
     send(InferenceEvent::Ready { gpu_name, vram_bytes });
 
     let sampling = SamplingConfig {
@@ -1038,7 +1040,11 @@ async fn run_inference(
                     content: response_text,
                 });
 
-                send(InferenceEvent::Done { tokens_per_sec, ttft_ms });
+                send(InferenceEvent::Done {
+                    tokens_per_sec,
+                    ttft_ms,
+                    vram_bytes: session.vram_bytes(),
+                });
             }
         }
     }
