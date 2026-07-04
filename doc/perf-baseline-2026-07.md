@@ -163,6 +163,12 @@ Post fix 1–3, decode should land in the 25–40 ms/tok range
 - `models/gemma-3-1b-it-ONNX` (fp32) does not lower yet:
   `node '/Equal': a symbolic shape value is consumed by a runtime tensor
   operation — cannot materialize`. The 1B baseline is blocked on this.
+  *Resolved 2026-07-04:* that repo is a raw PyTorch export and stays
+  unsupported; the ORT-fused `gemma-3-1b-it-ONNX-GQA` export runs after
+  teaching the engine symbolic-value materialization (`Prim::DimValues`),
+  per-row `seqlens_k`, `do_rotary=1`, and `attention_bias` — see the
+  README's example-models section. 1B fp32 baseline: 60.5 tok/s decode,
+  193 tok/s prefill, 3.86 GiB peak VRAM.
 - The lm_head transpose also costs VRAM: its 671 MB intermediate lands in
   a 1 GiB buffer-pool bucket, nearly doubling resident memory
   (2.07 GiB for a 1.08 GiB model). Fix 1 removes that too.

@@ -172,11 +172,25 @@ Tests and demos look for models under `models/` (not tracked in git — fetch
 them from Hugging Face):
 
 ```bash
+# Gemma 3 270m (git clone pulls every quantization variant; ~2 GB)
 git clone https://huggingface.co/onnx-community/gemma-3-270m-it-ONNX models/gemma-3-270m-it-ONNX
+
+# Gemma 3 1b — use the -GQA export, fp32 only (~4 GB instead of ~15 GB)
+hf download onnx-community/gemma-3-1b-it-ONNX-GQA \
+    --include "onnx/model.onnx*" --include "*.json" --include "chat_template.jinja" \
+    --local-dir models/gemma-3-1b-it-ONNX-GQA
 ```
 
+For the 1B, only [`gemma-3-1b-it-ONNX-GQA`](https://huggingface.co/onnx-community/gemma-3-1b-it-ONNX-GQA)
+works: the older `gemma-3-1b-it-ONNX` repo is a raw PyTorch export
+(decomposed attention, in-graph mask construction) that its own model card
+supersedes, and Onyxia does not support it.
+
 Use the fp32 `onnx/model.onnx`: the community q4 quantization badly degrades
-this small model.
+these small models. Both models generate token-for-token identically to
+onnxruntime under greedy decoding (including past the 1B's 512-token sliding
+window). On an RTX 3060 Ti: 270m ≈ 128 tok/s decode, 1b ≈ 60 tok/s decode
+at 3.9 GiB peak VRAM.
 
 ## License
 
