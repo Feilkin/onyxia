@@ -86,10 +86,7 @@ fn elementwise_broadcast_and_unary() {
                 "x",
                 Tensor::from_f32(&f32s(24, |i| (i as f32) * 0.1 - 1.0), &[2, 3, 4]).unwrap(),
             ),
-            (
-                "y",
-                Tensor::from_f32(&[0.5, -0.5, 1.0, 0.0], &[4]).unwrap(),
-            ),
+            ("y", Tensor::from_f32(&[0.5, -0.5, 1.0, 0.0], &[4]).unwrap()),
         ],
     );
 }
@@ -262,6 +259,10 @@ fn gqa_decomposes_with_symbolic_dims() {
             SymbolicShape(vec![dim(1), DimExpr::constant(kv), t.clone(), dim(d)]),
         ),
     );
+    let sl = b.input(
+        "seqlens",
+        TensorType::new(DataType::I32, SymbolicShape(vec![dim(1)])),
+    );
     let present = SymbolicShape(vec![dim(1), DimExpr::constant(kv), t + s.clone(), dim(d)]);
     let outs = b
         .composite(
@@ -270,7 +271,7 @@ fn gqa_decomposes_with_symbolic_dims() {
                 .with("num_heads", AttrValue::Int(h as i64))
                 .with("kv_num_heads", AttrValue::Int(kv as i64))
                 .with("local_window_size", AttrValue::Int(3)),
-            &[q, k, v, pk, pv],
+            &[q, k, v, pk, pv, sl],
             vec![
                 TensorType::new(f, SymbolicShape(vec![dim(1), s, dim(hidden)])),
                 TensorType::new(f, present.clone()),
@@ -325,6 +326,15 @@ fn gqa_decomposes_with_symbolic_dims() {
                 Tensor::from_f32(
                     &f32s(t_c * kv_hidden, |i| 1.0 - (i as f32) * 0.2),
                     &[1, kv as usize, t_c, d],
+                )
+                .unwrap(),
+            ),
+            (
+                "seqlens",
+                Tensor::new(
+                    DataType::I32,
+                    vec![1],
+                    ((t_c + s_c - 1) as i32).to_le_bytes().to_vec(),
                 )
                 .unwrap(),
             ),

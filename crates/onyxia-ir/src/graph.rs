@@ -265,6 +265,24 @@ pub struct Module {
     pub inputs: Vec<(String, ValueId)>,
     /// Named graph outputs, in signature order.
     pub outputs: Vec<(String, ValueId)>,
+    /// Cross-input dim equalities that must hold under every binding,
+    /// checked by `bind_shapes` each run. Lowering records one when an
+    /// op's declared semantics relate dims of *different* inputs (e.g.
+    /// GQA's `total_sequence_length` must equal past + new), so an
+    /// inconsistent set of input shapes fails loudly instead of being
+    /// silently reinterpreted.
+    pub constraints: Vec<DimConstraint>,
+}
+
+/// See [`Module::constraints`].
+#[derive(Debug, Clone)]
+pub struct DimConstraint {
+    /// Left side of the equality.
+    pub left: DimExpr,
+    /// Right side of the equality.
+    pub right: DimExpr,
+    /// Human-readable origin for the error message.
+    pub context: String,
 }
 
 impl Module {

@@ -775,28 +775,56 @@ fn rotary(ctx: &mut LowerCtx, name: &str) -> Result<()> {
 }
 
 fn group_query_attention(ctx: &mut LowerCtx) -> Result<()> {
-    if ctx.attr_i("do_rotary").unwrap_or(0) != 0 {
-        return Err(Error::Unsupported(
-            "GroupQueryAttention with do_rotary=1".into(),
-        ));
-    }
     if ctx.attr_f("softcap").unwrap_or(0.0) != 0.0 {
         return Err(Error::Unsupported(
             "GroupQueryAttention with softcap".into(),
         ));
     }
-    // Only q/k/v and the past KV enter the composite. Inputs 5–6
-    // (seqlens_k, total_sequence_length) are redundant under symbolic
-    // dims — real exports often compute total_sequence_length via shape
-    // arithmetic, which has no runtime representation here. A backend
-    // kernel that wants them can rematerialize from bound symbols at
-    // prepare time.
-    if ctx.num_inputs() < 5 || !(0..5).all(|i| ctx.has_input(i)) {
+    let do_rotary = ctx.attr_i("do_rotary").unwrap_or(0) != 0;
+    if do_rotary && ctx.has_input(9) {
+        // With explicit position_ids the rotary positions no longer come
+        // from seqlens_k; no known export does this.
         return Err(Error::Unsupported(
-            "GroupQueryAttention without explicit past KV inputs".into(),
+            "GroupQueryAttention with do_rotary=1 and explicit position_ids".into(),
         ));
     }
-    let inputs: Vec<ValueId> = (0..5).map(|i| ctx.value(i)).collect::<Result<_>>()?;
+    // q/k/v, the past KV, and seqlens_k enter the composite; kernels
+    // honor seqlens_k per batch row (ContribOperators.md: "1D Tensor of
+    // shape (batch_size). Equivalent to (total_sequence_lengths - 1)").
+    // total_sequence_length (input 6) is fully determined by the KV and
+    // query shapes, so it is consumed as a bind-time constraint instead
+    // of a runtime tensor.
+    if ctx.num_inputs() < 7 || !(0..7).all(|i| ctx.has_input(i)) {
+        return Err(Error::Unsupported(
+            "GroupQueryAttention requires q/k/v, past KV, seqlens_k and \
+             total_sequence_length inputs"
+                .into(),
+        ));
+    }
+    let mut inputs: Vec<ValueId> = (0..5).map(|i| ctx.value(i)).collect::<Result<_>>()?;
+    let seqlens = ctx.value(5)?;
+    if ctx.ty(seqlens).dtype != DataType::I32 {
+        return Err(Error::DType(format!(
+            "GroupQueryAttention seqlens_k must be int32, got {}",
+            ctx.ty(seqlens).dtype
+        )));
+    }
+    inputs.push(seqlens);
+    // Optional trailing inputs, in a fixed composite layout:
+    // [q,k,v,pk,pv,seqlens][,cos,sin when do_rotary][,attention_bias].
+    if do_rotary {
+        if !(ctx.has_input(7) && ctx.has_input(8)) {
+            return Err(Error::Unsupported(
+                "GroupQueryAttention with do_rotary=1 requires cos/sin caches".into(),
+            ));
+        }
+        inputs.push(ctx.value(7)?);
+        inputs.push(ctx.value(8)?);
+    }
+    let has_bias = ctx.num_inputs() > 10 && ctx.has_input(10);
+    if has_bias {
+        inputs.push(ctx.value(10)?);
+    }
     let num_heads = ctx
         .attr_i("num_heads")
         .ok_or_else(|| ctx.missing_attr("num_heads"))?;
@@ -814,11 +842,35 @@ fn group_query_attention(ctx: &mut LowerCtx) -> Result<()> {
             "local_window_size",
             AttrValue::Int(ctx.attr_i("local_window_size").unwrap_or(-1)),
         ),
+        ("do_rotary", AttrValue::Int(do_rotary as i64)),
+        (
+            "rotary_interleaved",
+            AttrValue::Int(ctx.attr_i("rotary_interleaved").unwrap_or(0)),
+        ),
+        ("has_attention_bias", AttrValue::Int(has_bias as i64)),
     ]);
 
     let q_ty = ctx.ty(inputs[0]).clone();
     let past_ty = ctx.ty(inputs[3]).clone();
     let seq = q_ty.shape.dims()[1].clone();
+    let past = past_ty.shape.dims()[2].clone();
+
+    // total_sequence_length: the spec says it equals the maximum
+    // past + new length of the batch. The kernels don't consume it —
+    // masking is driven by seqlens_k and the present length by the
+    // KV/query shapes — but when the export computes it from shape
+    // arithmetic (every known Gemma export does), enforce consistency
+    // against the actual dims at every bind. A runtime-computed value
+    // has nothing to check cheaply and nothing depends on it.
+    if let Some(total) = ctx.content(6).and_then(|c| c.elems.into_iter().next()) {
+        ctx.builder().constrain(
+            total,
+            past.clone() + seq.clone(),
+            "GroupQueryAttention 'total_sequence_length' must equal the past \
+             KV length plus the new sequence length",
+        );
+    }
+
     let mut present_dims = past_ty.shape.dims().to_vec();
     present_dims[2] = present_dims[2].clone() + seq;
     let present_ty = TensorType::new(past_ty.dtype, onyxia_ir::SymbolicShape(present_dims));

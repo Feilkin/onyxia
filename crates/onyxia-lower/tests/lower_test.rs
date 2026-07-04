@@ -358,6 +358,63 @@ fn constant_of_shape_with_explicit_value() {
 }
 
 #[test]
+fn symbolic_shape_value_materializes_via_dim_values() {
+    // The gemma-3-1b GQA export computes seqlens_k = Shape(mask)[1] - 1
+    // and Expands it to [batch, 1]: a late-bound shape value consumed by
+    // a runtime tensor operation must materialize as a DimValues node
+    // evaluated at run time, not fail lowering.
+    let mut g = Graph::new();
+    input(&mut g, "x", DataType::F32, dyn_shape(&["B", "T"]));
+    weight_i64(&mut g, "idx0", &[0], &[]);
+    weight_i64(&mut g, "idx1", &[1], &[]);
+    weight_i64(&mut g, "c1", &[1], &[]);
+    weight_i64(&mut g, "ax0", &[0], &[1]);
+    weight_i64(&mut g, "one_vec", &[1], &[1]);
+    node(&mut g, "Shape", &["x"], &["shp"]);
+    // Data operand: T - 1, unsqueezed to [1].
+    node_with(
+        &mut g,
+        "Gather",
+        &["shp", "idx1"],
+        &["t"],
+        HashMap::from([("axis".into(), AttributeValue::Int(0))]),
+    );
+    node(&mut g, "Sub", &["t", "c1"], &["tm1"]);
+    node(&mut g, "Unsqueeze", &["tm1", "ax0"], &["u"]);
+    // Target shape: [B, 1], also from shape arithmetic.
+    node_with(
+        &mut g,
+        "Gather",
+        &["shp", "idx0"],
+        &["b"],
+        HashMap::from([("axis".into(), AttributeValue::Int(0))]),
+    );
+    node(&mut g, "Unsqueeze", &["b", "ax0"], &["bu"]);
+    node_with(
+        &mut g,
+        "Concat",
+        &["bu", "one_vec"],
+        &["tgt"],
+        HashMap::from([("axis".into(), AttributeValue::Int(0))]),
+    );
+    node(&mut g, "Expand", &["u", "tgt"], &["out"]);
+    output(&mut g, "out");
+
+    let module = lower(g, &standard_registry()).unwrap();
+    assert!(
+        module
+            .nodes
+            .iter()
+            .any(|n| matches!(&n.kind, NodeKind::Prim(Prim::DimValues { .. }))),
+        "expected a DimValues node in the lowered module"
+    );
+    let x = Tensor::from_f32(&[0.; 10], &[2, 5]).unwrap();
+    let outs = eval(&module, &[("x", x)]).unwrap();
+    assert_eq!(outs[0].1.shape(), &[2, 1]);
+    assert_eq!(outs[0].1.to_i64().unwrap(), vec![4, 4]);
+}
+
+#[test]
 fn slice_with_sentinel_and_negative_bounds() {
     let mut g = Graph::new();
     input(&mut g, "x", DataType::F32, TensorShape::Static(vec![5]));

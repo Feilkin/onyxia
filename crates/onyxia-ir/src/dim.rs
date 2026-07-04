@@ -227,6 +227,16 @@ impl DimExpr {
     ///
     /// Errors if a symbol is unbound or the result is negative.
     pub fn eval(&self, bindings: &Bindings) -> Result<u64> {
+        let v = self.eval_signed(bindings)?;
+        u64::try_from(v)
+            .map_err(|_| Error::Binding(format!("dimension evaluated to negative value {v}")))
+    }
+
+    /// Evaluate under `bindings`, allowing negative results.
+    ///
+    /// A negative *dimension* is invalid ([`eval`](Self::eval) rejects
+    /// it), but a materialized shape-domain value keeps its sign.
+    pub fn eval_signed(&self, bindings: &Bindings) -> Result<i64> {
         let mut acc: i128 = 0;
         for term in &self.terms {
             let mut prod: i128 = term.coeff as i128;
@@ -238,8 +248,7 @@ impl DimExpr {
             }
             acc += prod;
         }
-        u64::try_from(acc)
-            .map_err(|_| Error::Binding(format!("dimension evaluated to negative value {acc}")))
+        i64::try_from(acc).map_err(|_| Error::Binding(format!("shape value {acc} overflows i64")))
     }
 
     /// Exact division by a *monomial* (a single-term expression).

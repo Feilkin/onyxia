@@ -97,6 +97,20 @@ impl GraphBuilder {
         &mut self.module
     }
 
+    /// Record a cross-input dim equality checked at every bind (see
+    /// [`Module::constraints`]).
+    pub fn constrain(&mut self, left: DimExpr, right: DimExpr, context: impl Into<String>) {
+        // A constraint that holds structurally needs no runtime check.
+        if left == right {
+            return;
+        }
+        self.module.constraints.push(crate::graph::DimConstraint {
+            left,
+            right,
+            context: context.into(),
+        });
+    }
+
     /// Declare a graph input.
     pub fn input(&mut self, name: &str, ty: TensorType) -> ValueId {
         let id = self.module.add_value(ValueDef {

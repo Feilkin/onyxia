@@ -311,7 +311,10 @@ fn rotary_fused_matches_interpreter() {
     for (hidden, heads_attr, half) in [(8usize, 0i64, 2usize), (16, 2, 2)] {
         let (s, max_seq) = (3usize, 16usize);
         let mut b = GraphBuilder::new();
-        let x = b.input("x", TensorType::of(DataType::F32, &[1, s as u64, hidden as u64]));
+        let x = b.input(
+            "x",
+            TensorType::of(DataType::F32, &[1, s as u64, hidden as u64]),
+        );
         let pos = b.input("pos", TensorType::of(DataType::I64, &[1, s as u64]));
         let cos = b.input(
             "cos",
@@ -336,19 +339,28 @@ fn rotary_fused_matches_interpreter() {
             vec![
                 (
                     "x",
-                    Tensor::from_f32(&f32s(s * hidden, |i| (i as f32 * 0.23).sin()), &[1, s, hidden])
-                        .unwrap(),
+                    Tensor::from_f32(
+                        &f32s(s * hidden, |i| (i as f32 * 0.23).sin()),
+                        &[1, s, hidden],
+                    )
+                    .unwrap(),
                 ),
                 ("pos", Tensor::from_i64(&[5, 6, 7], &[1, s]).unwrap()),
                 (
                     "cos",
-                    Tensor::from_f32(&f32s(max_seq * half, |i| (i as f32 * 0.05).cos()), &[max_seq, half])
-                        .unwrap(),
+                    Tensor::from_f32(
+                        &f32s(max_seq * half, |i| (i as f32 * 0.05).cos()),
+                        &[max_seq, half],
+                    )
+                    .unwrap(),
                 ),
                 (
                     "sin",
-                    Tensor::from_f32(&f32s(max_seq * half, |i| (i as f32 * 0.05).sin()), &[max_seq, half])
-                        .unwrap(),
+                    Tensor::from_f32(
+                        &f32s(max_seq * half, |i| (i as f32 * 0.05).sin()),
+                        &[max_seq, half],
+                    )
+                    .unwrap(),
                 ),
             ],
         );
@@ -368,8 +380,14 @@ fn gqa_rotary_fused_match_decompositions() {
     let mut bld = GraphBuilder::new();
     let dims = |v: &[usize]| v.iter().map(|&x| x as u64).collect::<Vec<_>>();
     let q = bld.input("q", TensorType::of(DataType::F32, &dims(&[bsz, s, hidden])));
-    let k = bld.input("k", TensorType::of(DataType::F32, &dims(&[bsz, s, kv_hidden])));
-    let v = bld.input("v", TensorType::of(DataType::F32, &dims(&[bsz, s, kv_hidden])));
+    let k = bld.input(
+        "k",
+        TensorType::of(DataType::F32, &dims(&[bsz, s, kv_hidden])),
+    );
+    let v = bld.input(
+        "v",
+        TensorType::of(DataType::F32, &dims(&[bsz, s, kv_hidden])),
+    );
     let pk = bld.input(
         "pk",
         TensorType::of(DataType::F32, &dims(&[bsz, kv, past, d])),
@@ -387,6 +405,7 @@ fn gqa_rotary_fused_match_decompositions() {
         "sin",
         TensorType::of(DataType::F32, &dims(&[max_seq, half])),
     );
+    let sl = bld.input("seqlens", TensorType::of(DataType::I32, &dims(&[bsz])));
 
     let rotary = |bld: &mut GraphBuilder, x, width: usize| {
         bld.composite(
@@ -407,7 +426,7 @@ fn gqa_rotary_fused_match_decompositions() {
                 .with("num_heads", AttrValue::Int(h as i64))
                 .with("kv_num_heads", AttrValue::Int(kv as i64))
                 .with("local_window_size", AttrValue::Int(4)),
-            &[rq, rk, v, pk, pv],
+            &[rq, rk, v, pk, pv, sl],
             vec![
                 TensorType::of(DataType::F32, &dims(&[bsz, s, hidden])),
                 present_ty.clone(),
@@ -423,8 +442,11 @@ fn gqa_rotary_fused_match_decompositions() {
     let inputs: Vec<(&str, Tensor)> = vec![
         (
             "q",
-            Tensor::from_f32(&f32s(bsz * s * hidden, |i| (i as f32 * 0.11).sin()), &[bsz, s, hidden])
-                .unwrap(),
+            Tensor::from_f32(
+                &f32s(bsz * s * hidden, |i| (i as f32 * 0.11).sin()),
+                &[bsz, s, hidden],
+            )
+            .unwrap(),
         ),
         (
             "k",
@@ -464,13 +486,29 @@ fn gqa_rotary_fused_match_decompositions() {
         ),
         (
             "cos",
-            Tensor::from_f32(&f32s(max_seq * half, |i| (i as f32 * 0.09).cos()), &[max_seq, half])
-                .unwrap(),
+            Tensor::from_f32(
+                &f32s(max_seq * half, |i| (i as f32 * 0.09).cos()),
+                &[max_seq, half],
+            )
+            .unwrap(),
         ),
         (
             "sin",
-            Tensor::from_f32(&f32s(max_seq * half, |i| (i as f32 * 0.09).sin()), &[max_seq, half])
-                .unwrap(),
+            Tensor::from_f32(
+                &f32s(max_seq * half, |i| (i as f32 * 0.09).sin()),
+                &[max_seq, half],
+            )
+            .unwrap(),
+        ),
+        (
+            "seqlens",
+            // Dense: both rows have the full past + new (5 + 3 - 1 = 7).
+            Tensor::new(
+                DataType::I32,
+                vec![bsz],
+                [7i32, 7].iter().flat_map(|v| v.to_le_bytes()).collect(),
+            )
+            .unwrap(),
         ),
     ];
 
@@ -549,6 +587,10 @@ fn gqa_symbolic_with_past_and_window() {
             SymbolicShape(vec![dim(1), DimExpr::constant(kv), t.clone(), dim(d)]),
         ),
     );
+    let sl = b.input(
+        "seqlens",
+        TensorType::new(DataType::I32, SymbolicShape(vec![dim(1)])),
+    );
     let present = SymbolicShape(vec![dim(1), DimExpr::constant(kv), t + s.clone(), dim(d)]);
     let outs = b
         .composite(
@@ -557,7 +599,7 @@ fn gqa_symbolic_with_past_and_window() {
                 .with("num_heads", AttrValue::Int(h as i64))
                 .with("kv_num_heads", AttrValue::Int(kv as i64))
                 .with("local_window_size", AttrValue::Int(3)),
-            &[q, k, v, pk, pv],
+            &[q, k, v, pk, pv, sl],
             vec![
                 TensorType::new(f, SymbolicShape(vec![dim(1), s, dim(hidden)])),
                 TensorType::new(f, present.clone()),
@@ -607,6 +649,283 @@ fn gqa_symbolic_with_past_and_window() {
             (
                 "pv",
                 Tensor::from_f32(&f32s(t_c * d, |i| 5.0 + i as f32), &[1, 1, t_c, d]).unwrap(),
+            ),
+            (
+                "seqlens",
+                Tensor::new(
+                    DataType::I32,
+                    vec![1],
+                    ((t_c + s_c - 1) as i32).to_le_bytes().to_vec(),
+                )
+                .unwrap(),
+            ),
+        ],
+    );
+}
+
+/// do_rotary=1 + attention_bias, the gemma-3-1b GQA export shape: rotary
+/// fused inside the op (cos/sin caches, positions from seqlens_k) plus an
+/// additive bias. Fused kernel vs decomposition.
+#[test]
+#[ignore = "requires GPU"]
+fn gqa_do_rotary_with_bias_fused_matches_decomposition() {
+    let (bsz, s, h, kv, d, past) = (2usize, 2usize, 2usize, 1usize, 8usize, 3usize);
+    let (hidden, kv_hidden, total, max_pos, half) = (h * d, kv * d, past + s, 16usize, d / 2);
+
+    let mut bld = GraphBuilder::new();
+    let dims = |v: &[usize]| v.iter().map(|&x| x as u64).collect::<Vec<_>>();
+    let q = bld.input("q", TensorType::of(DataType::F32, &dims(&[bsz, s, hidden])));
+    let k = bld.input(
+        "k",
+        TensorType::of(DataType::F32, &dims(&[bsz, s, kv_hidden])),
+    );
+    let v = bld.input(
+        "v",
+        TensorType::of(DataType::F32, &dims(&[bsz, s, kv_hidden])),
+    );
+    let pk = bld.input(
+        "pk",
+        TensorType::of(DataType::F32, &dims(&[bsz, kv, past, d])),
+    );
+    let pv = bld.input(
+        "pv",
+        TensorType::of(DataType::F32, &dims(&[bsz, kv, past, d])),
+    );
+    let sl = bld.input("seqlens", TensorType::of(DataType::I32, &dims(&[bsz])));
+    let cos = bld.input(
+        "cos",
+        TensorType::of(DataType::F32, &dims(&[max_pos, half])),
+    );
+    let sin = bld.input(
+        "sin",
+        TensorType::of(DataType::F32, &dims(&[max_pos, half])),
+    );
+    let bias = bld.input(
+        "bias",
+        TensorType::of(DataType::F32, &dims(&[bsz, 1, s, total])),
+    );
+    let present_ty = TensorType::of(DataType::F32, &dims(&[bsz, kv, total, d]));
+    let outs = bld
+        .composite(
+            "com.microsoft.GroupQueryAttention",
+            Attrs::new()
+                .with("num_heads", AttrValue::Int(h as i64))
+                .with("kv_num_heads", AttrValue::Int(kv as i64))
+                .with("local_window_size", AttrValue::Int(3))
+                .with("do_rotary", AttrValue::Int(1))
+                .with("has_attention_bias", AttrValue::Int(1)),
+            &[q, k, v, pk, pv, sl, cos, sin, bias],
+            vec![
+                TensorType::of(DataType::F32, &dims(&[bsz, s, hidden])),
+                present_ty.clone(),
+                present_ty,
+            ],
+        )
+        .unwrap();
+    bld.output("out", outs[0]);
+    bld.output("present_k", outs[1]);
+    bld.output("present_v", outs[2]);
+    let m = bld.finish().unwrap();
+
+    diff_test(
+        m,
+        vec![
+            (
+                "q",
+                Tensor::from_f32(
+                    &f32s(bsz * s * hidden, |i| (i as f32 * 0.17).sin()),
+                    &[bsz, s, hidden],
+                )
+                .unwrap(),
+            ),
+            (
+                "k",
+                Tensor::from_f32(
+                    &f32s(bsz * s * kv_hidden, |i| (i as f32 * 0.29).cos()),
+                    &[bsz, s, kv_hidden],
+                )
+                .unwrap(),
+            ),
+            (
+                "v",
+                Tensor::from_f32(
+                    &f32s(bsz * s * kv_hidden, |i| i as f32 * 0.25 - 0.7),
+                    &[bsz, s, kv_hidden],
+                )
+                .unwrap(),
+            ),
+            (
+                "pk",
+                Tensor::from_f32(
+                    &f32s(bsz * kv * past * d, |i| (i as f32 * 0.37).sin() * 0.6),
+                    &[bsz, kv, past, d],
+                )
+                .unwrap(),
+            ),
+            (
+                "pv",
+                Tensor::from_f32(
+                    &f32s(bsz * kv * past * d, |i| 1.5 - i as f32 * 0.08),
+                    &[bsz, kv, past, d],
+                )
+                .unwrap(),
+            ),
+            (
+                // Row 0 dense (3 past + 2 new); row 1 ragged: one valid
+                // past token, so its queries sit at positions 1 and 2.
+                "seqlens",
+                Tensor::new(
+                    DataType::I32,
+                    vec![bsz],
+                    [4i32, 2].iter().flat_map(|v| v.to_le_bytes()).collect(),
+                )
+                .unwrap(),
+            ),
+            (
+                "cos",
+                Tensor::from_f32(
+                    &f32s(max_pos * half, |i| (i as f32 * 0.05).cos()),
+                    &[max_pos, half],
+                )
+                .unwrap(),
+            ),
+            (
+                "sin",
+                Tensor::from_f32(
+                    &f32s(max_pos * half, |i| (i as f32 * 0.05).sin()),
+                    &[max_pos, half],
+                )
+                .unwrap(),
+            ),
+            (
+                "bias",
+                Tensor::from_f32(
+                    &f32s(bsz * s * total, |i| (i as f32 * 0.6).sin() * 0.3),
+                    &[bsz, 1, s, total],
+                )
+                .unwrap(),
+            ),
+        ],
+    );
+}
+
+/// Ragged batch: per-row seqlens_k with a garbage past tail — the fused
+/// kernel and the decomposition must agree on both the attention output
+/// and the rebuilt present cache.
+#[test]
+#[ignore = "requires GPU"]
+fn gqa_ragged_seqlens_fused_matches_decomposition() {
+    let (bsz, s, h, kv, d, past) = (2usize, 1usize, 2usize, 1usize, 4usize, 3usize);
+    let (hidden, kv_hidden, total) = (h * d, kv * d, past + s);
+
+    let mut bld = GraphBuilder::new();
+    let dims = |v: &[usize]| v.iter().map(|&x| x as u64).collect::<Vec<_>>();
+    let q = bld.input("q", TensorType::of(DataType::F32, &dims(&[bsz, s, hidden])));
+    let k = bld.input(
+        "k",
+        TensorType::of(DataType::F32, &dims(&[bsz, s, kv_hidden])),
+    );
+    let v = bld.input(
+        "v",
+        TensorType::of(DataType::F32, &dims(&[bsz, s, kv_hidden])),
+    );
+    let pk = bld.input(
+        "pk",
+        TensorType::of(DataType::F32, &dims(&[bsz, kv, past, d])),
+    );
+    let pv = bld.input(
+        "pv",
+        TensorType::of(DataType::F32, &dims(&[bsz, kv, past, d])),
+    );
+    let sl = bld.input("seqlens", TensorType::of(DataType::I32, &dims(&[bsz])));
+    let present_ty = TensorType::of(DataType::F32, &dims(&[bsz, kv, total, d]));
+    let outs = bld
+        .composite(
+            "com.microsoft.GroupQueryAttention",
+            Attrs::new()
+                .with("num_heads", AttrValue::Int(h as i64))
+                .with("kv_num_heads", AttrValue::Int(kv as i64))
+                .with("local_window_size", AttrValue::Int(2)),
+            &[q, k, v, pk, pv, sl],
+            vec![
+                TensorType::of(DataType::F32, &dims(&[bsz, s, hidden])),
+                present_ty.clone(),
+                present_ty,
+            ],
+        )
+        .unwrap();
+    bld.output("out", outs[0]);
+    bld.output("present_k", outs[1]);
+    bld.output("present_v", outs[2]);
+    let m = bld.finish().unwrap();
+
+    diff_test(
+        m,
+        vec![
+            (
+                "q",
+                Tensor::from_f32(
+                    &f32s(bsz * s * hidden, |i| (i as f32 * 0.13).sin()),
+                    &[bsz, s, hidden],
+                )
+                .unwrap(),
+            ),
+            (
+                "k",
+                Tensor::from_f32(
+                    &f32s(bsz * s * kv_hidden, |i| (i as f32 * 0.21).cos()),
+                    &[bsz, s, kv_hidden],
+                )
+                .unwrap(),
+            ),
+            (
+                "v",
+                Tensor::from_f32(
+                    &f32s(bsz * s * kv_hidden, |i| i as f32 * 0.4 - 1.0),
+                    &[bsz, s, kv_hidden],
+                )
+                .unwrap(),
+            ),
+            (
+                // Row 1's tail (positions 1–2) is garbage the kernels
+                // must never read.
+                "pk",
+                Tensor::from_f32(
+                    &f32s(bsz * kv * past * d, |i| {
+                        if i >= past * d + d {
+                            99.0
+                        } else {
+                            (i as f32 * 0.3).sin()
+                        }
+                    }),
+                    &[bsz, kv, past, d],
+                )
+                .unwrap(),
+            ),
+            (
+                "pv",
+                Tensor::from_f32(
+                    &f32s(bsz * kv * past * d, |i| {
+                        if i >= past * d + d {
+                            -99.0
+                        } else {
+                            2.0 + i as f32 * 0.1
+                        }
+                    }),
+                    &[bsz, kv, past, d],
+                )
+                .unwrap(),
+            ),
+            (
+                // Row 0 dense (past 3 + new 1 - 1 = 3); row 1 has one
+                // valid past token (total 2 - 1 = 1).
+                "seqlens",
+                Tensor::new(
+                    DataType::I32,
+                    vec![bsz],
+                    [3i32, 1].iter().flat_map(|v| v.to_le_bytes()).collect(),
+                )
+                .unwrap(),
             ),
         ],
     );

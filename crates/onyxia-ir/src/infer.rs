@@ -264,6 +264,8 @@ pub fn infer_prim(prim: &Prim, inputs: &[&TensorType]) -> Result<Vec<TensorType>
             TensorType::new(*dtype, SymbolicShape(vec![len.clone()]))
         }
 
+        Prim::DimValues { exprs } => TensorType::of(DataType::I64, &[exprs.len() as u64]),
+
         Prim::Dequantize {
             block_size,
             out_shape,

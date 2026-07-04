@@ -16,7 +16,7 @@ use crate::profile::{KernelTiming, Profiler};
 use onyxia_ir::graph::{Module, NodeId, NodeKind, Origin, ValueId};
 use onyxia_ir::interp::{Tensor, bind_shapes};
 use onyxia_ir::prim::{BinaryOp, CmpOp, Prim, ReduceOp, UnaryOp};
-use onyxia_ir::{DataType, Error, Result};
+use onyxia_ir::{DataType, Error, Result, Session as _};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -169,9 +169,14 @@ impl onyxia_ir::Backend for WgpuBackend {
             }
         }
 
-        // Upload constants once.
+        // Upload constants once. `write_buffer` stages each write until
+        // the next submit, so flush every so often — otherwise a
+        // multi-GiB model holds both the staging and device copies
+        // alive at once and exhausts memory during prepare.
+        const FLUSH_BYTES: u64 = 256 << 20;
         let mem = Arc::new(MemCounter::default());
         let mut consts: HashMap<ValueId, GpuTensor> = HashMap::new();
+        let mut staged: u64 = 0;
         for id in module.value_ids() {
             let def = module.value(id);
             let Origin::Const(cid) = def.origin else {
@@ -189,6 +194,18 @@ impl onyxia_ir::Backend for WgpuBackend {
                 mapped_at_creation: false,
             });
             self.ctx.queue.write_buffer(&buffer, 0, &data);
+            staged += data.len() as u64;
+            if staged >= FLUSH_BYTES {
+                self.ctx.queue.submit([]);
+                self.ctx
+                    .device
+                    .poll(wgpu::PollType::Wait {
+                        submission_index: None,
+                        timeout: None,
+                    })
+                    .map_err(|e| Error::Runtime(format!("GPU poll failed: {e:?}")))?;
+                staged = 0;
+            }
             consts.insert(
                 id,
                 GpuTensor {
@@ -462,9 +479,9 @@ impl WgpuSession {
     }
 
     pub(crate) fn alloc_out(&mut self, dtype: DataType, shape: Vec<usize>) -> GpuTensor {
-        let buffer =
-            self.pool
-                .acquire(&self.device, phys_bytes(shape.iter().product()), &self.mem);
+        let buffer = self
+            .pool
+            .acquire(&self.device, phys_bytes(shape.iter().product()), &self.mem);
         GpuTensor {
             buffer,
             dtype,
@@ -718,8 +735,10 @@ impl WgpuSession {
                 .clamp(1, MAX_KS)
         };
 
-        let scratch = (ks > 1)
-            .then(|| self.pool.acquire(&self.device, (ks * n * 4) as u64, &self.mem));
+        let scratch = (ks > 1).then(|| {
+            self.pool
+                .acquire(&self.device, (ks * n * 4) as u64, &self.mem)
+        });
         let dst: &Arc<TrackedBuffer> = scratch.as_ref().unwrap_or(&out.buffer);
         let buffers = [&a.buffer, &b.buffer, dst];
 
@@ -1211,6 +1230,15 @@ impl WgpuSession {
                     size,
                 )?;
                 Ok(out)
+            }
+
+            Prim::DimValues { exprs } => {
+                let vals: Vec<i64> = exprs
+                    .iter()
+                    .map(|e| e.eval_signed(bindings))
+                    .collect::<Result<_>>()?;
+                let t = Tensor::from_i64(&vals, &[vals.len()])?;
+                self.upload(&t)
             }
 
             Prim::Dequantize { .. } => Err(Error::Unsupported(

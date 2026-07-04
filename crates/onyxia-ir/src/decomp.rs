@@ -357,20 +357,25 @@ fn rotary_embedding(
 /// com.microsoft.GroupQueryAttention.
 ///
 /// query `[B, S, H*D]`, key/value `[B, S, KV*D]`, past_key/past_value
-/// `[B, KV, T, D]` (BNSH). Outputs: attention `[B, S, H*D]` and present
-/// key/value `[B, KV, T+S, D]`.
+/// `[B, KV, P, D]` (BNSH), seqlens_k `int32` with `B` elements. Outputs:
+/// attention `[B, S, H*D]` and present key/value `[B, KV, P+S, D]`.
 ///
-/// Causal masking with optional sliding window (`local_window_size`).
-/// Assumes dense sequences — `seqlens_k`/`total_sequence_length` (inputs 5
-/// and 6) are ignored in favor of symbolic dims, which matches batch-1
-/// usage without per-row padding (the demo's regime). Padded batches need
-/// the fused kernel.
+/// `seqlens_k` is honored per batch row, matching the onnxruntime CPU
+/// reference (`gqa_attention_base.h`): row `b`'s valid length is
+/// `seqlens_k[b] + 1`, its past length is `max(that - S, 0)`, new keys
+/// land right after the valid past, and everything beyond the valid
+/// length is zeroed in the present cache and masked in the attention.
+/// Causal masking with optional sliding window (`local_window_size`,
+/// which counts *previous* tokens: a query sees `window + 1` keys
+/// including itself, the onnxruntime convention).
 fn group_query_attention(
     c: &Composite,
     inputs: &[ValueId],
     b: &mut GraphBuilder,
 ) -> Result<Vec<ValueId>> {
-    let (q, k, v, past_k, past_v) = (inputs[0], inputs[1], inputs[2], inputs[3], inputs[4]);
+    let (q, k, v, past_k, past_v, seqlens) = (
+        inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], inputs[5],
+    );
     let heads = c.attrs.int("num_heads")? as u64;
     let kv_heads = c.attrs.int("kv_num_heads")? as u64;
     if heads == 0 || kv_heads == 0 || heads % kv_heads != 0 {
@@ -395,6 +400,55 @@ fn group_query_attention(
     let total = past.clone() + seq.clone();
     let dt = b.ty(q).dtype;
 
+    // Per-row valid lengths: tot_b = seqlens_k[b] + 1 (shape [B,1,1,1]
+    // i64), past_b = max(tot_b - S, 0).
+    let one4 = DimExpr::constant(1);
+    let sl = b.reshape(
+        seqlens,
+        vec![bsz.clone(), one4.clone(), one4.clone(), one4.clone()],
+    )?;
+    let sl = b.cast(sl, DataType::I64)?;
+    let one_i = scalar(b, DataType::I64, 1.0)?;
+    let tot_b = b.add(sl, one_i)?;
+    let s_dim = b.prim(
+        Prim::DimValues {
+            exprs: vec![seq.clone()],
+        },
+        &[],
+    )?;
+    let past_b_raw = b.sub(tot_b, s_dim)?;
+    let zero_i = scalar(b, DataType::I64, 0.0)?;
+    let past_b = b.prim(Prim::Binary(BinaryOp::Max), &[past_b_raw, zero_i])?;
+    let jrel = b.iota(seq.clone(), DataType::I64)?;
+    let jrel = b.reshape(
+        jrel,
+        vec![one4.clone(), one4.clone(), seq.clone(), one4.clone()],
+    )?;
+
+    // Fused rotary: positions come from the per-row past length, exactly
+    // like the masking (position_ids input is rejected at lowering).
+    let (mut q, mut k) = (q, k);
+    if c.attrs.int_or("do_rotary", 0)? != 0 {
+        let (cos, sin) = (inputs[6], inputs[7]);
+        let interleaved = c.attrs.int_or("rotary_interleaved", 0)?;
+        let qpos = b.add(past_b, jrel)?; // [B,1,S,1]
+        let pos2 = b.reshape(qpos, vec![bsz.clone(), seq.clone()])?;
+        let rope = |b: &mut GraphBuilder, x: ValueId, n: u64| -> Result<ValueId> {
+            let ty = b.ty(x).clone();
+            Ok(b.composite(
+                "com.microsoft.RotaryEmbedding",
+                crate::attrs::Attrs::new()
+                    .with("num_heads", crate::attrs::AttrValue::Int(n as i64))
+                    .with("interleaved", crate::attrs::AttrValue::Int(interleaved)),
+                &[x, pos2, cos, sin],
+                vec![ty],
+            )?
+            .remove(0))
+        };
+        q = rope(b, q, heads)?;
+        k = rope(b, k, kv_heads)?;
+    }
+
     // To BNSH: [B, S, N*D] → [B, S, N, D] → [B, N, S, D].
     let to_heads = |b: &mut GraphBuilder, x: ValueId, n: u64| -> Result<ValueId> {
         let r = b.reshape(
@@ -407,9 +461,51 @@ fn group_query_attention(
     let k4 = to_heads(b, k, kv_heads)?;
     let v4 = to_heads(b, v, kv_heads)?;
 
-    // Present caches: append new keys/values after the past.
-    let present_k = b.concat(&[past_k, k4], 2)?;
-    let present_v = b.concat(&[past_v, v4], 2)?;
+    // Present caches: row b keeps its valid past `[0, past_b)`, new
+    // keys/values land at `[past_b, past_b + S)`, and the tail is zero.
+    // Per-row placement via a one-hot matmul (`onehot[b,t,j] = (t ==
+    // past_b + j)`), which needs no scatter support from backends.
+    let zero_f = scalar(b, dt, 0.0)?;
+    let one_f = scalar(b, dt, 1.0)?;
+    let pcols = b.iota(past.clone(), DataType::I64)?;
+    let pcols = b.reshape(
+        pcols,
+        vec![one4.clone(), one4.clone(), past.clone(), one4.clone()],
+    )?;
+    let past_valid = b.cmp(CmpOp::Lt, pcols, past_b)?; // [B,1,P,1]
+    let kv_c = DimExpr::constant(kv_heads);
+    let new_zeros = b.broadcast(
+        zero_f,
+        vec![bsz.clone(), kv_c.clone(), seq.clone(), d.clone()],
+    )?;
+    let tcols = b.iota(total.clone(), DataType::I64)?;
+    let tcols = b.reshape(
+        tcols,
+        vec![one4.clone(), one4.clone(), total.clone(), one4.clone()],
+    )?;
+    let jrow = b.reshape(
+        jrel,
+        vec![one4.clone(), one4.clone(), one4.clone(), seq.clone()],
+    )?;
+    let tpos = b.add(past_b, jrow)?; // [B,1,1,S]
+    let hot = b.cmp(CmpOp::Eq, tcols, tpos)?; // [B,1,T,S]
+    let onehot = b.select(hot, one_f, zero_f)?;
+    // Materialize the KV batch dim: backends need not broadcast matmul
+    // batch dims.
+    let onehot = b.broadcast(
+        onehot,
+        vec![bsz.clone(), kv_c.clone(), total.clone(), seq.clone()],
+    )?;
+
+    let place_present =
+        |b: &mut GraphBuilder, past_kv: ValueId, new4: ValueId| -> Result<ValueId> {
+            let kept = b.select(past_valid, past_kv, zero_f)?;
+            let padded = b.concat(&[kept, new_zeros], 2)?;
+            let placed = b.matmul(onehot, new4)?; // [B,KV,T,D]
+            b.add(padded, placed)
+        };
+    let present_k = place_present(b, past_k, k4)?;
+    let present_v = place_present(b, past_v, v4)?;
 
     // Repeat KV heads up to H: [B, KV, T+S, D] → [B, KV, G, T+S, D] → [B, H, ...].
     let repeat = |b: &mut GraphBuilder, x: ValueId| -> Result<ValueId> {
@@ -467,20 +563,29 @@ fn group_query_attention(
         scale_attr
     };
     let scale_c = scalar(b, dt, scale)?;
-    let scores = b.mul(scores, scale_c)?;
+    let mut scores = b.mul(scores, scale_c)?;
 
-    // Mask: query i sits at absolute position T+i; allow col ≤ row, and
-    // within the sliding window when configured.
-    let all_pos = b.iota(total.clone(), DataType::I64)?;
-    let rows = slice1(b, all_pos, 0, past.clone(), total.clone())?; // [S]
-    let rows = b.reshape(rows, vec![seq.clone(), DimExpr::constant(1)])?;
+    // Additive attention bias `[B|1, H|1, S, T]`, broadcast over scores.
+    if c.attrs.int_or("has_attention_bias", 0)? != 0 {
+        let bias = *inputs.last().expect("bias input recorded by lowering");
+        scores = b.add(scores, bias)?;
+    }
+
+    // Mask: query i of row b sits at absolute position past_b + i;
+    // allow col ≤ qpos, and within the sliding window when configured
+    // (col ≥ qpos − window: the window counts previous tokens, so
+    // window + 1 keys are visible including the query itself).
+    let qpos = b.add(past_b, jrel)?; // [B,1,S,1]
     let cols = b.iota(total.clone(), DataType::I64)?;
-    let cols = b.reshape(cols, vec![DimExpr::constant(1), total.clone()])?;
-    let causal = b.cmp(CmpOp::Le, cols, rows)?;
-    let allowed = if window > 0 {
+    let cols = b.reshape(
+        cols,
+        vec![one4.clone(), one4.clone(), one4.clone(), total.clone()],
+    )?;
+    let causal = b.cmp(CmpOp::Le, cols, qpos)?; // [B,1,S,T]
+    let allowed = if window >= 0 {
         let w = scalar(b, DataType::I64, window as f64)?;
-        let min_col = b.sub(rows, w)?;
-        let in_window = b.cmp(CmpOp::Gt, cols, min_col)?;
+        let min_col = b.sub(qpos, w)?;
+        let in_window = b.cmp(CmpOp::Ge, cols, min_col)?;
         b.prim(Prim::Binary(BinaryOp::And), &[causal, in_window])?
     } else {
         causal
@@ -770,7 +875,9 @@ mod tests {
                     .iter()
                     .enumerate()
                     .map(|(j, kj)| {
-                        let visible = j <= row && (window <= 0 || (j as i64) > row as i64 - window);
+                        // Window counts previous tokens (onnxruntime
+                        // convention): window + 1 keys visible.
+                        let visible = j <= row && (window < 0 || (j as i64) >= row as i64 - window);
                         if visible {
                             qi.iter().zip(kj).map(|(a, b)| a * b).sum::<f32>() * scale
                         } else {
@@ -870,8 +977,9 @@ mod tests {
 
     #[test]
     fn gqa_sliding_window_masks_old_tokens() {
-        // One head, D=1, S=1 query with T=3 past, window=2: only the last 2
-        // positions (one past token + self) are visible.
+        // One head, D=1, S=1 query with T=3 past, window=2. The window
+        // counts previous tokens (onnxruntime convention), so window + 1
+        // positions are visible: two past tokens + self.
         let outs = run_composite(
             "com.microsoft.GroupQueryAttention",
             Attrs::new()
@@ -900,9 +1008,91 @@ mod tests {
                 TensorType::of(DataType::F32, &[1, 1, 4, 1]),
             ],
         );
-        // Visible: position 2 (value 13) and self (value 100), uniform →
-        // (13 + 100) / 2.
-        assert_close(&outs[0].1.to_f32().unwrap(), &[56.5], 1e-4);
+        // Visible: positions 1–2 (values 11, 13) and self (value 100),
+        // uniform logits → (11 + 13 + 100) / 3.
+        assert_close(&outs[0].1.to_f32().unwrap(), &[124.0 / 3.0], 1e-4);
+    }
+
+    #[test]
+    fn gqa_ragged_batch_honors_seqlens() {
+        // B=2 token generation (S=1) over a P=3 past buffer. Row 0 is
+        // dense (seqlens_k = 3: full past). Row 1 has only 1 valid past
+        // token (seqlens_k = 1); its buffer tail is garbage that must
+        // not be attended, and its new key must land at position 1.
+        let (kv, d, s, p) = (1usize, 2usize, 1usize, 3usize);
+        let q = [[0.1f32, -0.2], [0.3, 0.05]];
+        let k_new = [[0.5f32, 0.1], [-0.2, 0.4]];
+        let v_new = [[10.0f32, 20.0], [30.0, 40.0]];
+        let past_k = [
+            [[0.2f32, 0.3], [-0.1, 0.6], [0.4, -0.5]],
+            [[0.7, -0.3], [99.0, 99.0], [99.0, 99.0]], // garbage tail
+        ];
+        let past_v = [
+            [[1.0f32, 2.0], [3.0, 4.0], [5.0, 6.0]],
+            [[7.0, 8.0], [-99.0, -99.0], [-99.0, -99.0]],
+        ];
+        let seqlens = [3i32, 1];
+
+        let flat2 = |x: &[[f32; 2]]| x.iter().flatten().copied().collect::<Vec<_>>();
+        let flat3 = |x: &[[[f32; 2]; 3]]| x.iter().flatten().flatten().copied().collect::<Vec<_>>();
+        let outs = run_composite(
+            "com.microsoft.GroupQueryAttention",
+            Attrs::new()
+                .with("num_heads", AttrValue::Int(1))
+                .with("kv_num_heads", AttrValue::Int(1)),
+            vec![
+                ("q", Tensor::from_f32(&flat2(&q), &[2, s, d]).unwrap()),
+                ("k", Tensor::from_f32(&flat2(&k_new), &[2, s, d]).unwrap()),
+                ("v", Tensor::from_f32(&flat2(&v_new), &[2, s, d]).unwrap()),
+                (
+                    "pk",
+                    Tensor::from_f32(&flat3(&past_k), &[2, kv, p, d]).unwrap(),
+                ),
+                (
+                    "pv",
+                    Tensor::from_f32(&flat3(&past_v), &[2, kv, p, d]).unwrap(),
+                ),
+                (
+                    "seqlens",
+                    Tensor::new(
+                        DataType::I32,
+                        vec![2],
+                        seqlens.iter().flat_map(|v| v.to_le_bytes()).collect(),
+                    )
+                    .unwrap(),
+                ),
+            ],
+            vec![
+                TensorType::of(DataType::F32, &[2, s as u64, d as u64]),
+                TensorType::of(DataType::F32, &[2, kv as u64, (p + s) as u64, d as u64]),
+                TensorType::of(DataType::F32, &[2, kv as u64, (p + s) as u64, d as u64]),
+            ],
+        );
+
+        let scale = 1.0 / (d as f32).sqrt();
+        let got = outs[0].1.to_f32().unwrap();
+        for row in 0..2 {
+            let valid_past = (seqlens[row] as usize + 1) - s;
+            let mut keys: Vec<Vec<f32>> = past_k[row][..valid_past]
+                .iter()
+                .map(|k| k.to_vec())
+                .collect();
+            keys.push(k_new[row].to_vec());
+            let mut vals: Vec<Vec<f32>> = past_v[row][..valid_past]
+                .iter()
+                .map(|v| v.to_vec())
+                .collect();
+            vals.push(v_new[row].to_vec());
+            let expect = naive_attention(&[q[row].to_vec()], &keys, &vals, valid_past, scale, -1);
+            assert_close(&got[row * d..(row + 1) * d], &expect[0], 1e-4);
+        }
+
+        // Row 1's present: valid past, then the new key, then zeros.
+        let pk = outs[1].1.to_f32().unwrap();
+        let row1 = &pk[(p + s) * d..2 * (p + s) * d];
+        assert_close(&row1[..2], &[0.7, -0.3], 1e-6);
+        assert_close(&row1[2..4], &[-0.2, 0.4], 1e-6);
+        assert_close(&row1[4..], &[0.0; 4], 1e-6);
     }
 
     #[test]
@@ -983,6 +1173,10 @@ mod tests {
                 SymbolicShape(vec![1u64.into(), 1u64.into(), t.clone(), 4u64.into()]),
             ),
         );
+        let sl = b.input(
+            "seqlens",
+            TensorType::new(DataType::I32, SymbolicShape(vec![1u64.into()])),
+        );
         let present_shape =
             SymbolicShape(vec![1u64.into(), 1u64.into(), t + s.clone(), 4u64.into()]);
         let outs = b
@@ -991,7 +1185,7 @@ mod tests {
                 Attrs::new()
                     .with("num_heads", AttrValue::Int(2))
                     .with("kv_num_heads", AttrValue::Int(1)),
-                &[q, k, v, pk, pv],
+                &[q, k, v, pk, pv, sl],
                 vec![
                     TensorType::new(f, SymbolicShape(vec![1u64.into(), s, 8u64.into()])),
                     TensorType::new(f, present_shape.clone()),

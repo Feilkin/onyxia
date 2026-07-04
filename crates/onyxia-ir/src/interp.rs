@@ -315,8 +315,12 @@ fn broadcast_shape(a: &[usize], b: &[usize]) -> Result<Vec<usize>> {
     for i in 0..rank {
         let da = (i + a.len()).checked_sub(rank).map(|j| a[j]).unwrap_or(1);
         let db = (i + b.len()).checked_sub(rank).map(|j| b[j]).unwrap_or(1);
-        if da == db || da == 1 || db == 1 {
-            out.push(da.max(db));
+        // A size-1 dim stretches to the other side — including to 0
+        // (max() would wrongly resurrect an empty dim).
+        if da == db || db == 1 {
+            out.push(da);
+        } else if da == 1 {
+            out.push(db);
         } else {
             return Err(Error::Interp(format!(
                 "cannot broadcast shapes {a:?} and {b:?}"
@@ -387,6 +391,20 @@ pub fn bind_shapes(module: &Module, inputs: &[(&str, DataType, &[usize])]) -> Re
                     }
                 }
             }
+        }
+    }
+    for c in &module.constraints {
+        let l = c.left.eval_signed(&bindings).map_err(|e| {
+            Error::Binding(format!("{}: cannot resolve {}: {e}", c.context, c.left))
+        })?;
+        let r = c.right.eval_signed(&bindings).map_err(|e| {
+            Error::Binding(format!("{}: cannot resolve {}: {e}", c.context, c.right))
+        })?;
+        if l != r {
+            return Err(Error::Binding(format!(
+                "{}: {} = {l} but {} = {r}",
+                c.context, c.left, c.right
+            )));
         }
     }
     Ok(bindings)
@@ -732,6 +750,15 @@ pub(crate) fn eval_prim(prim: &Prim, ins: &[&Tensor], bindings: &mut Bindings) -
         Prim::Iota { len, dtype } => {
             let n = len.eval(bindings)? as usize;
             Values::I((0..n as i64).collect()).encode(*dtype, vec![n])
+        }
+
+        Prim::DimValues { exprs } => {
+            let vals: Vec<i64> = exprs
+                .iter()
+                .map(|e| e.eval_signed(bindings))
+                .collect::<Result<_>>()?;
+            let n = vals.len();
+            Values::I(vals).encode(DataType::I64, vec![n])
         }
 
         Prim::Dequantize {

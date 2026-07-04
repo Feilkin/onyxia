@@ -133,22 +133,31 @@ impl LowerCtx<'_> {
         }
     }
 
-    /// Input `i` as a runtime value, materializing constant shape-domain
-    /// content when necessary.
+    /// Input `i` as a runtime value, materializing shape-domain content
+    /// when necessary: constant content becomes a pool constant;
+    /// late-bound content becomes a [`Prim::DimValues`] node evaluated
+    /// against the run's dim bindings.
     pub fn value(&mut self, i: usize) -> Result<ValueId> {
         match self.lowered(i)?.clone() {
             Lowered::Value(v) => Ok(v),
             Lowered::Content(c) => {
                 let consts: Option<Vec<i64>> = c.elems.iter().map(signed_const_of).collect();
-                let Some(vals) = consts else {
-                    return Err(Error::Unsupported(format!(
-                        "node '{}': a symbolic shape value is consumed by a runtime \
-                         tensor operation — cannot materialize",
-                        self.node.name
-                    )));
-                };
-                let dims: Vec<u64> = c.shape.iter().map(|&d| d as u64).collect();
-                self.builder.const_i64(&vals, &dims)
+                if let Some(vals) = consts {
+                    let dims: Vec<u64> = c.shape.iter().map(|&d| d as u64).collect();
+                    return self.builder.const_i64(&vals, &dims);
+                }
+                let v = self.builder.prim(
+                    Prim::DimValues {
+                        exprs: c.elems.clone(),
+                    },
+                    &[],
+                )?;
+                if c.shape.is_empty() {
+                    // Scalar content: DimValues yields [1]; restore rank 0.
+                    self.builder.prim(Prim::Reshape { shape: vec![] }, &[v])
+                } else {
+                    Ok(v)
+                }
             }
         }
     }

@@ -24,7 +24,7 @@ use kernels::MAX_RANK;
 use onyxia_ir::graph::{Module, NodeId, NodeKind, Origin, ValueId};
 use onyxia_ir::interp::{Tensor, bind_shapes};
 use onyxia_ir::prim::{BinaryOp, CmpOp, Prim, ReduceOp, UnaryOp};
-use onyxia_ir::{DataType, Error, Result};
+use onyxia_ir::{DataType, Error, Result, Session as _};
 use std::collections::HashMap;
 
 const CUBE_DIM: u32 = 256;
@@ -328,7 +328,10 @@ impl CubeclSession {
 
     fn params(&self, p: P) -> (Handle, usize) {
         let len = p.len();
-        (self.client.create_from_slice(bytemuck::cast_slice(&p.0)), len)
+        (
+            self.client.create_from_slice(bytemuck::cast_slice(&p.0)),
+            len,
+        )
     }
 
     fn arg(&self, t: &CubeTensor) -> ArrayArg<WgpuRuntime> {
@@ -893,6 +896,15 @@ impl CubeclSession {
                     },
                 }
                 out
+            }
+
+            Prim::DimValues { exprs } => {
+                let vals: Vec<i64> = exprs
+                    .iter()
+                    .map(|e| e.eval_signed(bindings))
+                    .collect::<Result<_>>()?;
+                let host = Tensor::from_i64(&vals, &[vals.len()])?;
+                self.upload(&host)?
             }
 
             other => {

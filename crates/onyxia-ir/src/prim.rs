@@ -187,6 +187,13 @@ pub enum Prim {
     /// ONNX `Range(start, limit, delta)` lowers to `Iota` plus elementwise
     /// arithmetic.
     Iota { len: DimExpr, dtype: DataType },
+    /// The bound values of shape-domain expressions, materialized as a
+    /// 1-D i64 tensor. `() -> I64[exprs.len()]`. This is the escape
+    /// hatch for a symbolic shape value consumed by a genuine runtime
+    /// tensor operation (e.g. GQA's `seqlens_k` computed via `Shape`
+    /// arithmetic): the expressions are evaluated against the run's dim
+    /// bindings.
+    DimValues { exprs: Vec<DimExpr> },
     /// Block-dequantize packed sub-byte data.
     /// `(data: U4|I4|U8 [..., n_blocks, block_size],
     ///   scales: F [..., n_blocks],
@@ -263,6 +270,7 @@ impl Prim {
             Prim::Gather { .. } => "gather",
             Prim::Scatter => "scatter",
             Prim::Iota { .. } => "iota",
+            Prim::DimValues { .. } => "dim_values",
             Prim::Dequantize { .. } => "dequantize",
         }
     }
@@ -280,7 +288,7 @@ impl Prim {
                 (2, 2)
             }
             Prim::Select | Prim::Scatter => (3, 3),
-            Prim::Iota { .. } => (0, 0),
+            Prim::Iota { .. } | Prim::DimValues { .. } => (0, 0),
             Prim::Dequantize { .. } => (2, 3),
             Prim::Concat { .. } => (1, usize::MAX),
         }
