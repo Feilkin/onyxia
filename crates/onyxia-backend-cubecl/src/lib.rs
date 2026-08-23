@@ -191,11 +191,20 @@ impl onyxia_ir::Backend for CubeclBackend {
             );
         }
 
+        let n_values = module.values.len();
+        let mut escaping = vec![false; n_values];
+        for (_, id) in &module.outputs {
+            escaping[id.index()] = true;
+        }
         Ok(CubeclSession {
             client,
             module,
             order,
             consts,
+            params_cache: Default::default(),
+            out_cache: std::cell::RefCell::new(vec![None; n_values]),
+            cur_out: std::cell::Cell::new(None),
+            escaping,
         })
     }
 }
@@ -206,7 +215,32 @@ pub struct CubeclSession {
     module: Module,
     order: Vec<NodeId>,
     consts: HashMap<ValueId, CubeTensor>,
+    /// Kernel parameter buffers, keyed by content. Creating a ~100-byte
+    /// handle per launch costs more than the launch itself, and decode
+    /// steps repeat the exact same parameters node for node, so after
+    /// the first step every launch hits this map. Bounded by
+    /// [`PARAMS_CACHE_MAX`]: cleared wholesale when it overflows (the
+    /// handles are refcounted, so in-flight launches keep theirs).
+    params_cache: std::cell::RefCell<HashMap<Vec<u32>, Handle>>,
+    /// Output buffers of intermediate values, kept across runs and
+    /// reused when the value's shape repeats (every decode step). Reuse
+    /// is race-free because launches execute in order on one queue, so
+    /// the next run's writes follow this run's reads. Module outputs are
+    /// never cached — the caller holds those handles (KV cache). Cost:
+    /// intermediates stay resident between runs at the largest shape
+    /// seen, instead of returning to CubeCL's pool (no liveness here).
+    out_cache: std::cell::RefCell<Vec<Option<CubeTensor>>>,
+    /// Value the node being executed writes; consulted by [`Self::alloc_out`].
+    cur_out: std::cell::Cell<Option<ValueId>>,
+    /// Values that escape a run (module outputs) — excluded from `out_cache`.
+    escaping: Vec<bool>,
 }
+
+/// Entry cap for [`CubeclSession::params_cache`]. Every distinct
+/// sequence length contributes one entry per node (~2.6k for Gemma 3
+/// 270m fully decomposed), so this covers ~25 distinct lengths between
+/// clears at a few hundred KB.
+const PARAMS_CACHE_MAX: usize = 65_536;
 
 #[async_trait::async_trait(?Send)]
 impl onyxia_ir::Session for CubeclSession {
@@ -318,9 +352,29 @@ macro_rules! launch_phys {
 
 impl CubeclSession {
     fn alloc_out(&self, dtype: DataType, shape: Vec<usize>) -> CubeTensor {
+        let cached = self.cur_out.get().filter(|id| !self.escaping[id.index()]);
+        if let Some(id) = cached {
+            let mut cache = self.out_cache.borrow_mut();
+            let slot = &mut cache[id.index()];
+            if let Some(t) = slot
+                .as_ref()
+                .filter(|t| t.dtype == dtype && t.shape == shape)
+            {
+                return t.clone();
+            }
+            let numel: usize = shape.iter().product();
+            let t = CubeTensor {
+                handle: self.client.empty(numel.max(1) * 4),
+                dtype,
+                shape,
+            };
+            *slot = Some(t.clone());
+            return t;
+        }
         let numel: usize = shape.iter().product();
+        let h = self.client.empty(numel.max(1) * 4);
         CubeTensor {
-            handle: self.client.empty(numel.max(1) * 4),
+            handle: h,
             dtype,
             shape,
         }
@@ -328,10 +382,15 @@ impl CubeclSession {
 
     fn params(&self, p: P) -> (Handle, usize) {
         let len = p.len();
-        (
-            self.client.create_from_slice(bytemuck::cast_slice(&p.0)),
-            len,
-        )
+        let mut cache = self.params_cache.borrow_mut();
+        if cache.len() >= PARAMS_CACHE_MAX {
+            cache.clear();
+        }
+        let h = cache
+            .entry(p.0)
+            .or_insert_with_key(|k| self.client.create_from_slice(bytemuck::cast_slice(k)))
+            .clone();
+        (h, len)
     }
 
     fn arg(&self, t: &CubeTensor) -> ArrayArg<WgpuRuntime> {
@@ -340,6 +399,105 @@ impl CubeclSession {
 
     fn parg(&self, p: &(Handle, usize)) -> ArrayArg<WgpuRuntime> {
         unsafe { ArrayArg::from_raw_parts(p.0.clone(), p.1) }
+    }
+
+    /// `[numel/4]`-vector view of a tensor (same bytes as the scalar view).
+    fn arg_v4(&self, t: &CubeTensor) -> ArrayArg<WgpuRuntime> {
+        unsafe { ArrayArg::from_raw_parts(t.handle.clone(), (t.numel() / 4).max(1)) }
+    }
+
+    /// M=1 matmul via the split-K matvec kernels (see the matvec section
+    /// of `kernels.rs`). Mirrors the wgpu backend's heuristics: fill
+    /// ~512 cubes by slicing K when N alone can't; partials land in a
+    /// scratch handle and a second launch folds them.
+    fn matvec(
+        &self,
+        a: &CubeTensor,
+        b: &CubeTensor,
+        out: CubeTensor,
+        n: usize,
+        k: usize,
+        trans_b: bool,
+    ) -> CubeTensor {
+        const TARGET_CUBES: usize = 512;
+        const MAX_KS: usize = 64;
+        let base = if trans_b {
+            n.div_ceil(4)
+        } else {
+            n.div_ceil(64)
+        };
+        let per_slice = if trans_b { 256 } else { 64 };
+        let ks = if base >= TARGET_CUBES {
+            1
+        } else {
+            TARGET_CUBES
+                .div_ceil(base)
+                .min(k.div_ceil(per_slice))
+                .clamp(1, MAX_KS)
+        };
+        let scratch = (ks > 1).then(|| CubeTensor {
+            handle: self.client.empty(ks * n * 4),
+            dtype: DataType::F32,
+            shape: vec![ks, n],
+        });
+        let dst = scratch.as_ref().unwrap_or(&out);
+        let dim = CubeDim::new_1d(CUBE_DIM);
+        if trans_b {
+            let total = (base * ks) as u32;
+            let x_cubes = total.min(65535);
+            let k4 = k / 4;
+            let p = self.params(
+                P::new(n)
+                    .u(k4 as u32)
+                    .u(ks as u32)
+                    .u(k4.div_ceil(ks) as u32)
+                    .u(x_cubes),
+            );
+            unsafe {
+                kernels::matvec_transb_v4::launch_unchecked::<WgpuRuntime>(
+                    &self.client,
+                    CubeCount::Static(x_cubes, total.div_ceil(x_cubes), 1),
+                    dim,
+                    self.arg_v4(a),
+                    self.arg_v4(b),
+                    self.arg(dst),
+                    self.parg(&p),
+                )
+            }
+        } else {
+            let p = self.params(
+                P::new(n / 4)
+                    .u(k as u32)
+                    .u(ks as u32)
+                    .u(k.div_ceil(ks) as u32),
+            );
+            unsafe {
+                kernels::matvec_kn_v4::launch_unchecked::<WgpuRuntime>(
+                    &self.client,
+                    CubeCount::Static(base as u32, ks as u32, 1),
+                    dim,
+                    self.arg(a),
+                    self.arg_v4(b),
+                    self.arg_v4(dst),
+                    self.parg(&p),
+                )
+            }
+        }
+        if let Some(scratch) = scratch {
+            let p = self.params(P::new(n).u(ks as u32));
+            let (count, dim) = geometry(n);
+            unsafe {
+                kernels::matvec_reduce::launch_unchecked::<WgpuRuntime>(
+                    &self.client,
+                    count,
+                    dim,
+                    self.arg(&scratch),
+                    self.arg(&out),
+                    self.parg(&p),
+                )
+            }
+        }
+        out
     }
 
     fn run_node(
@@ -363,6 +521,7 @@ impl CubeclSession {
         let out_id = node.outputs[0];
         let out_shape = shapes[out_id.index()].clone();
         let out_dtype = self.module.value(out_id).ty.dtype;
+        self.cur_out.set(Some(out_id));
         if out_shape.len() > MAX_RANK {
             return Err(Error::Unsupported(format!(
                 "rank {} exceeds the kernel maximum of {MAX_RANK}",
@@ -666,6 +825,13 @@ impl CubeclSession {
                 let a_bs = stride_of(a.shape[..ar - 2].iter().product(), m * k)?;
                 let b_bs = stride_of(b.shape[..br - 2].iter().product(), k * n)?;
                 let out = self.alloc_out(out_dtype, out_shape);
+                // Decode-shaped projections: split-K matvec fast path
+                // (`trans_a` is irrelevant at m == 1). Sizes that aren't
+                // 4-aligned take the generic kernel below.
+                let vec4_ok = if *trans_b { k % 4 == 0 } else { n % 4 == 0 };
+                if batch == 1 && m == 1 && vec4_ok && n.div_ceil(64) <= 65535 {
+                    return Ok(vec![self.matvec(&a, &b, out, n, k, *trans_b)]);
+                }
                 let size = out.numel();
                 let p = self.params(
                     P::new(size)
@@ -694,8 +860,9 @@ impl CubeclSession {
 
             Prim::Reduce { op, axes, .. } => {
                 let x = input(0)?.clone();
-                if phys(x.dtype)? != "f32" {
-                    return Err(Error::Unsupported("non-f32 reduce on cubecl".into()));
+                let t = phys(x.dtype)?;
+                if t == "u32" {
+                    return Err(Error::Unsupported("u32/bool reduce on cubecl".into()));
                 }
                 let mut mask = 0u32;
                 let mut count_r = 1usize;
@@ -714,15 +881,27 @@ impl CubeclSession {
                 );
                 let (count, dim) = geometry(size);
                 unsafe {
-                    kernels::reduce_f32::launch_unchecked::<WgpuRuntime>(
-                        &self.client,
-                        count,
-                        dim,
-                        self.arg(&x),
-                        self.arg(&out),
-                        self.parg(&p),
-                        reduce_code(*op),
-                    )
+                    if t == "f32" {
+                        kernels::reduce_f32::launch_unchecked::<WgpuRuntime>(
+                            &self.client,
+                            count,
+                            dim,
+                            self.arg(&x),
+                            self.arg(&out),
+                            self.parg(&p),
+                            reduce_code(*op),
+                        )
+                    } else {
+                        kernels::reduce_i32::launch_unchecked::<WgpuRuntime>(
+                            &self.client,
+                            count,
+                            dim,
+                            self.arg(&x),
+                            self.arg(&out),
+                            self.parg(&p),
+                            reduce_code(*op),
+                        )
+                    }
                 }
                 out
             }
