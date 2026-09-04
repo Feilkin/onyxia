@@ -14,3 +14,6 @@
 # RustConf talk script, kept local like the other talk-prep notes
 /doc/rustconf-2026-talk.md
 /doc/ecosystem-notes-2026-08.md
+
+# Claude Code local permission settings
+/.claude/settings.local.json

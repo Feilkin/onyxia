@@ -20,7 +20,8 @@ onyxia-ir                 Module: ~16 primitives (closed set), composites
      │                    CPU reference interpreter = the spec. No GPU deps.
      ▼  Backend::prepare(Module) → Session
 onyxia-backend-wgpu       generated WGSL primitive kernels + fused composite
-(-cubecl, -ref)           kernels, memory planning, device-resident tensors
+(-cubecl, -ref)           kernels; interprets the IR per run with pipeline /
+                          bind-group / buffer caches; device-resident tensors
      │
      ▼
 onyxia-cli, demos/        generation loop, KV-cache plumbing, tokenizer —

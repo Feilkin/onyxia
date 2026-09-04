@@ -1,10 +1,23 @@
 //! The backend contract.
 //!
 //! A backend consumes an IR [`Module`] and produces a [`Session`] that
-//! executes it. Preparation typically legalizes the module first
+//! executes it. Preparation legalizes the module
 //! ([`crate::decomp::inline_composites`] with the backend's kernel-registry
-//! membership as the `supports` predicate), then selects kernels, plans
-//! memory, and compiles pipelines.
+//! membership as the `supports` predicate), validates it, fixes a
+//! topological order, derives liveness, and uploads constants.
+//!
+//! **Execution model: an interpreter over the IR, with caches.** There is
+//! no separately compiled artifact. Each `run` binds the module's symbols
+//! from the input shapes, evaluates every value's shape once, then walks
+//! the nodes in order: for each one it selects a kernel for the now
+//! concrete shapes, packs the parameters, and dispatches. Pipelines, bind
+//! groups, parameter buffers, and device buffers are caches filled on
+//! first use, so a steady-state run (a decode step) mostly hits them.
+//! Kernel *choice* depends on bound shapes (matvec vs tiled matmul on
+//! `M`, split-K factor on `N`/`K`, vectorization on alignment), which is
+//! why selection happens per run rather than at `prepare`; a plan cached
+//! per shape signature is a possible future optimization, not the
+//! current design.
 //!
 //! Sessions speak **device-resident tensors**: `run` consumes and returns
 //! device handles, and moving data across the host boundary is explicit
@@ -30,7 +43,8 @@ pub trait Backend {
     /// inlined through their decompositions.
     fn supports(&self, composite: &str) -> bool;
 
-    /// Legalize, plan, and compile `module` into a runnable session.
+    /// Legalize, order, and derive liveness for `module`; upload its
+    /// constants; return a session that interprets it (see module docs).
     fn prepare(&self, module: Module) -> Result<Self::Session>;
 }
 

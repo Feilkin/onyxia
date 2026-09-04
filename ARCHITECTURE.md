@@ -85,14 +85,37 @@ never compute shapes, and there is no per-shape recompilation.
 ### SSA values, device-resident tensors
 
 The IR is an SSA value graph — no aliasing, no buffer assignments. Liveness
-is derived, and the backend's planner reuses buffers (refcounted pool;
-handles held by the caller are never recycled). `Session::run` consumes and
+is derived at `prepare` (last use per value, inverted into per-step death
+lists), and the backend reuses buffers through a refcounted pool; handles
+held by the caller are never recycled. `Session::run` consumes and
 returns **device tensor handles**; `upload`/`download` are explicit. An
 output handle fed back as an input is how the demos keep KV caches on-device
 — onyxia contains zero LLM-specific behavior.
 
 `run`/`download` are async because WebGPU readback cannot block the browser
 event loop; native callers wrap with `pollster`.
+
+### Execution model: an interpreter over the IR, with caches
+
+There is no compiled execution plan. `Backend::prepare` legalizes,
+validates, fixes a topological order, derives liveness, and uploads
+constants. `Session::run` binds symbols, evaluates every shape, fills a
+register file (constants + inputs), and then walks the nodes in order —
+`match` on the primitive, choose a kernel for the concrete shapes, pack
+parameters, dispatch, free what died at this step. Everything expensive is
+memoized rather than planned: pipelines (by kernel label), bind groups (by
+buffer identity), parameter buffers (by content, CubeCL backend), device
+buffers (pool / per-value reuse). The walk itself is cheap; measured CPU
+cost per run was dominated by what those caches now absorb, and decode on
+the wgpu backend is ~85 % GPU-bound.
+
+Why not a plan: kernel selection depends on shapes that are only known at
+`run` (M=1 matvec vs tiled matmul, split-K factor, vec4 alignment), and
+every decode step binds a different `past_sequence_length`, so a recorded
+command stream could not be replayed without patching. A plan cached per
+shape signature is a plausible later optimization for repeated identical
+prefills; it is not the current design. (The February pipeline had an
+explicit `ExecutionPlan` and replaced it with this model within a week.)
 
 ## Crate map
 

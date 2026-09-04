@@ -11,9 +11,16 @@
 //! `cubecl-wgpu` here, but nothing in this crate names a graphics API —
 //! switching to `cubecl-cuda` is a type-parameter change.
 //!
+//! Same execution model as the wgpu backend — an interpreter over the IR
+//! with caches (see `onyxia_ir::backend`): `prepare` legalizes, orders,
+//! and uploads constants; `run` binds shapes and walks the nodes. Caches
+//! here are kernel-parameter handles (by content) and intermediate output
+//! buffers (by value, reused when the shape repeats); CubeCL's allocator
+//! owns everything else.
+//!
 //! Deliberately simpler than the wgpu backend: no fused composites, no
-//! buffer liveness/pooling (CubeCL's own allocator handles reuse),
-//! blocking readback (native only), and no Scatter/Dequantize/f16.
+//! liveness (intermediates stay resident between runs), blocking readback
+//! (native only), and no Scatter/Dequantize/f16.
 
 mod kernels;
 
