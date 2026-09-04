@@ -1135,10 +1135,7 @@ async fn cmd_bench(
     let ctx = onyxia_backend_wgpu::GpuContext::new()
         .await
         .with_context(|| "Failed to create GPU context")?;
-    let adapter = format!(
-        "{} ({:?})",
-        ctx.adapter_info.name, ctx.adapter_info.backend
-    );
+    let adapter = format!("{} ({:?})", ctx.adapter_info.name, ctx.adapter_info.backend);
     let backend = onyxia_backend_wgpu::WgpuBackend::new(ctx);
     println!("Preparing session (uploading weights)...");
     let mut session = onyxia_cli::llm::LlmSession::new(&backend, module, max_seq_len)?;
@@ -1230,4 +1227,3 @@ fn cmd_trace_node(
     // Trace the node
     onyxia_cli::inspect::trace_node(&model, &name, depth, direction, format, output.as_deref())
 }
-

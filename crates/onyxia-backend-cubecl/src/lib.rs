@@ -1149,6 +1149,11 @@ fn unary_code(op: UnaryOp) -> Result<u32> {
         UnaryOp::Not => {
             return Err(Error::Unsupported("unary Not on a non-Bool tensor".into()));
         }
+        other => {
+            return Err(Error::Unsupported(format!(
+                "unary {other:?} on the cubecl backend (spike)"
+            )));
+        }
     })
 }
 

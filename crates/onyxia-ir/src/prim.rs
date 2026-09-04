@@ -49,8 +49,33 @@ pub enum UnaryOp {
     Floor,
     /// Round toward positive infinity. Float only.
     Ceil,
+    /// Round to nearest, ties to even (IEEE `roundToIntegralTiesToEven`,
+    /// ONNX `Round`). Float only.
+    Round,
+    /// Sign: -1, 0, or +1 in the input dtype. Integer and float.
+    Sign,
+    /// Tangent. Float only.
+    Tan,
+    /// Inverse sine. Float only.
+    Asin,
+    /// Inverse cosine. Float only.
+    Acos,
+    /// Inverse tangent. Float only.
+    Atan,
+    /// Hyperbolic sine. Float only.
+    Sinh,
+    /// Hyperbolic cosine. Float only.
+    Cosh,
+    /// Inverse hyperbolic sine. Float only.
+    Asinh,
+    /// Inverse hyperbolic cosine. Float only.
+    Acosh,
+    /// Inverse hyperbolic tangent. Float only.
+    Atanh,
     /// Logical not. Bool only.
     Not,
+    /// Bitwise not. Integer only.
+    BitNot,
 }
 
 /// Element-wise binary operation kind (dtype-preserving).
@@ -79,6 +104,29 @@ pub enum BinaryOp {
     Or,
     /// Logical xor. Bool only.
     Xor,
+    /// Bitwise and. Integer only.
+    BitAnd,
+    /// Bitwise or. Integer only.
+    BitOr,
+    /// Bitwise xor. Integer only.
+    BitXor,
+    /// Shift left by `b` bits. Integer only; shifts ≥ the bit width yield 0.
+    Shl,
+    /// Shift right by `b` bits (logical for unsigned, arithmetic for
+    /// signed). Integer only.
+    Shr,
+}
+
+/// How [`Prim::Scatter`] combines an update with the existing element.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ScatterReduce {
+    /// Overwrite (ONNX `reduction="none"`). Duplicate indices: last write
+    /// wins in the interpreter; unspecified on device.
+    None,
+    Add,
+    Mul,
+    Max,
+    Min,
 }
 
 /// Element-wise comparison kind (produces [`DataType::Bool`]).
@@ -181,8 +229,10 @@ pub enum Prim {
     /// end.
     Gather { axis: usize },
     /// Scatter updates into a copy of `data` (ONNX `ScatterND`).
-    /// `(data, indices: I64[..., k], updates) -> T[data.shape]`.
-    Scatter,
+    /// `(data, indices: I64[..., k], updates) -> T[data.shape]`. With a
+    /// `reduction` other than `None`, each update combines with the
+    /// existing element instead of overwriting it.
+    Scatter { reduction: ScatterReduce },
     /// The integer ramp `0, 1, …, len-1` as `dtype`. `() -> dtype[len]`.
     /// ONNX `Range(start, limit, delta)` lowers to `Iota` plus elementwise
     /// arithmetic.
@@ -230,7 +280,19 @@ impl Prim {
                 UnaryOp::Erf => "erf",
                 UnaryOp::Floor => "floor",
                 UnaryOp::Ceil => "ceil",
+                UnaryOp::Round => "round",
+                UnaryOp::Sign => "sign",
+                UnaryOp::Tan => "tan",
+                UnaryOp::Asin => "asin",
+                UnaryOp::Acos => "acos",
+                UnaryOp::Atan => "atan",
+                UnaryOp::Sinh => "sinh",
+                UnaryOp::Cosh => "cosh",
+                UnaryOp::Asinh => "asinh",
+                UnaryOp::Acosh => "acosh",
+                UnaryOp::Atanh => "atanh",
                 UnaryOp::Not => "not",
+                UnaryOp::BitNot => "bit_not",
             },
             Prim::Binary(op) => match op {
                 BinaryOp::Add => "add",
@@ -243,6 +305,11 @@ impl Prim {
                 BinaryOp::And => "and",
                 BinaryOp::Or => "or",
                 BinaryOp::Xor => "xor",
+                BinaryOp::BitAnd => "bit_and",
+                BinaryOp::BitOr => "bit_or",
+                BinaryOp::BitXor => "bit_xor",
+                BinaryOp::Shl => "shl",
+                BinaryOp::Shr => "shr",
             },
             Prim::Compare(op) => match op {
                 CmpOp::Eq => "eq",
@@ -268,7 +335,7 @@ impl Prim {
             Prim::Concat { .. } => "concat",
             Prim::Slice { .. } => "slice",
             Prim::Gather { .. } => "gather",
-            Prim::Scatter => "scatter",
+            Prim::Scatter { .. } => "scatter",
             Prim::Iota { .. } => "iota",
             Prim::DimValues { .. } => "dim_values",
             Prim::Dequantize { .. } => "dequantize",
@@ -287,7 +354,7 @@ impl Prim {
             Prim::Binary(_) | Prim::Compare(_) | Prim::MatMul { .. } | Prim::Gather { .. } => {
                 (2, 2)
             }
-            Prim::Select | Prim::Scatter => (3, 3),
+            Prim::Select | Prim::Scatter { .. } => (3, 3),
             Prim::Iota { .. } | Prim::DimValues { .. } => (0, 0),
             Prim::Dequantize { .. } => (2, 3),
             Prim::Concat { .. } => (1, usize::MAX),

@@ -65,11 +65,12 @@ impl Profiler {
     pub fn begin_pass(&mut self, device: &wgpu::Device, kernel: &str) -> (usize, u32) {
         let set_idx = (self.pairs / PAIRS_PER_SET) as usize;
         if set_idx == self.sets.len() {
-            self.sets.push(device.create_query_set(&wgpu::QuerySetDescriptor {
-                label: Some("onyxia_profile"),
-                ty: wgpu::QueryType::Timestamp,
-                count: PAIRS_PER_SET * 2,
-            }));
+            self.sets
+                .push(device.create_query_set(&wgpu::QuerySetDescriptor {
+                    label: Some("onyxia_profile"),
+                    ty: wgpu::QueryType::Timestamp,
+                    count: PAIRS_PER_SET * 2,
+                }));
         }
         let base = (self.pairs % PAIRS_PER_SET) * 2;
         self.pairs += 1;

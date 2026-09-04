@@ -145,10 +145,9 @@ fn display_initializer(dtype: DataType, shape: &TensorShape, data: &[u8], full: 
                 .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
                 .collect::<Vec<_>>()
         )),
-        DataType::Bool | DataType::U8 | DataType::Q4 | DataType::Q8 => Some(format!(
-            "{:?}",
-            data.iter().take(take).copied().collect::<Vec<_>>()
-        )),
+        DataType::Bool | DataType::U8 | DataType::I8 | DataType::Q4 | DataType::Q8 => Some(
+            format!("{:?}", data.iter().take(take).copied().collect::<Vec<_>>()),
+        ),
         _ => None,
     };
     match rendered {

@@ -139,13 +139,12 @@ pub fn run(session: &mut LlmSession<WgpuSession>, cfg: &BenchConfig) -> Result<(
 
     // Warmup: compiles every pipeline and populates the buffer pool so the
     // measured phase sees steady-state behavior.
-    println!(
-        "Warmup (prefill {} + 2 decode steps)...",
-        cfg.prefill_len
-    );
+    println!("Warmup (prefill {} + 2 decode steps)...", cfg.prefill_len);
     session.prefill(&ids).context("warmup prefill failed")?;
     for _ in 0..2 {
-        session.decode(DUMMY_TOKEN).context("warmup decode failed")?;
+        session
+            .decode(DUMMY_TOKEN)
+            .context("warmup decode failed")?;
     }
     session.reset_full();
 

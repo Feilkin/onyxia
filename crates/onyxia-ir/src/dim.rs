@@ -202,6 +202,16 @@ impl DimExpr {
         }
     }
 
+    /// If this expression is a constant, return it with its sign (a
+    /// negative constant only arises mid-arithmetic or as a slice bound).
+    pub fn as_signed_const(&self) -> Option<i64> {
+        match self.terms.as_slice() {
+            [] => Some(0),
+            [t] if t.syms.is_empty() => Some(t.coeff),
+            _ => None,
+        }
+    }
+
     /// Whether this expression contains no symbols.
     pub fn is_const(&self) -> bool {
         self.terms.iter().all(|t| t.syms.is_empty())

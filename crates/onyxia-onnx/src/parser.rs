@@ -173,6 +173,20 @@ fn tensor_dims(tensor: &TensorProto) -> Result<Vec<usize>> {
         .collect()
 }
 
+/// Parse a standalone `TensorProto` (e.g. a test-data `.pb` file) into
+/// dtype, static dims, and raw little-endian bytes. External data is not
+/// resolved here.
+pub fn parse_tensor_proto(tensor: &TensorProto) -> Result<AttrTensor> {
+    let dtype = parse_data_type(tensor.data_type)?;
+    let dims = tensor_dims(tensor)?;
+    let data = if !tensor.raw_data.is_empty() {
+        tensor.raw_data.clone()
+    } else {
+        typed_data_to_raw(tensor, dtype)?.unwrap_or_default()
+    };
+    Ok(AttrTensor { dtype, dims, data })
+}
+
 /// Parse a TensorProto (initializer) into TensorInfo.
 fn parse_initializer(
     tensor: &TensorProto,
@@ -240,7 +254,11 @@ fn typed_data_to_raw(tensor: &TensorProto, dtype: DataType) -> Result<Option<Vec
             return Err(type_mismatch("float_data"));
         }
         return Ok(Some(
-            tensor.float_data.iter().flat_map(|v| v.to_le_bytes()).collect(),
+            tensor
+                .float_data
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect(),
         ));
     }
     if !tensor.int64_data.is_empty() {
@@ -248,7 +266,11 @@ fn typed_data_to_raw(tensor: &TensorProto, dtype: DataType) -> Result<Option<Vec
             return Err(type_mismatch("int64_data"));
         }
         return Ok(Some(
-            tensor.int64_data.iter().flat_map(|v| v.to_le_bytes()).collect(),
+            tensor
+                .int64_data
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect(),
         ));
     }
     if !tensor.int32_data.is_empty() {
@@ -256,6 +278,7 @@ fn typed_data_to_raw(tensor: &TensorProto, dtype: DataType) -> Result<Option<Vec
         let bytes = match dtype {
             DataType::I32 => data.iter().flat_map(|v| v.to_le_bytes()).collect(),
             DataType::U8 => data.iter().map(|&v| v as u8).collect(),
+            DataType::I8 => data.iter().map(|&v| v as i8 as u8).collect(),
             DataType::Bool => data.iter().map(|&v| (v != 0) as u8).collect(),
             // float16 is stored bit-cast in the low 16 bits.
             DataType::F16 => data
@@ -478,7 +501,38 @@ fn extract_constant_tensor_info(
         }
     }
 
-    // No tensor attribute found - shouldn't happen for valid Constant nodes
+    // The scalar/list attribute forms (`value_int`, `value_floats`, …).
+    for attr in &node.attribute {
+        let (dtype, dims, data): (DataType, Vec<usize>, Vec<u8>) = match attr.name.as_str() {
+            "value_float" => (DataType::F32, vec![], attr.f.to_le_bytes().to_vec()),
+            "value_int" => (DataType::I64, vec![], attr.i.to_le_bytes().to_vec()),
+            "value_floats" => (
+                DataType::F32,
+                vec![attr.floats.len()],
+                attr.floats.iter().flat_map(|v| v.to_le_bytes()).collect(),
+            ),
+            "value_ints" => (
+                DataType::I64,
+                vec![attr.ints.len()],
+                attr.ints.iter().flat_map(|v| v.to_le_bytes()).collect(),
+            ),
+            "value_string" | "value_strings" => {
+                return Err(OnnxError::UnsupportedDataType(
+                    "Constant with a string value".into(),
+                ));
+            }
+            _ => continue,
+        };
+        return Ok(TensorInfo {
+            name: name.to_string(),
+            dtype,
+            shape: TensorShape::Static(dims),
+            kind: TensorKind::Intermediate,
+            initializer: Some(data),
+        });
+    }
+
+    // No value attribute found - shouldn't happen for valid Constant nodes
     Ok(TensorInfo {
         name: name.to_string(),
         dtype: DataType::F32,
@@ -583,6 +637,7 @@ fn parse_data_type(onnx_type: i32) -> Result<DataType> {
         OnnxDataType::Int32 => Ok(DataType::I32),
         OnnxDataType::Int64 => Ok(DataType::I64),
         OnnxDataType::Uint8 => Ok(DataType::U8),
+        OnnxDataType::Int8 => Ok(DataType::I8),
         OnnxDataType::Uint32 => Ok(DataType::U32),
         OnnxDataType::Bool => Ok(DataType::Bool),
         _ => Err(OnnxError::UnsupportedDataType(format!(

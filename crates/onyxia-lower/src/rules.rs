@@ -10,9 +10,9 @@
 //!   attention/quantization ops); their portable decompositions live in
 //!   [`onyxia_ir::decomp`].
 
-use crate::{LowerCtx, LoweringRegistry, attrs, convert_proto_dtype, signed_const_of};
+use crate::{LowerCtx, LoweringRegistry, attrs, convert_proto_dtype, signed_const_of, signed_dim};
 use onyxia_ir::graph::Origin;
-use onyxia_ir::prim::{BinaryOp, CmpOp, Prim, ReduceOp, SliceSpec, UnaryOp};
+use onyxia_ir::prim::{BinaryOp, CmpOp, Prim, ReduceOp, ScatterReduce, SliceSpec, UnaryOp};
 use onyxia_ir::{AttrValue, DataType, DimExpr, Error, Result, TensorType, ValueId};
 
 pub(crate) fn register_all(r: &mut LoweringRegistry) {
@@ -301,12 +301,18 @@ fn expand(ctx: &mut LowerCtx) -> Result<()> {
 }
 
 /// Axes for Unsqueeze/Squeeze/Reduce: input takes precedence (opset 13+),
-/// attribute otherwise.
-fn axes_of(ctx: &LowerCtx, input_idx: usize) -> Option<Vec<i64>> {
+/// attribute otherwise. A present but non-constant axes input is an error
+/// (`Err`), distinct from no axes at all (`Ok(None)`).
+fn axes_of(ctx: &LowerCtx, input_idx: usize) -> Result<Option<Vec<i64>>> {
     if ctx.has_input(input_idx) {
-        ctx.const_ints(input_idx)
+        ctx.const_ints(input_idx).map(Some).ok_or_else(|| {
+            Error::Unsupported(format!(
+                "node '{}': axes input must be constant",
+                ctx.node_name()
+            ))
+        })
     } else {
-        ctx.attr_is("axes")
+        Ok(ctx.attr_is("axes"))
     }
 }
 
@@ -320,8 +326,8 @@ fn unsqueeze(ctx: &mut LowerCtx) -> Result<()> {
             .collect(),
         None => ctx.ty(ctx_value_peek(ctx, 0)?).shape.dims().to_vec(),
     };
-    let axes = axes_of(ctx, 1)
-        .ok_or_else(|| Error::Unsupported("Unsqueeze axes must be constant".into()))?;
+    let axes = axes_of(ctx, 1)?
+        .ok_or_else(|| Error::Unsupported("Unsqueeze axes must be given".into()))?;
     let out_rank = in_dims.len() + axes.len();
     let mut norm: Vec<usize> = axes
         .iter()
@@ -353,7 +359,7 @@ fn squeeze(ctx: &mut LowerCtx) -> Result<()> {
         None => ctx.ty(ctx_value_peek(ctx, 0)?).shape.dims().to_vec(),
     };
     let rank = x_dims.len();
-    let drop: Vec<usize> = match axes_of(ctx, 1) {
+    let drop: Vec<usize> = match axes_of(ctx, 1)? {
         Some(axes) => axes
             .iter()
             .map(|&a| ctx.norm_axis(a, rank))
@@ -468,12 +474,34 @@ fn slice(ctx: &mut LowerCtx) -> Result<()> {
     let mut specs = Vec::with_capacity(n);
     for i in 0..n {
         let dim = &data_dims[axes[i]];
+        let step = steps[i];
         let norm = |bound: &DimExpr, is_end: bool| -> DimExpr {
             match signed_const_of(bound) {
                 // Huge sentinel (INT64_MAX or INT32_MAX): "to the end".
-                Some(v) if is_end && v >= i32::MAX as i64 => dim.clone(),
-                // Negative: from the end.
-                Some(v) if v < 0 => dim.clone() - DimExpr::constant(v.unsigned_abs()),
+                Some(v) if is_end && step > 0 && v >= i32::MAX as i64 => dim.clone(),
+                // Negative step: start clamps to [0, d-1], end to [-1, d-1]
+                // (ONNX semantics; -1 means "past the beginning").
+                Some(v) if step < 0 => match dim.as_const() {
+                    Some(d) => {
+                        let d = d as i64;
+                        let v = if v < -(i32::MAX as i64) {
+                            -1
+                        } else if v < 0 {
+                            (v + d).max(-1)
+                        } else {
+                            v.min(d - 1)
+                        };
+                        let v = if is_end { v.max(-1) } else { v.max(0) };
+                        signed_dim(v)
+                    }
+                    None if v < 0 => dim.clone() - DimExpr::constant(v.unsigned_abs()),
+                    None => DimExpr::constant(v as u64),
+                },
+                // Negative: from the end (clamped at 0 for constant dims).
+                Some(v) if v < 0 => match dim.as_const() {
+                    Some(d) => DimExpr::constant((v + d as i64).max(0) as u64),
+                    None => dim.clone() - DimExpr::constant(v.unsigned_abs()),
+                },
                 // Clamp constants against constant dims.
                 Some(v) => match dim.as_const() {
                     Some(d) => DimExpr::constant((v as u64).min(d)),
@@ -521,14 +549,24 @@ fn gather(ctx: &mut LowerCtx) -> Result<()> {
     Ok(())
 }
 
-fn scatter_nd(ctx: &mut LowerCtx) -> Result<()> {
-    if let Some(mode) = ctx.attr_s("reduction") {
-        if mode != "none" {
-            return Err(Error::Unsupported(format!("ScatterND reduction='{mode}'")));
+/// ONNX `reduction` attribute → [`ScatterReduce`].
+pub(crate) fn scatter_reduction(ctx: &LowerCtx) -> Result<ScatterReduce> {
+    Ok(match ctx.attr_s("reduction").unwrap_or("none") {
+        "none" => ScatterReduce::None,
+        "add" => ScatterReduce::Add,
+        "mul" => ScatterReduce::Mul,
+        "max" => ScatterReduce::Max,
+        "min" => ScatterReduce::Min,
+        other => {
+            return Err(Error::Unsupported(format!("scatter reduction='{other}'")));
         }
-    }
+    })
+}
+
+fn scatter_nd(ctx: &mut LowerCtx) -> Result<()> {
+    let reduction = scatter_reduction(ctx)?;
     let (data, indices, updates) = (ctx.value(0)?, ctx.value(1)?, ctx.value(2)?);
-    let out = ctx.emit(Prim::Scatter, &[data, indices, updates])?;
+    let out = ctx.emit(Prim::Scatter { reduction }, &[data, indices, updates])?;
     ctx.set_value(0, out);
     Ok(())
 }
@@ -565,7 +603,21 @@ fn clamp_shape_bound(v: i64, rank: usize) -> usize {
 
 /// Range lowers to `Iota` plus element-wise arithmetic. Start and delta
 /// must be constant; the limit may be symbolic when delta is ±1-exact.
+/// Float ranges (constant bounds) go through [`range_const`].
 fn range(ctx: &mut LowerCtx) -> Result<()> {
+    let dt = match ctx.peek(0)? {
+        crate::Lowered::Value(v) => ctx.ty(*v).dtype,
+        crate::Lowered::Content(_) => DataType::I64,
+    };
+    if dt != DataType::I64 || ctx.content(0).is_none() {
+        if let (Some(s), Some(l), Some(d)) = (
+            const_scalar_f64(ctx, 0),
+            const_scalar_f64(ctx, 1),
+            const_scalar_f64(ctx, 2),
+        ) {
+            return range_const(ctx, dt, s, l, d);
+        }
+    }
     let get_scalar = |i: usize| -> Result<DimExpr> {
         ctx.content(i)
             .and_then(|c| c.elems.into_iter().next())
@@ -603,6 +655,134 @@ fn range(ctx: &mut LowerCtx) -> Result<()> {
     }
     ctx.set_value(0, out);
     Ok(())
+}
+
+/// Range with fully constant bounds, any numeric dtype:
+/// `start + iota * delta`, length `max(ceil((limit-start)/delta), 0)`.
+fn range_const(ctx: &mut LowerCtx, dt: DataType, start: f64, limit: f64, delta: f64) -> Result<()> {
+    if delta == 0.0 {
+        return Err(Error::Unsupported("Range with delta 0".into()));
+    }
+    let len = ((limit - start) / delta).ceil().max(0.0) as u64;
+    let iota = ctx.builder().iota(DimExpr::constant(len), DataType::I64)?;
+    let mut out = if dt == DataType::I64 {
+        iota
+    } else {
+        ctx.emit(Prim::Cast { to: dt }, &[iota])?
+    };
+    if delta != 1.0 {
+        let d = typed_scalar(ctx, dt, delta)?;
+        out = ctx.emit(Prim::Binary(BinaryOp::Mul), &[out, d])?;
+    }
+    if start != 0.0 {
+        let s = typed_scalar(ctx, dt, start)?;
+        out = ctx.emit(Prim::Binary(BinaryOp::Add), &[out, s])?;
+    }
+    ctx.set_value(0, out);
+    Ok(())
+}
+
+/// A rank-0 constant of `dt`.
+pub(crate) fn typed_scalar(ctx: &mut LowerCtx, dt: DataType, v: f64) -> Result<ValueId> {
+    let bytes: Vec<u8> = match dt {
+        DataType::F32 => (v as f32).to_le_bytes().to_vec(),
+        DataType::F16 => half_bytes(v),
+        DataType::I64 => (v as i64).to_le_bytes().to_vec(),
+        DataType::I32 => (v as i32).to_le_bytes().to_vec(),
+        DataType::U32 => (v as u32).to_le_bytes().to_vec(),
+        DataType::U8 => vec![v as u8],
+        DataType::I8 => vec![v as i8 as u8],
+        DataType::Bool => vec![(v != 0.0) as u8],
+        other => {
+            return Err(Error::Unsupported(format!(
+                "scalar constant of dtype {other}"
+            )));
+        }
+    };
+    ctx.builder().constant(TensorType::of(dt, &[]), bytes)
+}
+
+fn half_bytes(v: f64) -> Vec<u8> {
+    // IEEE binary16 round-to-nearest-even from f64 (via f32).
+    let f = v as f32;
+    let bits = f.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exp = ((bits >> 23) & 0xff) as i32;
+    let mant = bits & 0x7f_ffff;
+    let h: u16 = if exp == 0xff {
+        sign | 0x7c00 | if mant != 0 { 0x200 } else { 0 }
+    } else {
+        let e = exp - 127 + 15;
+        if e >= 0x1f {
+            sign | 0x7c00
+        } else if e <= 0 {
+            if e < -10 {
+                sign
+            } else {
+                let m = (mant | 0x80_0000) >> (1 - e);
+                let round = (m >> 13) + ((m >> 12) & 1 & ((m >> 13) & 1 | (m & 0xfff != 0) as u32));
+                sign | round as u16
+            }
+        } else {
+            let m = mant >> 13;
+            let rem = mant & 0x1fff;
+            let mut h = sign | ((e as u16) << 10) | m as u16;
+            if rem > 0x1000 || (rem == 0x1000 && (m & 1) == 1) {
+                h += 1;
+            }
+            h
+        }
+    };
+    h.to_le_bytes().to_vec()
+}
+
+/// Read input `i` as a constant scalar (any numeric dtype), if it is one.
+pub(crate) fn const_scalar_f64(ctx: &LowerCtx, i: usize) -> Option<f64> {
+    if let Some(c) = ctx.content(i) {
+        return c.elems.first().and_then(signed_const_of).map(|v| v as f64);
+    }
+    let v = match ctx.peek(i).ok()? {
+        crate::Lowered::Value(v) => *v,
+        crate::Lowered::Content(_) => return None,
+    };
+    let vals = const_values_f64(ctx, v)?;
+    if vals.len() == 1 { Some(vals[0]) } else { None }
+}
+
+/// Read a constant value's elements as f64, if it is a pool constant.
+pub(crate) fn const_values_f64(ctx: &LowerCtx, v: ValueId) -> Option<Vec<f64>> {
+    let module = ctx.builder_ref().module();
+    let def = module.value(v);
+    let Origin::Const(cid) = def.origin else {
+        return None;
+    };
+    let bytes = module.consts.bytes(cid);
+    Some(match def.ty.dtype {
+        DataType::F32 => bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()) as f64)
+            .collect(),
+        DataType::F16 => bytes
+            .chunks_exact(2)
+            .map(|c| half::f16::from_le_bytes(c.try_into().unwrap()).to_f64())
+            .collect(),
+        DataType::I64 => bytes
+            .chunks_exact(8)
+            .map(|c| i64::from_le_bytes(c.try_into().unwrap()) as f64)
+            .collect(),
+        DataType::I32 => bytes
+            .chunks_exact(4)
+            .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as f64)
+            .collect(),
+        DataType::U32 => bytes
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes(c.try_into().unwrap()) as f64)
+            .collect(),
+        DataType::U8 => bytes.iter().map(|&b| b as f64).collect(),
+        DataType::I8 => bytes.iter().map(|&b| b as i8 as f64).collect(),
+        DataType::Bool => bytes.iter().map(|&b| (b != 0) as u8 as f64).collect(),
+        _ => return None,
+    })
 }
 
 /// ConstantOfShape = Broadcast(scalar, shape).
@@ -645,7 +825,7 @@ fn reduce(ctx: &mut LowerCtx, op: ReduceOp) -> Result<()> {
     // Content path first (e.g. ReduceProd over a shape vector = numel).
     let keepdims = ctx.attr_i("keepdims").unwrap_or(1) != 0;
     if ctx.content(0).is_some() {
-        let axes = axes_of(ctx, 1).unwrap_or_else(|| vec![0]);
+        let axes = axes_of(ctx, 1)?.unwrap_or_else(|| vec![0]);
         if axes == [0] {
             let prim = Prim::Reduce {
                 op,
@@ -660,7 +840,7 @@ fn reduce(ctx: &mut LowerCtx, op: ReduceOp) -> Result<()> {
 
     let x = ctx.value(0)?;
     let rank = ctx.ty(x).shape.rank();
-    let axes_raw = axes_of(ctx, 1);
+    let axes_raw = axes_of(ctx, 1)?;
     let noop_empty = ctx.attr_i("noop_with_empty_axes").unwrap_or(0) != 0;
     let axes: Vec<usize> = match axes_raw {
         Some(a) if !a.is_empty() => {

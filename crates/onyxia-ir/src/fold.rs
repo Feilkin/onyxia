@@ -461,8 +461,11 @@ mod tests {
                 ),
                 (
                     "w",
-                    Tensor::from_f32(&(0..12).map(|i| i as f32 * 0.5).collect::<Vec<_>>(), &[4, 3])
-                        .unwrap(),
+                    Tensor::from_f32(
+                        &(0..12).map(|i| i as f32 * 0.5).collect::<Vec<_>>(),
+                        &[4, 3],
+                    )
+                    .unwrap(),
                 ),
             ],
         )
@@ -489,8 +492,11 @@ mod tests {
                 ),
                 (
                     "w",
-                    Tensor::from_f32(&(0..12).map(|i| i as f32 * 0.5).collect::<Vec<_>>(), &[4, 3])
-                        .unwrap(),
+                    Tensor::from_f32(
+                        &(0..12).map(|i| i as f32 * 0.5).collect::<Vec<_>>(),
+                        &[4, 3],
+                    )
+                    .unwrap(),
                 ),
             ],
         )

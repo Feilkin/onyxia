@@ -19,7 +19,7 @@
 
 use crate::dim::{Bindings, DimExpr};
 use crate::graph::{Module, NodeKind, Origin};
-use crate::prim::{BinaryOp, CmpOp, Prim, ReduceOp, SliceSpec, UnaryOp};
+use crate::prim::{BinaryOp, CmpOp, Prim, ReduceOp, ScatterReduce, SliceSpec, UnaryOp};
 use crate::types::DataType;
 use crate::{Error, Result};
 use half::f16;
@@ -519,6 +519,8 @@ pub(crate) fn eval_prim(prim: &Prim, ins: &[&Tensor], bindings: &mut Bindings) -
                         .map(|a| match op {
                             UnaryOp::Neg => a.wrapping_neg(),
                             UnaryOp::Abs => a.wrapping_abs(),
+                            UnaryOp::Sign => a.signum(),
+                            UnaryOp::BitNot => bit_not(a, x.dtype()),
                             _ => unreachable!("dtype-checked by inference"),
                         })
                         .collect(),
@@ -712,7 +714,7 @@ pub(crate) fn eval_prim(prim: &Prim, ins: &[&Tensor], bindings: &mut Bindings) -
             collect_scalars(out)?.encode(data.dtype(), out_shape)
         }
 
-        Prim::Scatter => {
+        Prim::Scatter { reduction } => {
             let (data, indices, updates) = (ins[0], ins[1], ins[2]);
             let idx = indices.to_i64()?;
             let ir = indices.shape().len();
@@ -741,7 +743,15 @@ pub(crate) fn eval_prim(prim: &Prim, ins: &[&Tensor], bindings: &mut Bindings) -
                     base = base * data.shape()[d] + raw as usize;
                 }
                 for j in 0..slice_len {
-                    out[base * slice_len + j] = scalar_at(&v_upd, u * slice_len + j);
+                    let upd = scalar_at(&v_upd, u * slice_len + j);
+                    let slot = &mut out[base * slice_len + j];
+                    *slot = match reduction {
+                        ScatterReduce::None => upd,
+                        ScatterReduce::Add => binary_val(BinaryOp::Add, *slot, upd)?,
+                        ScatterReduce::Mul => binary_val(BinaryOp::Mul, *slot, upd)?,
+                        ScatterReduce::Max => binary_val(BinaryOp::Max, *slot, upd)?,
+                        ScatterReduce::Min => binary_val(BinaryOp::Min, *slot, upd)?,
+                    };
                 }
             }
             collect_scalars(out)?.encode(data.dtype(), data.shape().to_vec())
@@ -853,7 +863,38 @@ fn unary_f(op: UnaryOp, a: f64) -> f64 {
         UnaryOp::Erf => erf(a),
         UnaryOp::Floor => a.floor(),
         UnaryOp::Ceil => a.ceil(),
-        UnaryOp::Not => unreachable!("bool-only, dtype-checked"),
+        UnaryOp::Round => a.round_ties_even(),
+        UnaryOp::Sign => {
+            if a > 0.0 {
+                1.0
+            } else if a < 0.0 {
+                -1.0
+            } else {
+                a // keeps ±0 and NaN
+            }
+        }
+        UnaryOp::Tan => a.tan(),
+        UnaryOp::Asin => a.asin(),
+        UnaryOp::Acos => a.acos(),
+        UnaryOp::Atan => a.atan(),
+        UnaryOp::Sinh => a.sinh(),
+        UnaryOp::Cosh => a.cosh(),
+        UnaryOp::Asinh => a.asinh(),
+        UnaryOp::Acosh => a.acosh(),
+        UnaryOp::Atanh => a.atanh(),
+        UnaryOp::Not | UnaryOp::BitNot => unreachable!("bool/int-only, dtype-checked"),
+    }
+}
+
+/// Bitwise not within the dtype's width (the working domain is i64, so
+/// unsigned types must not sign-extend).
+fn bit_not(a: i64, dt: DataType) -> i64 {
+    match dt {
+        DataType::U8 => !(a as u8) as i64,
+        DataType::U32 => !(a as u32) as i64,
+        DataType::I8 => !(a as i8) as i64,
+        DataType::I32 => !(a as i32) as i64,
+        _ => !a,
     }
 }
 
@@ -905,6 +946,25 @@ fn binary_val(op: BinaryOp, a: Scalar, b: Scalar) -> Result<Scalar> {
             }
             BinaryOp::Max => x.max(y),
             BinaryOp::Min => x.min(y),
+            BinaryOp::BitAnd => x & y,
+            BinaryOp::BitOr => x | y,
+            BinaryOp::BitXor => x ^ y,
+            BinaryOp::Shl => {
+                if !(0..64).contains(&y) {
+                    0
+                } else {
+                    x.wrapping_shl(y as u32)
+                }
+            }
+            BinaryOp::Shr => {
+                // Unsigned dtypes were decoded zero-extended, so an
+                // arithmetic shift on the i64 is a logical shift for them.
+                if !(0..64).contains(&y) {
+                    if x < 0 { -1 } else { 0 }
+                } else {
+                    x >> y
+                }
+            }
             _ => unreachable!("bool op on ints, dtype-checked"),
         }),
         (Scalar::B(x), Scalar::B(y)) => Scalar::B(match op {
@@ -1029,6 +1089,12 @@ fn matmul(a: &Tensor, b: &Tensor, trans_a: bool, trans_b: bool) -> Result<Tensor
 }
 
 fn reduce(x: &Tensor, op: ReduceOp, axes: &[usize], keepdims: bool) -> Result<Tensor> {
+    if x.dtype() == DataType::Bool {
+        // Or/And reduction via the integer path (0/1 → max/min → != 0).
+        let as_u8 = x.decode()?.encode(DataType::U8, x.shape().to_vec())?;
+        let r = reduce(&as_u8, op, axes, keepdims)?;
+        return r.decode()?.encode(DataType::Bool, r.shape().to_vec());
+    }
     let in_shape = x.shape();
     let mut out_shape = Vec::new();
     for (i, &d) in in_shape.iter().enumerate() {
@@ -1170,8 +1236,8 @@ fn resolve_reshape(shape: &[DimExpr], numel: usize, bindings: &mut Bindings) -> 
 
 /// Evaluate a slice spec to `(output_len, concrete_start)`.
 fn eval_slice_spec(spec: &SliceSpec, bindings: &Bindings) -> Result<(usize, i64)> {
-    let start = spec.start.eval(bindings)? as i64;
-    let end = spec.end.eval(bindings)? as i64;
+    let start = spec.start.eval_signed(bindings)?;
+    let end = spec.end.eval_signed(bindings)?;
     let ceil_div = |num: i64, d: i64| (num + d - 1).div_euclid(d);
     let len = if spec.step > 0 {
         ceil_div(end - start, spec.step)
@@ -1385,7 +1451,13 @@ mod tests {
         let data = Tensor::from_f32(&[0.; 4], &[4]).unwrap();
         let idx = Tensor::from_i64(&[1, 1], &[2, 1]).unwrap();
         let upd = Tensor::from_f32(&[5., 7.], &[2]).unwrap();
-        let out = run1(Prim::Scatter, vec![data, idx, upd]).unwrap();
+        let out = run1(
+            Prim::Scatter {
+                reduction: ScatterReduce::None,
+            },
+            vec![data, idx, upd],
+        )
+        .unwrap();
         assert_eq!(f32s(&out), vec![0., 7., 0., 0.]);
     }
 

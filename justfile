@@ -17,3 +17,12 @@ bench:
 # Kernel microbenchmarks at LLM shapes (criterion)
 bench-kernels:
     cargo bench -p onyxia-backend-wgpu
+
+# Install the onnx package (Apache-2.0) into .venv for its node test data
+fetch-onnx-tests:
+    uv venv .venv --allow-existing
+    uv pip install --python .venv/bin/python onnx==1.22.0
+
+# ONNX operator conformance matrix on the reference backend
+conformance *ARGS:
+    cargo run --release -p onyxia-conformance -- --quiet --ops {{ARGS}}

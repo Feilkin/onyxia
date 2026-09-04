@@ -1184,7 +1184,12 @@ impl WgpuSession {
                 Ok(out)
             }
 
-            Prim::Scatter => {
+            Prim::Scatter { reduction } => {
+                if *reduction != onyxia_ir::ScatterReduce::None {
+                    return Err(Error::Unsupported(format!(
+                        "scatter with reduction {reduction:?} on the wgpu backend"
+                    )));
+                }
                 let (data, indices, updates) =
                     (input(0)?.clone(), input(1)?.clone(), input(2)?.clone());
                 let t = phys(data.dtype)?;
@@ -1267,12 +1272,28 @@ fn unary_expr(op: UnaryOp, t: &str) -> Result<(&'static str, bool)> {
         Erf => ("erf(v)", true),
         Floor => ("floor(v)", false),
         Ceil => ("ceil(v)", false),
+        Round => ("round(v)", false), // WGSL round: ties to even
+        Sign => match t {
+            "f32" => ("sign(v)", false),
+            "i32" => ("sign(v)", false),
+            _ => ("select(0u, 1u, v != 0u)", false),
+        },
+        Tan => ("tan(v)", false),
+        Asin => ("asin(v)", false),
+        Acos => ("acos(v)", false),
+        Atan => ("atan(v)", false),
+        Sinh => ("sinh(v)", false),
+        Cosh => ("cosh(v)", false),
+        Asinh => ("asinh(v)", false),
+        Acosh => ("acosh(v)", false),
+        Atanh => ("atanh(v)", false),
         Not => {
             if t != "u32" {
                 return Err(Error::DType("Not on non-bool".into()));
             }
             ("select(1u, 0u, v != 0u)", false)
         }
+        BitNot => ("~v", false),
     })
 }
 
@@ -1292,6 +1313,13 @@ fn binary_expr(op: BinaryOp, t: &str) -> Result<&'static str> {
         (And, _) => "u32((av != 0u) && (bv != 0u))",
         (Or, _) => "u32((av != 0u) || (bv != 0u))",
         (Xor, _) => "u32((av != 0u) != (bv != 0u))",
+        (BitAnd, _) => "av & bv",
+        (BitOr, _) => "av | bv",
+        (BitXor, _) => "av ^ bv",
+        (Shl, "u32") => "select(av << bv, 0u, bv >= 32u)",
+        (Shl, _) => "select(av << u32(bv), 0, bv >= 32)",
+        (Shr, "u32") => "select(av >> bv, 0u, bv >= 32u)",
+        (Shr, _) => "select(av >> u32(bv), select(0, -1, av < 0), bv >= 32)",
     })
 }
 

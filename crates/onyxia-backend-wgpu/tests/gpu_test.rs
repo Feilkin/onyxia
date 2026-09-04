@@ -954,7 +954,12 @@ fn gather_concat_slice_scatter_i64() {
     let idx = b.const_i64(&[5], &[1, 1]).unwrap();
     let upd = b.const_f32(&[9.0, 9.5, 10.0], &[1, 3]).unwrap();
     let scat = b
-        .prim(onyxia_ir::Prim::Scatter, &[joined, idx, upd])
+        .prim(
+            onyxia_ir::Prim::Scatter {
+                reduction: onyxia_ir::ScatterReduce::None,
+            },
+            &[joined, idx, upd],
+        )
         .unwrap();
     b.output("out", scat);
     let m = b.finish().unwrap();

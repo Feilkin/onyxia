@@ -225,7 +225,10 @@ fn immediates_to_storage(wgsl: &str) -> String {
         .filter_map(|s| s.split(')').next()?.trim().parse::<u32>().ok())
         .max()
         .map_or(0, |max| max + 1);
-    wgsl.replace(DECL, &format!("@group(0) @binding({next}) var<storage, read>"))
+    wgsl.replace(
+        DECL,
+        &format!("@group(0) @binding({next}) var<storage, read>"),
+    )
 }
 
 #[cfg(test)]
@@ -318,7 +321,9 @@ impl std::ops::Deref for TrackedBuffer {
 
 impl Drop for TrackedBuffer {
     fn drop(&mut self) {
-        self.mem.live.fetch_sub(self.buffer.size(), Ordering::Relaxed);
+        self.mem
+            .live
+            .fetch_sub(self.buffer.size(), Ordering::Relaxed);
     }
 }
 
@@ -361,10 +366,7 @@ impl BindGroupCache {
         layout: &wgpu::BindGroupLayout,
         buffers: &[&Arc<TrackedBuffer>],
     ) -> Arc<wgpu::BindGroup> {
-        let key: Vec<usize> = buffers
-            .iter()
-            .map(|b| Arc::as_ptr(b) as usize)
-            .collect();
+        let key: Vec<usize> = buffers.iter().map(|b| Arc::as_ptr(b) as usize).collect();
         if let Some(hit) = self.map.get(label).and_then(|m| m.get(&key)) {
             return Arc::clone(&hit.bind_group);
         }

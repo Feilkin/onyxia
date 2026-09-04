@@ -186,6 +186,11 @@ impl LowerCtx<'_> {
         self.builder
     }
 
+    /// Read-only builder access.
+    pub fn builder_ref(&self) -> &GraphBuilder {
+        self.builder
+    }
+
     /// Emit a primitive over runtime values.
     pub fn emit(&mut self, prim: Prim, inputs: &[ValueId]) -> Result<ValueId> {
         self.builder.prim(prim, inputs)
@@ -360,6 +365,7 @@ pub(crate) fn convert_dtype(dt: onyxia_onnx::DataType) -> DataType {
         D::I32 => DataType::I32,
         D::I64 => DataType::I64,
         D::U8 => DataType::U8,
+        D::I8 => DataType::I8,
         D::U32 => DataType::U32,
         D::Bool => DataType::Bool,
         // onyxia-onnx's quantized markers; storage is byte-identical.

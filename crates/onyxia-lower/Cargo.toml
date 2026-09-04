@@ -13,5 +13,6 @@ description = "ONNX frontend for Onyxia: lowers parsed ONNX graphs into the back
 [dependencies]
 onyxia-ir.workspace = true
 onyxia-onnx.workspace = true
+half = "2.7.1"
 
 [dev-dependencies]
