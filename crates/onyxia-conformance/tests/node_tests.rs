@@ -5,7 +5,7 @@
 //! Without the test data (see the crate docs) this test is a no-op.
 
 use onyxia_conformance::{
-    Outcome, RefRunner, discover, find_data_dir, out_of_scope, read_expected, run_test,
+    RefRunner, discover, find_data_dir, out_of_scope, read_expected, run_test,
 };
 
 #[test]
@@ -26,11 +26,11 @@ fn expected_node_tests_pass_on_ref() {
         }
         let listed = expected.iter().any(|e| e == &t.name);
         let outcome = run_test(t, &mut runner);
-        match (listed, &outcome) {
-            (true, Outcome::Pass) => {}
-            (true, other) => regressions.push(format!("{}: {other:?}", t.name)),
-            (false, Outcome::Pass) => newly_passing.push(t.name.clone()),
-            (false, _) => {}
+        match (listed, outcome.is_pass()) {
+            (true, true) => {}
+            (true, false) => regressions.push(format!("{}: {outcome:?}", t.name)),
+            (false, true) => newly_passing.push(t.name.clone()),
+            (false, false) => {}
         }
     }
     if !newly_passing.is_empty() {

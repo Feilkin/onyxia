@@ -235,13 +235,34 @@ fn instance_norm(ctx: &mut LowerCtx) -> Result<()> {
 }
 
 fn batch_norm(ctx: &mut LowerCtx) -> Result<()> {
-    if ctx.attr_i("training_mode").unwrap_or(0) != 0 {
-        return Err(Error::Unsupported(
-            "BatchNormalization in training mode".into(),
-        ));
-    }
+    let training = ctx.attr_i("training_mode").unwrap_or(0) != 0;
     let x = val(ctx, 0)?;
-    let (scale, bias, mean, var) = (val(ctx, 1)?, val(ctx, 2)?, val(ctx, 3)?, val(ctx, 4)?);
+    let (scale, bias, mut mean, mut var) = (val(ctx, 1)?, val(ctx, 2)?, val(ctx, 3)?, val(ctx, 4)?);
+    if training {
+        // Batch statistics over every axis but the channel; running
+        // stats blend them with the inputs by `momentum`.
+        let r = rank(ctx, x);
+        let axes: Vec<usize> = (0..r).filter(|&a| a != 1).collect();
+        let momentum = ctx.attr_f("momentum").unwrap_or(0.9) as f64;
+        let dt = dtype(ctx, x);
+        let cur_mean = reduce(ctx, ReduceOp::Mean, x, &axes, false)?;
+        let m_keep = reduce(ctx, ReduceOp::Mean, x, &axes, true)?;
+        let d = sub(ctx, x, m_keep)?;
+        let dd = mul(ctx, d, d)?;
+        let cur_var = reduce(ctx, ReduceOp::Mean, dd, &axes, false)?;
+        let mom = scalar(ctx, dt, momentum)?;
+        let inv_mom = scalar(ctx, dt, 1.0 - momentum)?;
+        let rm_a = mul(ctx, mean, mom)?;
+        let rm_b = mul(ctx, cur_mean, inv_mom)?;
+        let running_mean = add(ctx, rm_a, rm_b)?;
+        let rv_a = mul(ctx, var, mom)?;
+        let rv_b = mul(ctx, cur_var, inv_mom)?;
+        let running_var = add(ctx, rv_a, rv_b)?;
+        ctx.set_value_opt(1, running_mean);
+        ctx.set_value_opt(2, running_var);
+        mean = cur_mean;
+        var = cur_var;
+    }
     let r = rank(ctx, x).max(2);
     let dt = dtype(ctx, x);
     let eps = ctx.attr_f("epsilon").unwrap_or(1e-5) as f64;

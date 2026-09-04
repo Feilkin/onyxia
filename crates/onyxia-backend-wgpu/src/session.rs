@@ -910,7 +910,7 @@ impl WgpuSession {
             Prim::Compare(op) => {
                 let (a, b) = (input(0)?.clone(), input(1)?.clone());
                 let t = phys(a.dtype)?;
-                let expr = compare_expr(*op);
+                let expr = compare_expr(*op, t);
                 let out = self.alloc_out(out_dtype, out_shape);
                 let (imm, size) = size_imm(out.numel());
                 let imm = imm
@@ -1323,15 +1323,23 @@ fn binary_expr(op: BinaryOp, t: &str) -> Result<&'static str> {
     })
 }
 
-fn compare_expr(op: CmpOp) -> &'static str {
+fn compare_expr(op: CmpOp, t: &str) -> &'static str {
     use CmpOp::*;
-    match op {
-        Eq => "u32(av == bv)",
-        Ne => "u32(av != bv)",
-        Lt => "u32(av < bv)",
-        Le => "u32(av <= bv)",
-        Gt => "u32(av > bv)",
-        Ge => "u32(av >= bv)",
+    // Shader compilers may assume no NaNs; test the bit pattern so Eq/Ne
+    // keep IEEE semantics (`NaN != NaN`) for floats.
+    match (op, t) {
+        (Eq, "f32") => {
+            "u32((av == bv) && !(((bitcast<u32>(av) & 0x7fffffffu) > 0x7f800000u) || ((bitcast<u32>(bv) & 0x7fffffffu) > 0x7f800000u)))"
+        }
+        (Ne, "f32") => {
+            "u32((av != bv) || ((bitcast<u32>(av) & 0x7fffffffu) > 0x7f800000u) || ((bitcast<u32>(bv) & 0x7fffffffu) > 0x7f800000u))"
+        }
+        (Eq, _) => "u32(av == bv)",
+        (Ne, _) => "u32(av != bv)",
+        (Lt, _) => "u32(av < bv)",
+        (Le, _) => "u32(av <= bv)",
+        (Gt, _) => "u32(av > bv)",
+        (Ge, _) => "u32(av >= bv)",
     }
 }
 
@@ -1351,12 +1359,20 @@ fn reduce_exprs(op: ReduceOp, t: &str) -> (&'static str, &'static str, &'static 
         ),
         Prod => (if is_f { "1.0" } else { "1" }, "acc * v", "acc"),
         Max => (
-            if is_f { "-3.402823e38" } else { "-2147483647" },
+            match t {
+                "f32" => "bitcast<f32>(0xff800000u)", // -inf
+                "u32" => "0u",
+                _ => "-2147483647",
+            },
             "max(acc, v)",
             "acc",
         ),
         Min => (
-            if is_f { "3.402823e38" } else { "2147483647" },
+            match t {
+                "f32" => "bitcast<f32>(0x7f800000u)", // +inf
+                "u32" => "4294967295u",
+                _ => "2147483647",
+            },
             "min(acc, v)",
             "acc",
         ),

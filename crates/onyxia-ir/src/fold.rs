@@ -305,36 +305,84 @@ pub fn eval_content(prim: &Prim, inputs: &[Option<&SymbolicContent>]) -> Option<
             })
         }
 
-        // Shape arithmetic. Element-wise with scalar broadcast.
+        // Shape arithmetic, element-wise with N-d broadcasting (capped so
+        // a mask-sized computation falls back to runtime nodes).
         Prim::Binary(op) => {
             let (a, b) = (get(0)?, get(1)?);
-            let n = a.elems.len().max(b.elems.len());
-            if (a.elems.len() != n && a.elems.len() != 1)
-                || (b.elems.len() != n && b.elems.len() != 1)
-            {
+            zip_content(a, b, |x, y| match op {
+                BinaryOp::Add => Some(x + y),
+                BinaryOp::Sub => Some(x - y),
+                BinaryOp::Mul => Some(x * y),
+                BinaryOp::Div => x.div_exact(&y).or_else(|| {
+                    // Constant operands: truncating integer division.
+                    let (a, b) = (const_of(&x)?, const_of(&y)?);
+                    if b == 0 {
+                        return None;
+                    }
+                    Some(signed(a / b))
+                }),
+                BinaryOp::Max | BinaryOp::Min => {
+                    let (a, b) = (const_of(&x)?, const_of(&y)?);
+                    Some(signed(if *op == BinaryOp::Max {
+                        a.max(b)
+                    } else {
+                        a.min(b)
+                    }))
+                }
+                // Logical ops on 0/1 content (bools live as i64 here).
+                BinaryOp::And | BinaryOp::Or | BinaryOp::Xor => {
+                    let (a, b) = (const_of(&x)? != 0, const_of(&y)? != 0);
+                    let r = match op {
+                        BinaryOp::And => a && b,
+                        BinaryOp::Or => a || b,
+                        _ => a != b,
+                    };
+                    Some(DimExpr::constant(r as u64))
+                }
+                _ => None,
+            })
+        }
+
+        // Comparisons of constant shape-domain values → 0/1 content.
+        Prim::Compare(op) => {
+            let (a, b) = (get(0)?, get(1)?);
+            zip_content(a, b, |x, y| {
+                let (x, y) = (const_of(&x)?, const_of(&y)?);
+                use crate::prim::CmpOp::*;
+                let r = match op {
+                    Eq => x == y,
+                    Ne => x != y,
+                    Lt => x < y,
+                    Le => x <= y,
+                    Gt => x > y,
+                    Ge => x >= y,
+                };
+                Some(DimExpr::constant(r as u64))
+            })
+        }
+
+        // Select over constant 0/1 conditions.
+        Prim::Select => {
+            let (cnd, a, b) = (get(0)?, get(1)?, get(2)?);
+            let shape = broadcast_content_shape(&cnd.shape, &a.shape)?;
+            let shape = broadcast_content_shape(&shape, &b.shape)?;
+            let n: usize = shape.iter().product();
+            if n > CONTENT_MAX {
                 return None;
             }
-            let pick = |c: &SymbolicContent, i: usize| -> DimExpr {
-                c.elems[if c.elems.len() == 1 { 0 } else { i }].clone()
-            };
             let elems: Option<Vec<DimExpr>> = (0..n)
                 .map(|i| {
-                    let (x, y) = (pick(a, i), pick(b, i));
-                    match op {
-                        BinaryOp::Add => Some(x + y),
-                        BinaryOp::Sub => Some(x - y),
-                        BinaryOp::Mul => Some(x * y),
-                        BinaryOp::Div => x.div_exact(&y),
-                        _ => None,
-                    }
+                    let cv = const_of(&content_at(cnd, &shape, i))?;
+                    Some(if cv != 0 {
+                        content_at(a, &shape, i)
+                    } else {
+                        content_at(b, &shape, i)
+                    })
                 })
                 .collect();
-            let out_scalar = a.shape.is_empty() && b.shape.is_empty();
-            let elems = elems?;
-            Some(if out_scalar {
-                SymbolicContent::scalar(elems.into_iter().next()?)
-            } else {
-                SymbolicContent::vector(elems)
+            Some(SymbolicContent {
+                shape,
+                elems: elems?,
             })
         }
 
@@ -382,6 +430,42 @@ pub fn eval_content(prim: &Prim, inputs: &[Option<&SymbolicContent>]) -> Option<
             })
         }
 
+        // Broadcasting content to a constant shape (rank ≤ 1).
+        Prim::Broadcast { shape } => {
+            let data = get(0)?;
+            let dims: Option<Vec<usize>> = shape
+                .iter()
+                .map(|d| d.as_const().map(|v| v as usize))
+                .collect();
+            let dims = dims?;
+            if dims.len() > 1 {
+                return None;
+            }
+            let n = dims.first().copied().unwrap_or(1);
+            let elems: Vec<DimExpr> = if data.elems.len() == n {
+                data.elems.clone()
+            } else if data.elems.len() == 1 {
+                vec![data.elems[0].clone(); n]
+            } else {
+                return None;
+            };
+            Some(SymbolicContent { shape: dims, elems })
+        }
+
+        // Logical not of 0/1 content.
+        Prim::Unary(crate::prim::UnaryOp::Not) => {
+            let data = get(0)?;
+            let elems: Option<Vec<DimExpr>> = data
+                .elems
+                .iter()
+                .map(|e| Some(DimExpr::constant((const_of(e)? == 0) as u64)))
+                .collect();
+            Some(SymbolicContent {
+                shape: data.shape.clone(),
+                elems: elems?,
+            })
+        }
+
         // Negation of shape-domain values.
         Prim::Unary(crate::prim::UnaryOp::Neg) => {
             let data = get(0)?;
@@ -422,6 +506,83 @@ pub fn eval_content(prim: &Prim, inputs: &[Option<&SymbolicContent>]) -> Option<
         }
 
         _ => None,
+    }
+}
+
+/// Largest element count kept in the shape domain; bigger results
+/// (mask-sized index grids) become runtime nodes instead.
+const CONTENT_MAX: usize = 4096;
+
+/// numpy-style broadcast of two content shapes.
+fn broadcast_content_shape(a: &[usize], b: &[usize]) -> Option<Vec<usize>> {
+    let r = a.len().max(b.len());
+    let mut out = Vec::with_capacity(r);
+    for i in 0..r {
+        let da = if i + a.len() >= r {
+            a[i + a.len() - r]
+        } else {
+            1
+        };
+        let db = if i + b.len() >= r {
+            b[i + b.len() - r]
+        } else {
+            1
+        };
+        out.push(if da == db || db == 1 {
+            da
+        } else if da == 1 {
+            db
+        } else {
+            return None;
+        });
+    }
+    Some(out)
+}
+
+/// Element `i` (row-major in `out_shape`) of `c` broadcast to `out_shape`.
+fn content_at(c: &SymbolicContent, out_shape: &[usize], i: usize) -> DimExpr {
+    let r = out_shape.len();
+    let mut rem = i;
+    let mut coords = vec![0usize; r];
+    for d in (0..r).rev() {
+        coords[d] = rem % out_shape[d];
+        rem /= out_shape[d];
+    }
+    let off = r - c.shape.len();
+    let mut lin = 0usize;
+    for (d, &dim) in c.shape.iter().enumerate() {
+        let coord = if dim == 1 { 0 } else { coords[d + off] };
+        lin = lin * dim + coord;
+    }
+    c.elems[lin].clone()
+}
+
+/// Element-wise combination of two contents with broadcasting.
+fn zip_content(
+    a: &SymbolicContent,
+    b: &SymbolicContent,
+    f: impl Fn(DimExpr, DimExpr) -> Option<DimExpr>,
+) -> Option<SymbolicContent> {
+    let shape = broadcast_content_shape(&a.shape, &b.shape)?;
+    let n: usize = shape.iter().product();
+    if n > CONTENT_MAX {
+        return None;
+    }
+    let elems: Option<Vec<DimExpr>> = (0..n)
+        .map(|i| f(content_at(a, &shape, i), content_at(b, &shape, i)))
+        .collect();
+    Some(SymbolicContent {
+        shape,
+        elems: elems?,
+    })
+}
+
+/// A signed constant as a `DimExpr`.
+fn signed(v: i64) -> DimExpr {
+    if v >= 0 {
+        DimExpr::constant(v as u64)
+    } else {
+        DimExpr::constant(0) - DimExpr::constant(v.unsigned_abs())
     }
 }
 

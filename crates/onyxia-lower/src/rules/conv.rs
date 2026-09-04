@@ -371,7 +371,7 @@ fn conv_transpose(ctx: &mut LowerCtx) -> Result<()> {
     let mut pads = ctx.attr_is("pads").unwrap_or(vec![0; 2 * nd]);
     let output_shape = ctx.attr_is("output_shape");
     let set_total = |i: usize, total: i64, pads: &mut Vec<i64>| {
-        let half = total / 2;
+        let half = total.div_euclid(2);
         if auto_pad == "SAME_UPPER" {
             pads[i] = half;
             pads[i + nd] = total - half;
@@ -460,9 +460,7 @@ fn pool(ctx: &mut LowerCtx, kind: PoolKind) -> Result<()> {
     let od = out_dims(n.clone(), ch.clone(), &geo);
     let y = match kind {
         PoolKind::Max => {
-            if ctx.attr_i("storage_order").unwrap_or(0) != 0 {
-                return Err(Error::Unsupported("MaxPool storage_order=1".into()));
-            }
+            let col_major = ctx.attr_i("storage_order").unwrap_or(0) != 0;
             let pad_v = scalar(ctx, dt, lowest(dt))?;
             let cols = im2col(ctx, x, &geo, pad_v)?; // [N, C, O, K]
             let m = reduce(ctx, ReduceOp::Max, cols, &[3], false)?;
@@ -485,8 +483,16 @@ fn pool(ctx: &mut LowerCtx, kind: PoolKind) -> Result<()> {
                             rem /= extents[i];
                         }
                         let mut o = 0i64;
-                        for i in 0..nd {
-                            o = o * geo.input[i] + coords[i].clamp(0, geo.input[i] - 1);
+                        if col_major {
+                            let mut stride = 1i64;
+                            for i in 0..nd {
+                                o += coords[i].clamp(0, geo.input[i] - 1) * stride;
+                                stride *= geo.input[i];
+                            }
+                        } else {
+                            for i in 0..nd {
+                                o = o * geo.input[i] + coords[i].clamp(0, geo.input[i] - 1);
+                            }
                         }
                         o
                     })
@@ -599,12 +605,7 @@ fn max_unpool(ctx: &mut LowerCtx) -> Result<()> {
     let dt = dtype(ctx, x);
     let xd = static_dims(ctx, x, "MaxUnpool")?;
     let nd = xd.len() - 2;
-    let out_shape: Vec<u64> = if ctx.has_input(2) {
-        require_const_ints(ctx, 2, "MaxUnpool output_shape")?
-            .into_iter()
-            .map(|v| v as u64)
-            .collect()
-    } else {
+    let inferred: Vec<u64> = {
         let kernel = ctx
             .attr_is("kernel_shape")
             .ok_or_else(|| ctx.missing_attr("kernel_shape"))?;
@@ -618,6 +619,19 @@ fn max_unpool(ctx: &mut LowerCtx) -> Result<()> {
         }
         s
     };
+    // Indices address the inferred shape; an explicit output_shape only
+    // pads the result (top-left aligned), per the reference.
+    let requested: Option<Vec<u64>> = if ctx.has_input(2) {
+        Some(
+            require_const_ints(ctx, 2, "MaxUnpool output_shape")?
+                .into_iter()
+                .map(|v| v as u64)
+                .collect(),
+        )
+    } else {
+        None
+    };
+    let out_shape = inferred.clone();
     let total: u64 = out_shape.iter().product();
     let n = prod(&dims(ctx, x));
     let flat_x = reshape(ctx, x, vec![n.clone()])?;
@@ -631,6 +645,13 @@ fn max_unpool(ctx: &mut LowerCtx) -> Result<()> {
         },
         &[base, flat_i, flat_x],
     )?;
-    let y = reshape(ctx, y, out_shape.iter().map(|&v| c(v)).collect())?;
+    let mut y = reshape(ctx, y, out_shape.iter().map(|&v| c(v)).collect())?;
+    if let Some(req) = requested {
+        for (axis, (&have, &want)) in inferred.iter().zip(&req).enumerate() {
+            if want != have {
+                y = pad_axis_const(ctx, y, axis, 0, want as i64 - have as i64, zero)?;
+            }
+        }
+    }
     out(ctx, y)
 }

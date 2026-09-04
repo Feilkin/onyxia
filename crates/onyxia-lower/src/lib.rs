@@ -269,6 +269,24 @@ impl LowerCtx<'_> {
         }
     }
 
+    /// Optional f32-list attribute (as f64s).
+    pub fn node_attr_floats(&self, name: &str) -> Option<Vec<f64>> {
+        match self.node.attributes.get(name) {
+            Some(onyxia_onnx::AttributeValue::Floats(v)) => {
+                Some(v.iter().map(|&x| x as f64).collect())
+            }
+            _ => None,
+        }
+    }
+
+    /// Optional string-list attribute.
+    pub fn node_attr_strings(&self, name: &str) -> Option<Vec<String>> {
+        match self.node.attributes.get(name) {
+            Some(onyxia_onnx::AttributeValue::Strings(v)) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
     /// Optional string attribute.
     pub fn attr_s(&self, name: &str) -> Option<&str> {
         match self.node.attributes.get(name) {

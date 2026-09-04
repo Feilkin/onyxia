@@ -15,8 +15,8 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let mut backend = "ref".to_string();
     let mut filters: Vec<String> = Vec::new();
-    let (mut show_ops, mut show_failures, mut show_skips, mut update, mut quiet) =
-        (false, false, false, false, false);
+    let (mut show_ops, mut show_failures, mut show_skips, mut update, mut quiet, mut dump) =
+        (false, false, false, false, false, false);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--backend" => backend = args.next().expect("--backend NAME"),
@@ -26,6 +26,7 @@ fn main() {
             "--skips" => show_skips = true,
             "--update-expected" => update = true,
             "--quiet" => quiet = true,
+            "--dump-graph" => dump = true,
             other => filters.push(other.to_string()),
         }
     }
@@ -52,11 +53,17 @@ fn main() {
         }
     };
 
-    // Silence panics from the runner: the harness reports them as failures.
-    std::panic::set_hook(Box::new(|_| {}));
+    // Silence panics: the harness reports them as failures. Set
+    // RUST_BACKTRACE to keep the default hook for debugging.
+    if std::env::var_os("RUST_BACKTRACE").is_none() {
+        std::panic::set_hook(Box::new(|_| {}));
+    }
 
     let mut results: Vec<(String, Outcome)> = Vec::with_capacity(tests.len());
     for t in &tests {
+        if dump {
+            onyxia_conformance::dump_graph(t);
+        }
         let outcome = match out_of_scope(&t.name) {
             Some(why) => Outcome::Skip(format!("out of scope: {why}")),
             None => run_test(t, runner.as_mut()),

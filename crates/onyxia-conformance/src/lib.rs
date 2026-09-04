@@ -86,14 +86,16 @@ impl Runner for RefRunner {
 
 #[cfg(feature = "wgpu")]
 pub struct WgpuRunner {
-    ctx: onyxia_backend_wgpu::GpuContext,
+    backend: onyxia_backend_wgpu::WgpuBackend,
 }
 
 #[cfg(feature = "wgpu")]
 impl WgpuRunner {
     pub fn new() -> onyxia_ir::Result<Self> {
         let ctx = pollster::block_on(onyxia_backend_wgpu::GpuContext::new())?;
-        Ok(Self { ctx })
+        Ok(Self {
+            backend: onyxia_backend_wgpu::WgpuBackend::new(ctx),
+        })
     }
 }
 
@@ -108,8 +110,7 @@ impl Runner for WgpuRunner {
         inputs: &[(&str, Tensor)],
     ) -> onyxia_ir::Result<Vec<(String, Tensor)>> {
         use onyxia_ir::{Backend, Session};
-        let backend = onyxia_backend_wgpu::WgpuBackend::new(self.ctx.clone());
-        let mut session = backend.prepare(module)?;
+        let mut session = self.backend.prepare(module)?;
         let dev: Vec<(&str, _)> = inputs
             .iter()
             .map(|(n, t)| Ok((*n, session.upload(t)?)))
@@ -333,7 +334,9 @@ fn classify(stage: &str, msg: String) -> Outcome {
         || m.contains("no lowering rule")
         || m.contains("onnx tensor data type")
         || m.contains("double/string typed data")
-        || m.contains("int32_data with data type");
+        || m.contains("int32_data with data type")
+        || m.contains("data-dependent output shape")
+        || m.contains("has no primitive decomposition");
     if skip {
         Outcome::Skip(format!("{stage}: {msg}"))
     } else {
@@ -341,8 +344,25 @@ fn classify(stage: &str, msg: String) -> Outcome {
     }
 }
 
-/// Run one node test end to end.
+/// Run one node test end to end. Panics anywhere in the pipeline are
+/// reported as failures.
 pub fn run_test(test: &NodeTest, runner: &mut dyn Runner) -> Outcome {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_test_inner(test, runner)
+    })) {
+        Ok(o) => o,
+        Err(p) => Outcome::Fail(format!("panic: {}", panic_message(&p))),
+    }
+}
+
+fn panic_message(p: &Box<dyn std::any::Any + Send>) -> String {
+    p.downcast_ref::<String>()
+        .cloned()
+        .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_else(|| "unknown".into())
+}
+
+fn run_test_inner(test: &NodeTest, runner: &mut dyn Runner) -> Outcome {
     let model = match onyxia_onnx::load_model(test.dir.join("model.onnx")) {
         Ok(m) => m,
         Err(e) => return classify("load", e.to_string()),
@@ -390,14 +410,7 @@ pub fn run_test(test: &NodeTest, runner: &mut dyn Runner) -> Outcome {
         })) {
             Ok(Ok(g)) => g,
             Ok(Err(e)) => return classify("run", e.to_string()),
-            Err(p) => {
-                let msg = p
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
-                    .unwrap_or_else(|| "panic".into());
-                return Outcome::Fail(format!("run: panic: {msg}"));
-            }
+            Err(p) => return Outcome::Fail(format!("run: panic: {}", panic_message(&p))),
         };
         for (name, expected) in &set.outputs {
             let Some((_, g)) = got.iter().find(|(n, _)| n == name) else {
@@ -630,6 +643,38 @@ pub fn by_op<'a>(
         }
     }
     m
+}
+
+/// Print a node test's ONNX graph (nodes with op types, inputs, outputs,
+/// attributes) for debugging lowering failures.
+pub fn dump_graph(test: &NodeTest) {
+    let Ok(model) = onyxia_onnx::load_model(test.dir.join("model.onnx")) else {
+        return;
+    };
+    let Ok(graph) = onyxia_onnx::parse_model(&model, Some(&test.dir)) else {
+        return;
+    };
+    println!("== {} ==", test.name);
+    for (name, id) in graph.inputs.iter().map(|n| (n, graph.tensor_id(n).ok())) {
+        if let Some(id) = id {
+            let t = &graph.tensor_info[id];
+            println!("  input {name}: {:?} {:?}", t.dtype, t.shape);
+        }
+    }
+    for n in &graph.nodes {
+        let attrs: Vec<String> = n
+            .attributes
+            .iter()
+            .map(|(k, v)| format!("{k}={v:?}"))
+            .collect();
+        println!(
+            "  {}({}) -> {}   {}",
+            n.op_type,
+            n.inputs.join(", "),
+            n.outputs.join(", "),
+            attrs.join(" ")
+        );
+    }
 }
 
 /// Path of the checked-in list of node tests expected to pass on a backend.

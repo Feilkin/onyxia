@@ -350,9 +350,52 @@ fn is_inf(ctx: &mut LowerCtx) -> Result<()> {
 /// Mod: `fmod=1` is C fmod (sign of the dividend); `fmod=0` is Python
 /// modulo (sign of the divisor), integer-only per the spec.
 fn mod_(ctx: &mut LowerCtx) -> Result<()> {
+    let fmod = ctx.attr_i("fmod").unwrap_or(0) != 0;
+    // Shape-domain operands (constant integers) fold at lowering.
+    if let (Some(a), Some(b)) = (ctx.content(0), ctx.content(1)) {
+        if let (Some(av), Some(bv)) = (
+            a.elems
+                .iter()
+                .map(crate::signed_const_of)
+                .collect::<Option<Vec<i64>>>(),
+            b.elems
+                .iter()
+                .map(crate::signed_const_of)
+                .collect::<Option<Vec<i64>>>(),
+        ) {
+            let n = av.len().max(bv.len());
+            if (av.len() == n || av.len() == 1) && (bv.len() == n || bv.len() == 1) {
+                let pick = |v: &Vec<i64>, i: usize| v[if v.len() == 1 { 0 } else { i }];
+                let elems: Option<Vec<i64>> = (0..n)
+                    .map(|i| {
+                        let (p, q) = (pick(&av, i), pick(&bv, i));
+                        if q == 0 {
+                            return None;
+                        }
+                        Some(if fmod {
+                            p % q
+                        } else {
+                            p.rem_euclid(q) * q.signum()
+                        })
+                    })
+                    .collect();
+                if let Some(elems) = elems {
+                    let content = onyxia_ir::graph::SymbolicContent {
+                        shape: if a.shape.is_empty() && b.shape.is_empty() {
+                            vec![]
+                        } else {
+                            vec![n]
+                        },
+                        elems: elems.into_iter().map(crate::signed_dim).collect(),
+                    };
+                    ctx.set_content(0, content);
+                    return Ok(());
+                }
+            }
+        }
+    }
     let (x, y) = (val(ctx, 0)?, val(ctx, 1)?);
     let dt = dtype(ctx, x);
-    let fmod = ctx.attr_i("fmod").unwrap_or(0) != 0;
     // r = x - trunc(x / y) * y
     let q = div(ctx, x, y)?;
     let tq = if dt.is_float() {

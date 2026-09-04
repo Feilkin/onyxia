@@ -463,15 +463,6 @@ pub(crate) fn sigmoid(ctx: &mut LowerCtx, x: ValueId) -> Result<ValueId> {
     div(ctx, one, d)
 }
 
-/// Max-shifted softmax over `axes`.
-pub(crate) fn softmax_axes(ctx: &mut LowerCtx, x: ValueId, axes: &[usize]) -> Result<ValueId> {
-    let m = reduce(ctx, ReduceOp::Max, x, axes, true)?;
-    let sh = sub(ctx, x, m)?;
-    let e = unary(ctx, UnaryOp::Exp, sh)?;
-    let s = reduce(ctx, ReduceOp::Sum, e, axes, true)?;
-    div(ctx, e, s)
-}
-
 /// Max-shifted log-softmax over `axes`.
 pub(crate) fn log_softmax_axes(ctx: &mut LowerCtx, x: ValueId, axes: &[usize]) -> Result<ValueId> {
     let m = reduce(ctx, ReduceOp::Max, x, axes, true)?;
@@ -502,7 +493,9 @@ pub(crate) fn arg_reduce(
         let cand = select(ctx, eq, idx, neg)?;
         reduce(ctx, ReduceOp::Max, cand, &[axis], keepdims)?
     } else {
-        let big = scalar(ctx, DataType::I64, i64::MAX as f64)?;
+        // Sentinel = the axis length: above every valid index, and small
+        // enough for backends that store i64 as 32-bit.
+        let big = dim_value(ctx, d)?;
         let cand = select(ctx, eq, idx, big)?;
         reduce(ctx, ReduceOp::Min, cand, &[axis], keepdims)?
     };
