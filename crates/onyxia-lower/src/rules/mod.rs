@@ -10,12 +10,27 @@
 //!   attention/quantization ops); their portable decompositions live in
 //!   [`onyxia_ir::decomp`].
 
+mod attention;
+mod conv;
+mod elementwise;
+mod helpers;
+mod norm;
+mod signal;
+mod structure;
+
 use crate::{LowerCtx, LoweringRegistry, attrs, convert_proto_dtype, signed_const_of, signed_dim};
 use onyxia_ir::graph::Origin;
 use onyxia_ir::prim::{BinaryOp, CmpOp, Prim, ReduceOp, ScatterReduce, SliceSpec, UnaryOp};
 use onyxia_ir::{AttrValue, DataType, DimExpr, Error, Result, TensorType, ValueId};
 
 pub(crate) fn register_all(r: &mut LoweringRegistry) {
+    elementwise::register(r);
+    structure::register(r);
+    norm::register(r);
+    conv::register(r);
+    attention::register(r);
+    signal::register(r);
+
     // Element-wise binary (+ variadic Max/Min).
     r.register("", "Add", |c| binary(c, BinaryOp::Add));
     r.register("", "Sub", |c| binary(c, BinaryOp::Sub));

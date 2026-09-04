@@ -110,6 +110,23 @@ impl LowerCtx<'_> {
         self.node.inputs.get(i).is_some_and(|n| !n.is_empty())
     }
 
+    /// Number of declared outputs (including absent optionals).
+    pub fn num_outputs(&self) -> usize {
+        self.node.outputs.len()
+    }
+
+    /// Whether output `i` is present (declared and non-empty).
+    pub fn has_output(&self, i: usize) -> bool {
+        self.node.outputs.get(i).is_some_and(|n| !n.is_empty())
+    }
+
+    /// Set output `i` if it is present; absent optionals are dropped.
+    pub fn set_value_opt(&mut self, i: usize, v: ValueId) {
+        if self.has_output(i) {
+            self.set_value(i, v);
+        }
+    }
+
     fn lowered(&self, i: usize) -> Result<&Lowered> {
         let name = &self.node.inputs[i];
         self.values.get(name).ok_or_else(|| {

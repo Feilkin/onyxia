@@ -54,6 +54,9 @@ pub fn standard_decompositions() -> DecompositionRegistry {
     r.register("Gelu", gelu);
     r.register("Trilu", trilu);
     r.register("SimplifiedLayerNormalization", simplified_layer_norm);
+    r.register("LayerNormalization", layer_normalization);
+    r.register("RMSNormalization", rms_normalization);
+    r.register("Attention", attention);
     r.register("com.microsoft.RotaryEmbedding", rotary_embedding);
     r.register("com.microsoft.GemmaRotaryEmbedding", rotary_embedding);
     r.register("com.microsoft.GroupQueryAttention", group_query_attention);
@@ -254,6 +257,247 @@ fn simplified_layer_norm(
     let inv = b.unary(UnaryOp::Rsqrt, denom)?;
     let normed = b.mul(x, inv)?;
     Ok(vec![b.mul(normed, w)?])
+}
+
+/// ONNX LayerNormalization: standardize over `[axis, rank)`, then scale
+/// (and shift). Outputs `[Y, Mean, InvStdDev]`.
+fn layer_normalization(
+    c: &Composite,
+    inputs: &[ValueId],
+    b: &mut GraphBuilder,
+) -> Result<Vec<ValueId>> {
+    let (x, scale) = (inputs[0], inputs[1]);
+    let bias = if c.attrs.int_or("has_bias", 0)? != 0 {
+        inputs.get(2).copied()
+    } else {
+        None
+    };
+    let axis = c.attrs.int("axis")? as usize;
+    let eps = c.attrs.float_or("epsilon", 1e-5)?;
+    let r = b.ty(x).shape.rank();
+    let axes: Vec<usize> = (axis..r).collect();
+    let dt = b.ty(x).dtype;
+    let mean = b.reduce(ReduceOp::Mean, x, &axes, true)?;
+    let d = b.sub(x, mean)?;
+    let dd = b.mul(d, d)?;
+    let var = b.reduce(ReduceOp::Mean, dd, &axes, true)?;
+    let eps_c = scalar(b, dt, eps)?;
+    let ve = b.add(var, eps_c)?;
+    let inv = b.unary(UnaryOp::Rsqrt, ve)?;
+    let normed = b.mul(d, inv)?;
+    let mut y = b.mul(normed, scale)?;
+    if let Some(bias) = bias {
+        y = b.add(y, bias)?;
+    }
+    Ok(vec![y, mean, inv])
+}
+
+/// ONNX RMSNormalization: `x / sqrt(mean(x², [axis, rank)) + ε) · scale`.
+fn rms_normalization(
+    c: &Composite,
+    inputs: &[ValueId],
+    b: &mut GraphBuilder,
+) -> Result<Vec<ValueId>> {
+    let (x, scale) = (inputs[0], inputs[1]);
+    let axis = c.attrs.int("axis")? as usize;
+    let eps = c.attrs.float_or("epsilon", 1e-5)?;
+    let r = b.ty(x).shape.rank();
+    let axes: Vec<usize> = (axis..r).collect();
+    let dt = b.ty(x).dtype;
+    let sq = b.mul(x, x)?;
+    let ms = b.reduce(ReduceOp::Mean, sq, &axes, true)?;
+    let eps_c = scalar(b, dt, eps)?;
+    let denom = b.add(ms, eps_c)?;
+    let inv = b.unary(UnaryOp::Rsqrt, denom)?;
+    let normed = b.mul(x, inv)?;
+    Ok(vec![b.mul(normed, scale)?])
+}
+
+/// ONNX `Attention` (opset 23/24) over 4-D `[B, H, S, D]` operands
+/// (lowering reshapes 3-D inputs). Inputs, in order:
+/// `q, k, v [, mask] [, past_key, past_value] [, nonpad_kv_seqlen]` per
+/// the `has_*` attrs. Outputs `[y, present_key, present_value, qk]`,
+/// where `qk` is the stage selected by `qk_matmul_output_mode`.
+fn attention(c: &Composite, inputs: &[ValueId], b: &mut GraphBuilder) -> Result<Vec<ValueId>> {
+    let (q, mut k, mut v) = (inputs[0], inputs[1], inputs[2]);
+    let mut next = 3;
+    let mask = if c.attrs.int_or("has_mask", 0)? != 0 {
+        next += 1;
+        Some(inputs[next - 1])
+    } else {
+        None
+    };
+    let past = if c.attrs.int_or("has_past", 0)? != 0 {
+        next += 2;
+        Some((inputs[next - 2], inputs[next - 1]))
+    } else {
+        None
+    };
+    let nonpad = if c.attrs.int_or("has_nonpad", 0)? != 0 {
+        Some(inputs[next])
+    } else {
+        None
+    };
+    let mask_bool = c.attrs.int_or("mask_is_bool", 0)? != 0;
+    let is_causal = c.attrs.int_or("is_causal", 0)? != 0;
+    let qh = c.attrs.int("q_num_heads")? as u64;
+    let kvh = c.attrs.int("kv_num_heads")? as u64;
+    let scale = c.attrs.float("scale")?;
+    let softcap = c.attrs.float_or("softcap", 0.0)?;
+    let qk_mode = c.attrs.int_or("qk_matmul_output_mode", 0)?;
+    let dt = b.ty(q).dtype;
+
+    let kv_new = b.ty(k).shape.dims()[2].clone();
+    if let Some((pk, pv)) = past {
+        k = b.concat(&[pk, k], 2)?;
+        v = b.concat(&[pv, v], 2)?;
+    }
+    let (present_k, present_v) = (k, v);
+    let qd = b.ty(q).shape.dims().to_vec();
+    let kd = b.ty(k).shape.dims().to_vec();
+    let (bsz, s_len, total) = (qd[0].clone(), qd[2].clone(), kd[2].clone());
+
+    // Grouped heads: repeat each kv head g times.
+    if qh != kvh {
+        if kvh == 0 || qh % kvh != 0 {
+            return Err(Error::Attribute(format!(
+                "Attention: q_num_heads {qh} must be a multiple of kv_num_heads {kvh}"
+            )));
+        }
+        let g = qh / kvh;
+        let rep = |b: &mut GraphBuilder, x: ValueId| -> Result<ValueId> {
+            let d = b.ty(x).shape.dims().to_vec();
+            let x5 = b.reshape(
+                x,
+                vec![
+                    d[0].clone(),
+                    d[1].clone(),
+                    DimExpr::constant(1),
+                    d[2].clone(),
+                    d[3].clone(),
+                ],
+            )?;
+            let x5 = b.broadcast(
+                x5,
+                vec![
+                    d[0].clone(),
+                    d[1].clone(),
+                    DimExpr::constant(g),
+                    d[2].clone(),
+                    d[3].clone(),
+                ],
+            )?;
+            b.reshape(
+                x5,
+                vec![
+                    d[0].clone(),
+                    DimExpr::constant(qh),
+                    d[2].clone(),
+                    d[3].clone(),
+                ],
+            )
+        };
+        k = rep(b, k)?;
+        v = rep(b, v)?;
+    }
+
+    // scale·QKᵀ, applied as √scale on each side (spec).
+    let sq = scalar(b, dt, scale.sqrt())?;
+    let qs = b.mul(q, sq)?;
+    let ks = b.mul(k, sq)?;
+    let mut qk = b.prim(
+        Prim::MatMul {
+            trans_a: false,
+            trans_b: true,
+        },
+        &[qs, ks],
+    )?; // [B, qh, S, L]
+    // Softcap applies to the raw scores, before any bias (this is the
+    // order of the ONNX reference implementation the node tests are
+    // generated from; the spec's diagram draws it after the mask).
+    if softcap > 0.0 {
+        let sc = scalar(b, dt, softcap)?;
+        let t = b.div(qk, sc)?;
+        let t = b.unary(UnaryOp::Tanh, t)?;
+        qk = b.mul(t, sc)?;
+    }
+    // Modes 0 and 1 both return the (softcapped) scores before the bias
+    // in the reference implementation; 2 after the bias; 3 the softmax.
+    let mut qk_out = qk;
+    let neg_inf = scalar(b, dt, f64::NEG_INFINITY)?;
+    let zero = scalar(b, dt, 0.0)?;
+
+    if let Some(m) = mask {
+        // A mask shorter than L along the last axis pads with -inf.
+        let md = b.ty(m).shape.dims().to_vec();
+        let mlast = md[md.len() - 1].clone();
+        let mut m = m;
+        if mlast != total {
+            let mut pad_dims = md.clone();
+            let last = md.len() - 1;
+            pad_dims[last] = total.clone() - mlast;
+            let fill = if mask_bool {
+                let f = b.cmp(CmpOp::Ne, zero, zero)?; // false
+                b.broadcast(f, pad_dims)?
+            } else {
+                b.broadcast(neg_inf, pad_dims)?
+            };
+            m = b.concat(&[m, fill], last)?;
+        }
+        let bias = if mask_bool {
+            b.select(m, zero, neg_inf)?
+        } else {
+            m
+        };
+        qk = b.add(qk, bias)?;
+    }
+    if is_causal {
+        // Allowed when l <= s + past_len: the new keys are aligned to
+        // the queries from the top-left, every past key is visible.
+        let rows = b.iota(s_len.clone(), DataType::I64)?;
+        let rows = b.reshape(rows, vec![s_len.clone(), DimExpr::constant(1)])?;
+        let cols = b.iota(total.clone(), DataType::I64)?;
+        let cols = b.reshape(cols, vec![DimExpr::constant(1), total.clone()])?;
+        let off = b.prim(
+            Prim::DimValues {
+                exprs: vec![total.clone() - kv_new.clone()],
+            },
+            &[],
+        )?;
+        let off = b.reshape(off, vec![])?;
+        let lim = b.add(rows, off)?;
+        let ok = b.cmp(CmpOp::Le, cols, lim)?;
+        qk = b.select(ok, qk, neg_inf)?;
+    }
+    if let Some(np) = nonpad {
+        let np4 = b.reshape(
+            np,
+            vec![
+                bsz.clone(),
+                DimExpr::constant(1),
+                DimExpr::constant(1),
+                DimExpr::constant(1),
+            ],
+        )?;
+        let cols = b.iota(total.clone(), DataType::I64)?;
+        let cols = b.reshape(cols, vec![DimExpr::constant(1), total.clone()])?;
+        let ok = b.cmp(CmpOp::Lt, cols, np4)?;
+        qk = b.select(ok, qk, neg_inf)?;
+    }
+    if qk_mode == 2 {
+        qk_out = qk;
+    }
+    // Softmax over L.
+    let mx = b.reduce(ReduceOp::Max, qk, &[3], true)?;
+    let shifted = b.sub(qk, mx)?;
+    let e = b.unary(UnaryOp::Exp, shifted)?;
+    let sum = b.reduce(ReduceOp::Sum, e, &[3], true)?;
+    let probs = b.div(e, sum)?;
+    if qk_mode == 3 {
+        qk_out = probs;
+    }
+    let y = b.matmul(probs, v)?;
+    Ok(vec![y, present_k, present_v, qk_out])
 }
 
 /// com.microsoft.RotaryEmbedding, non-interleaved.

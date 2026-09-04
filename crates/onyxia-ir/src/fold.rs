@@ -364,14 +364,35 @@ pub fn eval_content(prim: &Prim, inputs: &[Option<&SymbolicContent>]) -> Option<
             Some(SymbolicContent::vector(elems))
         }
 
-        // Rank changes between scalar and [1] keep content.
+        // Reshapes keep content (elements are stored flat); the target
+        // must be static and preserve the element count.
         Prim::Reshape { shape } => {
             let data = get(0)?;
-            match shape.len() {
-                0 => Some(SymbolicContent::scalar(data.elems.first()?.clone())),
-                1 => Some(SymbolicContent::vector(data.elems.clone())),
-                _ => None,
+            let dims: Option<Vec<usize>> = shape
+                .iter()
+                .map(|d| d.as_const().map(|v| v as usize))
+                .collect();
+            let dims = dims?;
+            if dims.iter().product::<usize>() != data.elems.len() {
+                return None;
             }
+            Some(SymbolicContent {
+                shape: dims,
+                elems: data.elems.clone(),
+            })
+        }
+
+        // Negation of shape-domain values.
+        Prim::Unary(crate::prim::UnaryOp::Neg) => {
+            let data = get(0)?;
+            Some(SymbolicContent {
+                shape: data.shape.clone(),
+                elems: data
+                    .elems
+                    .iter()
+                    .map(|e| DimExpr::constant(0) - e.clone())
+                    .collect(),
+            })
         }
 
         // Integer→integer casts keep content.
