@@ -117,10 +117,24 @@ impl GpuContext {
             caps.int64 = true;
         }
         // Cooperative matrices (tensor cores): experimental, native only.
-        // The kernel assumes 32-wide subgroups (4 per 128-thread workgroup).
+        // The kernel is written for one configuration — f16 A/B, f32
+        // accumulate, 16×16×16 — so look for exactly that in the adapter's
+        // list rather than trusting the feature bit (wgpu advertises the
+        // feature whenever the list is non-empty, and an unsupported shape
+        // compiles and silently yields zeros). It also assumes 32-wide
+        // subgroups (4 per 128-thread workgroup).
+        let has_f16_16x16x16 = adapter.cooperative_matrix_properties().iter().any(|p| {
+            p.m_size == 16
+                && p.n_size == 16
+                && p.k_size == 16
+                && p.ab_type == wgpu::CooperativeScalarType::F16
+                && p.cr_type == wgpu::CooperativeScalarType::F32
+        });
         let coop = adapter
             .features()
             .contains(wgpu::Features::EXPERIMENTAL_COOPERATIVE_MATRIX)
+            && has_f16_16x16x16
+            && adapter.features().contains(wgpu::Features::SHADER_F16)
             && adapter.features().contains(wgpu::Features::SUBGROUP)
             && adapter_info.subgroup_min_size == 32
             && adapter_info.subgroup_max_size == 32
