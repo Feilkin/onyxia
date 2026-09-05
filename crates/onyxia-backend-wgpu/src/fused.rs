@@ -14,9 +14,12 @@
 //! `com.microsoft.RotaryEmbedding` (single elementwise pass with inline
 //! cos/sin gather), and `com.microsoft.GroupQueryAttention` (three
 //! dispatches: present-K/V concat + a chunked online-softmax attention
-//! pass), and `com.microsoft.MatMulNBits` (a matvec straight from the
-//! packed 4-bit weights at decode; a tiled matmul dequantizing weight
-//! tiles into shared memory at prefill).
+//! pass — the two present-cache concats share one dispatch),
+//! `com.microsoft.MatMulNBits` (a matvec straight from the packed 4-bit
+//! weights at decode; a tiled matmul dequantizing weight tiles into
+//! shared memory at prefill), and the fusion products of
+//! [`onyxia_ir::fuse`]: `onyxia.AddRmsNorm` (residual add + RMS norm in
+//! one row pass, sum written out) and `onyxia.GeluMul`.
 
 use crate::gpu::WORKGROUP_SIZE;
 use crate::kernels::{self, Imm};
@@ -84,6 +87,8 @@ pub fn standard_kernels() -> KernelRegistry {
             Box::new(GroupQueryAttentionKernel),
         ),
         ("com.microsoft.MatMulNBits", Box::new(MatMulNBitsKernel)),
+        (onyxia_ir::fuse::ADD_RMS_NORM, Box::new(AddRmsNormKernel)),
+        (onyxia_ir::fuse::GELU_MUL, Box::new(GeluMulKernel)),
     ])
 }
 
@@ -437,6 +442,88 @@ impl CompositeKernel for GeluKernel {
     }
 }
 
+/// Fused residual add + RMS norm (`onyxia.AddRmsNorm`, produced by
+/// [`onyxia_ir::fuse`]): one workgroup per row computes `sum = a + b`,
+/// writes it (the residual stream), and normalizes it in the same pass —
+/// one dispatch instead of an elementwise add plus a row kernel.
+struct AddRmsNormKernel;
+
+impl CompositeKernel for AddRmsNormKernel {
+    fn execute(
+        &self,
+        session: &mut WgpuSession,
+        attrs: &Attrs,
+        inputs: &[GpuTensor],
+        outs: &[(DataType, Vec<usize>)],
+    ) -> Result<Vec<GpuTensor>> {
+        let [a, b, w] = inputs else {
+            return Err(Error::InvalidGraph("AddRmsNorm expects 3 inputs".into()));
+        };
+        if a.dtype != DataType::F32 || a.shape != b.shape {
+            return Err(Error::Unsupported(
+                "fused add+rms-norm is f32-only, equal shapes".into(),
+            ));
+        }
+        let Some(&cols) = a.shape.last() else {
+            return Err(Error::Unsupported("fused add+rms-norm on a scalar".into()));
+        };
+        let rows = a.numel() / cols.max(1);
+        check_rows(rows, "add+rms-norm")?;
+        let eps = attrs.float_or("epsilon", 1e-5)? as f32;
+        let y = session.alloc_out(outs[0].0, outs[0].1.clone());
+        let sum = session.alloc_out(outs[1].0, outs[1].1.clone());
+        let imm = Imm::new().u(rows as u32).u(cols as u32).f(eps);
+        session.dispatch_rows(
+            "fused_add_rmsnorm_row_f32",
+            add_rmsnorm_row_wgsl,
+            &[&a.buffer, &b.buffer, &w.buffer, &sum.buffer, &y.buffer],
+            &imm,
+            rows,
+        )?;
+        Ok(vec![y, sum])
+    }
+}
+
+/// Fused `gelu(x) * u` (`onyxia.GeluMul`): a single elementwise pass.
+struct GeluMulKernel;
+
+impl CompositeKernel for GeluMulKernel {
+    fn execute(
+        &self,
+        session: &mut WgpuSession,
+        attrs: &Attrs,
+        inputs: &[GpuTensor],
+        outs: &[(DataType, Vec<usize>)],
+    ) -> Result<Vec<GpuTensor>> {
+        let [x, u] = inputs else {
+            return Err(Error::InvalidGraph("GeluMul expects 2 inputs".into()));
+        };
+        if x.dtype != DataType::F32 || x.shape != u.shape {
+            return Err(Error::Unsupported(
+                "fused gelu*mul is f32-only, equal shapes".into(),
+            ));
+        }
+        let tanh_form = attrs.str("approximate").unwrap_or("none") == "tanh";
+        let out = session.alloc_out(outs[0].0, outs[0].1.clone());
+        let size = out.numel();
+        let linear = (size as u32).div_ceil(WORKGROUP_SIZE);
+        let (_, x_stride) = crate::gpu::dispatch_size(linear);
+        let imm = Imm::new().u(size as u32).u(x_stride);
+        session.dispatch(
+            if tanh_form {
+                "fused_gelu_mul_tanh_f32"
+            } else {
+                "fused_gelu_mul_f32"
+            },
+            || gelu_mul_wgsl(tanh_form),
+            &[&x.buffer, &u.buffer, &out.buffer],
+            &imm,
+            size,
+        )?;
+        Ok(vec![out])
+    }
+}
+
 /// Fused non-interleaved rotary embedding: one elementwise dispatch that
 /// gathers cos/sin by position inline — replaces the decomposition's
 /// gather/slice/mul/concat chain (~10 dispatches per call, twice per
@@ -659,17 +746,15 @@ impl CompositeKernel for GroupQueryAttentionKernel {
             }
         }
 
-        // Present caches: valid past ++ new per row, straight into BNSH.
-        // K rotates its new rows in the same pass when do_rotary is set;
-        // V never rotates.
+        // Present caches: valid past ++ new per row, straight into BNSH,
+        // K and V in one dispatch (the first half of the index space is
+        // K, the second V). K rotates its new rows in the same pass when
+        // do_rotary is set; V never rotates.
         let present_k = session.alloc_out(outs[1].0, outs[1].1.clone());
         let present_v = session.alloc_out(outs[2].0, outs[2].1.clone());
-        for (old, new, present, rotate) in [
-            (past_k, k, &present_k, rope.is_some()),
-            (past_v, v, &present_v, false),
-        ] {
-            let size = present.numel();
-            let linear = (size as u32).div_ceil(WORKGROUP_SIZE);
+        {
+            let size = present_k.numel();
+            let linear = (2 * size as u32).div_ceil(WORKGROUP_SIZE);
             let (_, x_stride) = crate::gpu::dispatch_size(linear);
             let mut imm = Imm::new()
                 .u(size as u32)
@@ -679,20 +764,32 @@ impl CompositeKernel for GroupQueryAttentionKernel {
                 .u(total as u32)
                 .u(seq as u32)
                 .u(d as u32);
-            let mut bufs = vec![&old.buffer, &new.buffer, &seqlens.buffer];
-            if rotate {
-                let (cos, sin) = rope.unwrap();
+            let mut bufs = vec![
+                &past_k.buffer,
+                &k.buffer,
+                &past_v.buffer,
+                &v.buffer,
+                &seqlens.buffer,
+            ];
+            if let Some((cos, sin)) = rope {
                 imm = imm.u(half as u32);
                 bufs.push(&cos.buffer);
                 bufs.push(&sin.buffer);
             }
-            bufs.push(&present.buffer);
-            let label = if rotate {
-                "fused_gqa_concat_rope_f32"
+            bufs.push(&present_k.buffer);
+            bufs.push(&present_v.buffer);
+            let label = if rope.is_some() {
+                "fused_gqa_concat_kv_rope_f32"
             } else {
-                "fused_gqa_concat_f32"
+                "fused_gqa_concat_kv_f32"
             };
-            session.dispatch(label, || gqa_concat_wgsl(rotate), &bufs, &imm, size)?;
+            session.dispatch(
+                label,
+                || gqa_concat_wgsl(rope.is_some()),
+                &bufs,
+                &imm,
+                2 * size,
+            )?;
         }
 
         let out = session.alloc_out(outs[0].0, outs[0].1.clone());
@@ -760,31 +857,29 @@ fn gqa_concat_wgsl(rope: bool) -> String {
     let (half_field, rope_bindings, out_binding) = if rope {
         (
             " half: u32,",
-            "@group(0) @binding(3) var<storage, read> cosc: array<f32>;
-@group(0) @binding(4) var<storage, read> sinc: array<f32>;",
-            5,
+            "@group(0) @binding(5) var<storage, read> cosc: array<f32>;
+@group(0) @binding(6) var<storage, read> sinc: array<f32>;",
+            7,
         )
     } else {
-        ("", "", 3)
+        ("", "", 5)
     };
-    let load_new = if rope {
+    // New K rows rotate on the way in (half-split convention, position =
+    // absolute present index `t`); V copies straight through.
+    let rotate = if rope {
         "
-        let nbase = (b * p.s + (t - past_b)) * p.kv * p.d + kvh * p.d;
-        var val = new_kv[nbase + dd];
-        if (dd < 2u * p.half) {
+        if (!is_v && dd < 2u * p.half) {
             if (dd < p.half) {
                 val = val * cosc[t * p.half + dd]
-                    - new_kv[nbase + dd + p.half] * sinc[t * p.half + dd];
+                    - new_k[nbase + dd + p.half] * sinc[t * p.half + dd];
             } else {
                 let j = dd - p.half;
                 val = val * cosc[t * p.half + j]
-                    + new_kv[nbase + dd - p.half] * sinc[t * p.half + j];
+                    + new_k[nbase + dd - p.half] * sinc[t * p.half + j];
             }
-        }
-        out[idx] = val;"
+        }"
     } else {
-        "
-        out[idx] = new_kv[(b * p.s + (t - past_b)) * p.kv * p.d + kvh * p.d + dd];"
+        ""
     };
     format!(
         "
@@ -793,31 +888,44 @@ struct P {{
     kv: u32, past: u32, total: u32, s: u32, d: u32,{half_field}
 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> old: array<f32>;
-@group(0) @binding(1) var<storage, read> new_kv: array<f32>;
-@group(0) @binding(2) var<storage, read> seqlens: array<i32>;
+@group(0) @binding(0) var<storage, read> old_k: array<f32>;
+@group(0) @binding(1) var<storage, read> new_k: array<f32>;
+@group(0) @binding(2) var<storage, read> old_v: array<f32>;
+@group(0) @binding(3) var<storage, read> new_v: array<f32>;
+@group(0) @binding(4) var<storage, read> seqlens: array<i32>;
 {rope_bindings}
-@group(0) @binding({out_binding}) var<storage, read_write> out: array<f32>;
+@group(0) @binding({out_binding}) var<storage, read_write> present_k: array<f32>;
+@group(0) @binding({out_binding_v}) var<storage, read_write> present_v: array<f32>;
 const WG_SIZE: u32 = 256u;
 
 @compute @workgroup_size(WG_SIZE)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
-    let idx = gid.x + gid.y * p.x_stride;
-    if (idx >= p.size) {{ return; }}
+    let lin = gid.x + gid.y * p.x_stride;
+    if (lin >= 2u * p.size) {{ return; }}
+    let is_v = lin >= p.size;
+    let idx = select(lin, lin - p.size, is_v);
     let dd = idx % p.d;
     let t = (idx / p.d) % p.total;
     let kvh = (idx / (p.d * p.total)) % p.kv;
     let b = idx / (p.d * p.total * p.kv);
     let tot_b = u32(seqlens[b]) + 1u;
     let past_b = select(tot_b - p.s, 0u, tot_b < p.s);
+    var val = 0.0;
     if (t < past_b) {{
-        out[idx] = old[((b * p.kv + kvh) * p.past + t) * p.d + dd];
-    }} else if (t < past_b + p.s) {{{load_new}
+        let o = ((b * p.kv + kvh) * p.past + t) * p.d + dd;
+        val = select(old_k[o], old_v[o], is_v);
+    }} else if (t < past_b + p.s) {{
+        let nbase = (b * p.s + (t - past_b)) * p.kv * p.d + kvh * p.d;
+        val = select(new_k[nbase + dd], new_v[nbase + dd], is_v);{rotate}
+    }}
+    if (is_v) {{
+        present_v[idx] = val;
     }} else {{
-        out[idx] = 0.0;
+        present_k[idx] = val;
     }}
 }}
-"
+",
+        out_binding_v = out_binding + 1,
     )
 }
 
@@ -985,6 +1093,77 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
     if (lane < p.d) {{
         out[(b * p.s + sq) * p.heads * p.d + h * p.d + lane] = acc / l;
     }}
+}}
+"
+    )
+}
+
+fn add_rmsnorm_row_wgsl() -> String {
+    "
+struct P { rows: u32, cols: u32, eps: f32 }
+var<immediate> p: P;
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(2) var<storage, read> w: array<f32>;
+@group(0) @binding(3) var<storage, read_write> sum: array<f32>;
+@group(0) @binding(4) var<storage, read_write> out: array<f32>;
+var<workgroup> scratch: array<f32, 256>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(workgroup_id) wg: vec3<u32>,
+        @builtin(local_invocation_id) lid: vec3<u32>) {
+    let row = wg.x;
+    let base = row * p.cols;
+
+    // Residual sum, written out, and its mean of squares.
+    var acc = 0.0;
+    for (var i = lid.x; i < p.cols; i = i + 256u) {
+        let v = a[base + i] + b[base + i];
+        sum[base + i] = v;
+        acc = acc + v * v;
+    }
+    scratch[lid.x] = acc;
+    workgroupBarrier();
+    for (var s = 128u; s > 0u; s = s >> 1u) {
+        if (lid.x < s) {
+            scratch[lid.x] = scratch[lid.x] + scratch[lid.x + s];
+        }
+        workgroupBarrier();
+    }
+    let inv = inverseSqrt(scratch[0] / f32(p.cols) + p.eps);
+
+    for (var i = lid.x; i < p.cols; i = i + 256u) {
+        out[base + i] = sum[base + i] * inv * w[i];
+    }
+}
+"
+    .to_string()
+}
+
+fn gelu_mul_wgsl(tanh_form: bool) -> String {
+    let (erf, gelu) = if tanh_form {
+        (
+            "",
+            "0.5 * v * (1.0 + tanh(0.7978845608 * (v + 0.044715 * v * v * v)))",
+        )
+    } else {
+        (kernels::ERF, "0.5 * v * (1.0 + erf(v * 0.7071067812))")
+    };
+    format!(
+        "{erf}
+struct P {{ size: u32, x_stride: u32 }}
+var<immediate> p: P;
+@group(0) @binding(0) var<storage, read> x: array<f32>;
+@group(0) @binding(1) var<storage, read> u: array<f32>;
+@group(0) @binding(2) var<storage, read_write> out: array<f32>;
+const WG_SIZE: u32 = 256u;
+
+@compute @workgroup_size(WG_SIZE)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
+    let idx = gid.x + gid.y * p.x_stride;
+    if (idx >= p.size) {{ return; }}
+    let v = x[idx];
+    out[idx] = ({gelu}) * u[idx];
 }}
 "
     )

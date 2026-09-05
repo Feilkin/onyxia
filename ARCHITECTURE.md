@@ -64,6 +64,11 @@ lower straight to primitives in `onyxia-lower/src/rules/`.
    reach the GPU).
 2. **Kernel registry** (per backend, `fused.rs` in the wgpu backend):
    `composite name → hand-written fused kernel`. Optional fast path.
+   **Fusion** (`fuse::fuse_composites`) first rewrites patterns the backend
+   has a kernel for — a residual `Add` feeding `SimplifiedLayerNormalization`
+   becomes `onyxia.AddRmsNorm`, `Gelu` feeding its gate `Mul` becomes
+   `onyxia.GeluMul` — each with a decomposition back to the unfused nodes,
+   so other backends and the interpreter see the same semantics. Then
    **Legalization** (`decomp::inline_composites`) inlines the decomposition
    of any composite the backend lacks a kernel for, recursively, at
    `prepare` time. A composite with neither is a compile-time error.
@@ -131,7 +136,7 @@ explicit `ExecutionPlan` and replaced it with this model within a week.)
 | Crate | Contents |
 |-------|----------|
 | `onyxia-onnx` | `Graph`/`Node`/`TensorInfo` (stable API over protobuf), external-data loading, ONNX-level DOT export |
-| `onyxia-ir` | `graph.rs` Module/values/nodes/ConstPool · `prim.rs` the primitive enum · `dim.rs` DimExpr/SymbolTable/Bindings · `types.rs` dtypes incl. Q4/Q8 layout · `builder.rs` GraphBuilder · `infer.rs` shape inference · `fold.rs` constant folding + symbolic shape values · `decomp.rs` standard decompositions + legalization · `interp.rs` reference interpreter · `backend.rs` Backend/Session traits · `validate.rs`, `dot.rs`, `attrs.rs` |
+| `onyxia-ir` | `graph.rs` Module/values/nodes/ConstPool · `prim.rs` the primitive enum · `dim.rs` DimExpr/SymbolTable/Bindings · `types.rs` dtypes incl. Q4/Q8 layout · `builder.rs` GraphBuilder · `infer.rs` shape inference · `fold.rs` constant folding + symbolic shape values · `decomp.rs` standard decompositions + legalization · `fuse.rs` backend-driven pattern fusion · `interp.rs` reference interpreter · `backend.rs` Backend/Session traits · `validate.rs`, `dot.rs`, `attrs.rs` |
 | `onyxia-lower` | `LoweringRegistry`, `lower()` driver (symbols from dim_param, initializers moved — not copied — into the ConstPool, inference + folding at the end), `rules.rs` for the standard op set |
 | `onyxia-backend-wgpu` | `session.rs` prepare/run/upload/download, register file, liveness-driven pooling, chunked submits so the GPU runs while the CPU encodes (`submit_chunk`), host-side step timing (`take_cpu_timing`), live/peak VRAM accounting (`resident_bytes`) · `kernels.rs` generated one-thread-per-element WGSL for primitives, plus split-K matvec and tiled matmul fast paths · `fused.rs` CompositeKernel trait + registry (Softmax, RMS-norm, Gelu, RotaryEmbedding, GroupQueryAttention with chunked online-softmax, MatMulNBits matvec + dequantizing tiled matmul) · `profile.rs` opt-in per-dispatch GPU timing via timestamp queries (`enable_profiling`/`take_timings`) · `gpu.rs` device/queue, pipeline cache (bind group layouts built by reflecting shader bindings via naga; where the adapter lacks `IMMEDIATES` — all browsers, core WebGPU has no push constants — kernels are rewritten to take params as a storage buffer; `ONYXIA_NO_IMMEDIATES=1` forces this for native testing, and every GPU differential test runs in both modes), buffer pool · `benches/kernels.rs` criterion microbenchmarks at LLM shapes · `legacy-shaders/` hand-written WGSL kept as reference for fused kernels not yet written |
 | `onyxia-backend-cubecl` | `Backend`/`Session` over [CubeCL](https://github.com/tracel-ai/cubecl) (`#[cube]` Rust kernels, JIT-compiled; runs on `cubecl-wgpu`). Primitives only — every composite legalizes through its decomposition, which is the demonstration that the primitive set is the whole backend contract |
@@ -168,7 +173,8 @@ written by two threads.
 
 ## Known gaps
 
-- Fused kernels: GQA, RotaryEmbedding, Softmax, RMS norm, Gelu, and
+- Fused kernels: GQA (one dispatch for both present-cache concats),
+  RotaryEmbedding, Softmax, RMS norm, Gelu, AddRmsNorm, GeluMul, and
   MatMulNBits (4-bit only: decode reads the packed nibbles directly;
   prefill dequantizes weight tiles into shared memory inside the tiled
   matmul). `GatherBlockQuantized` (the q4 exports' embedding table)

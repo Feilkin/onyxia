@@ -117,7 +117,7 @@ fn src_index(out_idx: u32, out_shape: array<u32,8>, out_rank: u32,
 }
 ";
 
-const ERF: &str = "
+pub(crate) const ERF: &str = "
 fn erf(x: f32) -> f32 {
     let s = sign(x);
     let ax = abs(x);

@@ -306,3 +306,40 @@ the attention + RMS-norm kernels themselves (~1 ms each per step).
 
 Pooling everything costs ~0.1 GiB of resident VRAM (power-of-two buckets
 for the KV buffers as they grow), visible in the README table.
+
+## Update 2026-09-05, evening: three fusions
+
+With the step GPU-bound on launch count, the next lever was fewer
+dispatches. A backend-driven fusion pass (`onyxia_ir::fuse`) now runs
+before legalization in the wgpu backend's `prepare`: patterns the
+backend has a kernel for are rewritten into one composite, and each
+fused composite has a decomposition back to the unfused nodes, so the
+interpreter, the reference backend and CubeCL see the same semantics.
+
+- `onyxia.AddRmsNorm`: residual `Add` → `SimplifiedLayerNormalization`.
+  One row pass computes the sum, writes it (it *is* the residual stream,
+  consumed again two nodes later) and normalizes it. 52 dispatches saved
+  per 1B step.
+- `onyxia.GeluMul`: `Gelu` → gate `Mul`, single-use Gelu only. One
+  elementwise pass; 26 saved.
+- GQA present-cache concats: K and V in one dispatch (index space
+  halves), rotary still applied to new K rows in-pass; 26 saved.
+
+| model | before | after | dispatches |
+|---|---|---|---|
+| 1B q4 | 3.55 ms/tok (281 tok/s) | **3.23 ms/tok (309 tok/s)** | 533 → 429 |
+| 1B fp32 | 5.99 (167) | **5.67 (176)** | 712 → 608 |
+| 270m q4 | 2.51 (398) | **2.31 (433)** | 403 → 331 |
+| 270m fp32 | 3.14 (318) | **2.92 (343)** | 529 → 457 |
+
+Greedy outputs unchanged on both 1B models. Roughly 3 µs of GPU time per
+dispatch removed — the launch floor, as predicted. What remains per 1B
+q4 step (429 dispatches): 183 weight matvecs, 105 RMS norms (the 52 that
+follow an Add are fused; the q/k norms and the post-attention /
+post-feed-forward norms are not, as nothing precedes them to fuse
+with), 26 attention, 26 concat, 26 gelu·mul, 26 rotary, and ~35 shape /
+mask / gather / residual-of-residual nodes. The two big kernels are
+attention (~1 ms) and the matvecs (~1.5 ms); the next step down is a
+kernel-side one — a persistent-workgroup matvec that sweeps several
+projections in one dispatch, or attention that does not re-read K/V per
+query head.

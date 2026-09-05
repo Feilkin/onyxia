@@ -211,12 +211,12 @@ dequantizes each weight tile into shared memory on load. On an RTX 5090,
 
 | model | resident VRAM | decode | prefill |
 |---|---|---|---|
-| 270m fp32 | 1.16 GiB | 3.1 ms/tok (318 tok/s) | 20 ms |
-| 270m q4 | 0.84 GiB | 2.5 ms/tok (398 tok/s) | 20 ms |
-| 1B fp32 | 3.91 GiB | 6.0 ms/tok (167 tok/s) | 27 ms |
-| 1B q4 | 0.92 GiB | 3.6 ms/tok (281 tok/s) | 25 ms |
+| 270m fp32 | 1.16 GiB | 2.9 ms/tok (343 tok/s) | 20 ms |
+| 270m q4 | 0.84 GiB | 2.3 ms/tok (433 tok/s) | 20 ms |
+| 1B fp32 | 3.91 GiB | 5.7 ms/tok (176 tok/s) | 26 ms |
+| 1B q4 | 0.92 GiB | 3.2 ms/tok (309 tok/s) | 25 ms |
 
-A decode step is 400–700 kernel launches; the session submits them to
+A decode step is 330–610 kernel launches; the session submits them to
 the GPU in chunks of 64 so it starts executing while the CPU is still
 encoding the rest (`ONYXIA_SUBMIT_CHUNK` overrides), pooled buffers keep
 their identity across steps so bind groups are cached, and `bench`

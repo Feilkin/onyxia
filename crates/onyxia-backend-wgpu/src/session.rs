@@ -124,8 +124,10 @@ impl onyxia_ir::Backend for WgpuBackend {
         self.kernels.contains(composite)
     }
 
-    fn prepare(&self, module: Module) -> Result<Self::Session> {
+    fn prepare(&self, mut module: Module) -> Result<Self::Session> {
         let kernels = self.kernels.clone();
+        // Fuse patterns this backend has kernels for, then legalize.
+        onyxia_ir::fuse_composites(&mut module, &|name| kernels.contains(name));
         let module = onyxia_ir::inline_composites(module, &self.decompositions, &|name| {
             kernels.contains(name)
         })?;

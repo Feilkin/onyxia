@@ -29,6 +29,7 @@ pub mod decomp;
 pub mod dim;
 pub mod dot;
 pub mod fold;
+pub mod fuse;
 pub mod graph;
 pub mod infer;
 pub mod interp;
@@ -41,6 +42,7 @@ pub use backend::{Backend, Session};
 pub use builder::GraphBuilder;
 pub use decomp::{DecompositionRegistry, inline_composites, standard_decompositions};
 pub use dim::{Bindings, DimExpr, SymId, SymbolTable, SymbolicShape};
+pub use fuse::fuse_composites;
 pub use graph::{
     Composite, ConstId, ConstPool, Module, Node, NodeId, NodeKind, Origin, SourceInfo, ValueDef,
     ValueId,

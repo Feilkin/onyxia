@@ -61,6 +61,8 @@ pub fn standard_decompositions() -> DecompositionRegistry {
     r.register("com.microsoft.GemmaRotaryEmbedding", rotary_embedding);
     r.register("com.microsoft.GroupQueryAttention", group_query_attention);
     r.register("com.microsoft.MatMulNBits", matmul_nbits);
+    r.register(crate::fuse::ADD_RMS_NORM, add_rms_norm);
+    r.register(crate::fuse::GELU_MUL, gelu_mul);
     r
 }
 
@@ -213,6 +215,21 @@ fn gelu(c: &Composite, inputs: &[ValueId], b: &mut GraphBuilder) -> Result<Vec<V
     let one_plus = b.add(one, inner)?;
     let hx = b.mul(half_c, x)?;
     Ok(vec![b.mul(hx, one_plus)?])
+}
+
+/// `onyxia.AddRmsNorm` (see [`crate::fuse`]): `sum = a + b`,
+/// `y = SimplifiedLayerNormalization(sum, w)`; outputs `[y, sum]`.
+fn add_rms_norm(c: &Composite, inputs: &[ValueId], b: &mut GraphBuilder) -> Result<Vec<ValueId>> {
+    let (x, skip, w) = (inputs[0], inputs[1], inputs[2]);
+    let sum = b.add(x, skip)?;
+    let y = simplified_layer_norm(c, &[sum, w], b)?;
+    Ok(vec![y[0], sum])
+}
+
+/// `onyxia.GeluMul` (see [`crate::fuse`]): `gelu(x) * u`.
+fn gelu_mul(c: &Composite, inputs: &[ValueId], b: &mut GraphBuilder) -> Result<Vec<ValueId>> {
+    let g = gelu(c, &inputs[..1], b)?;
+    Ok(vec![b.mul(g[0], inputs[1])?])
 }
 
 /// Trilu(upper, k): keep the upper/lower triangle, zero the rest.

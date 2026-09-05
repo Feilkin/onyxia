@@ -1204,3 +1204,106 @@ fn fused_matmul_nbits_matches_decomposition() {
         }
     }
 }
+
+/// The fusion pass (`onyxia_ir::fuse`) plus its kernels: a residual Add
+/// feeding SimplifiedLayerNormalization, and Gelu feeding the gate Mul,
+/// against the unfused module on the same device and the interpreter.
+#[test]
+#[ignore = "requires GPU"]
+fn fused_add_rmsnorm_and_gelu_mul_match_unfused() {
+    let mut bld = GraphBuilder::new();
+    let ty = TensorType::of(DataType::F32, &[3, 40]);
+    let a = bld.input("a", ty.clone());
+    let b = bld.input("b", ty.clone());
+    let u = bld.input("u", ty.clone());
+    let w = bld.input("w", TensorType::of(DataType::F32, &[40]));
+    let sum = bld.add(a, b).unwrap();
+    let y = bld
+        .composite(
+            "SimplifiedLayerNormalization",
+            Attrs::new().with("epsilon", AttrValue::Float(1e-6)),
+            &[sum, w],
+            vec![ty.clone()],
+        )
+        .unwrap()[0];
+    let g = bld
+        .composite(
+            "Gelu",
+            Attrs::new().with("approximate", AttrValue::Str("tanh".into())),
+            &[y],
+            vec![ty.clone()],
+        )
+        .unwrap()[0];
+    let z = bld.mul(g, u).unwrap();
+    let out2 = bld.add(sum, z).unwrap();
+    bld.output("z", z);
+    bld.output("out2", out2);
+    let module = bld.finish().unwrap();
+
+    let inputs = [
+        (
+            "a",
+            Tensor::from_f32(&f32s(120, |i| (i as f32 * 0.7).sin()), &[3, 40]).unwrap(),
+        ),
+        (
+            "b",
+            Tensor::from_f32(&f32s(120, |i| (i as f32 * 0.3).cos()), &[3, 40]).unwrap(),
+        ),
+        (
+            "u",
+            Tensor::from_f32(&f32s(120, |i| 1.0 + i as f32 * 0.01), &[3, 40]).unwrap(),
+        ),
+        (
+            "w",
+            Tensor::from_f32(&f32s(40, |i| 0.5 + i as f32 * 0.02), &[40]).unwrap(),
+        ),
+    ];
+    let plain = onyxia_ir::inline_composites(
+        module.clone(),
+        &onyxia_ir::standard_decompositions(),
+        &|_| false,
+    )
+    .unwrap();
+    let expected = onyxia_ir::interp::eval(&plain, &inputs).unwrap();
+
+    let run = |backend: WgpuBackend, module: Module| -> Vec<Vec<f32>> {
+        pollster::block_on(async {
+            let mut session = backend.prepare(module).unwrap();
+            let dev: Vec<(&str, _)> = inputs
+                .iter()
+                .map(|(n, t)| (*n, session.upload(t).unwrap()))
+                .collect();
+            let outs = session.run(&dev).await.unwrap();
+            let mut res = Vec::new();
+            for (_, t) in &outs {
+                res.push(session.download(t).await.unwrap().to_f32().unwrap());
+            }
+            res
+        })
+    };
+    let fused = run(
+        WgpuBackend::new(pollster::block_on(GpuContext::new()).unwrap()),
+        module.clone(),
+    );
+    let unfused = run(
+        WgpuBackend::without_fused_kernels(pollster::block_on(GpuContext::new()).unwrap()),
+        module,
+    );
+    for (o, (_, et)) in expected.iter().enumerate() {
+        let e = et.to_f32().unwrap();
+        for i in 0..e.len() {
+            assert!(
+                (fused[o][i] - e[i]).abs() <= ATOL + RTOL * e[i].abs(),
+                "fused output {o}[{i}]={} vs ref {}",
+                fused[o][i],
+                e[i]
+            );
+            assert!(
+                (unfused[o][i] - e[i]).abs() <= ATOL + RTOL * e[i].abs(),
+                "unfused output {o}[{i}]={} vs ref {}",
+                unfused[o][i],
+                e[i]
+            );
+        }
+    }
+}
