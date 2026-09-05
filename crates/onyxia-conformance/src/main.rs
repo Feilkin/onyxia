@@ -149,8 +149,8 @@ fn main() {
     if show_ops {
         let ops = by_op(results.iter().map(|(n, o)| (n.as_str(), o)));
         println!(
-            "\n{:<28} {:>5} {:>5} {:>5}   {}",
-            "op", "pass", "fail", "skip", "(bound)"
+            "\n{:<28} {:>5} {:>5} {:>5}   (bound)",
+            "op", "pass", "fail", "skip"
         );
         for (op, s) in &ops {
             let b = if s.bound > 0 {

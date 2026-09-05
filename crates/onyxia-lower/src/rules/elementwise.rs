@@ -163,8 +163,8 @@ fn elu(ctx: &mut LowerCtx) -> Result<()> {
 
 fn selu(ctx: &mut LowerCtx) -> Result<()> {
     let x = val(ctx, 0)?;
-    let alpha = ctx.attr_f("alpha").unwrap_or(1.673_263_242_354_377_2) as f64;
-    let gamma = ctx.attr_f("gamma").unwrap_or(1.050_700_987_355_480_5) as f64;
+    let alpha = ctx.attr_f("alpha").unwrap_or(1.673_263_2) as f64;
+    let gamma = ctx.attr_f("gamma").unwrap_or(1.050_701) as f64;
     let e = elu_core(ctx, x, alpha)?;
     let g = scalar(ctx, dtype(ctx, x), gamma)?;
     let y = mul(ctx, g, e)?;

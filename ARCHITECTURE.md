@@ -143,8 +143,9 @@ Backend-private layout decisions live in the backend (`layout.rs` in the wgpu
 backend): `f16` and `i64` are native when the adapter has `SHADER_F16` /
 `SHADER_INT64` and otherwise packed two-per-word (f16) or narrowed to `i32`
 (range-checked at upload); `u8`/`i8` are always packed four per `u32` word
-(WebGPU has no 8-bit storage), `Bool` is a `u32`. Kernels run one thread
-per output word, so packed lanes are never written by two threads.
+and `u4`/`i4` eight per word (WebGPU has no sub-32-bit storage), `Bool` is
+a `u32`. Kernels run one thread per output word, so packed lanes are never
+written by two threads.
 
 ## Testing strategy
 
@@ -166,12 +167,14 @@ per output word, so packed lanes are never written by two threads.
 
 ## Known gaps
 
-- No fused MatMulNBits kernel yet (its decomposition executes instead —
-  and the Dequantize primitive below blocks it on GPU anyway). GQA and
-  RotaryEmbedding are fused; MatMul has split-K matvec kernels for M=1
-  and a shared-memory tiled kernel for M>1. Decode-speed history in
-  `doc/perf-baseline-2026-07.md`.
-- No Dequantize GPU kernel (q4 models run only on the reference backend).
+- Fused kernels: GQA, RotaryEmbedding, Softmax, RMS norm, Gelu, and
+  MatMulNBits (4-bit only: decode reads the packed nibbles directly;
+  prefill dequantizes into scratch and runs the tiled matmul, so it
+  requires K to be a multiple of the block size). MatMul has split-K
+  matvec kernels for M=1 and a shared-memory tiled kernel for M>1.
+  Decode-speed history in `doc/perf-baseline-2026-07.md`.
+- 8-bit `MatMulNBits` and the CubeCL backend's Dequantize/Scatter kernels
+  are not written (q4 models run on the reference and wgpu backends).
 - On the wgpu backend: late-bound dims (data-dependent shapes),
   >65535-row fused reductions, fused kernels are f32-only (f16 composites
   cast at the boundary), Scatter reductions serialize on contended words.

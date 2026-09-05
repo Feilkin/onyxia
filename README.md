@@ -170,9 +170,10 @@ flow, random sampling, and image decoding), all expressed over the same 16
 primitives. On the official onnx node tests, the reference backend passes
 every test that is in scope (1275 of 1765; the rest are unsupported dtypes
 such as float64/int16/float8, or ops outside the tensor model) and the wgpu
-backend passes 1273, with 8-bit and f16 tensors stored packed (or as native
-f16 / i64 where the adapter has the shader features). Per-operator results, the primitive-count analysis, and
-the remaining gaps are in [doc/onnx-coverage.md](doc/onnx-coverage.md).
+backend passes 1273, with 4-bit, 8-bit and f16 tensors stored packed (or as
+native f16 / i64 where the adapter has the shader features). Per-operator
+results, the primitive-count analysis, and the remaining gaps are in
+[doc/onnx-coverage.md](doc/onnx-coverage.md).
 
 ## Profiling
 
@@ -201,11 +202,17 @@ works: the older `gemma-3-1b-it-ONNX` repo is a raw PyTorch export
 (decomposed attention, in-graph mask construction) that its own model card
 supersedes, and Onyxia does not support it.
 
-Use the fp32 `onnx/model.onnx`: the community q4 quantization badly degrades
-these small models. Both models generate token-for-token identically to
-onnxruntime under greedy decoding (including past the 1B's 512-token sliding
-window). On an RTX 3060 Ti: 270m ≈ 128 tok/s decode, 1b ≈ 60 tok/s decode
-at 3.9 GiB peak VRAM.
+Both the fp32 `onnx/model.onnx` and the 4-bit `onnx/model_q4.onnx`
+(`MatMulNBits`, block size 32) run. The q4 weights stay packed on the
+device: decode multiplies straight from the nibbles through a fused
+matvec kernel and prefill dequantizes per layer into a pooled scratch
+matrix, so the 270m drops from 1.07 to 0.76 GiB resident. Prefer fp32 for
+quality — the community q4 quantization noticeably degrades these small
+models — and note that at 270m the decode step is launch-bound, so q4 is
+only a few percent faster. The fp32 models generate token-for-token
+identically to onnxruntime under greedy decoding (including past the 1B's
+512-token sliding window). On an RTX 3060 Ti: 270m ≈ 128 tok/s decode,
+1b ≈ 60 tok/s decode at 3.9 GiB peak VRAM.
 
 ## License
 

@@ -33,6 +33,7 @@ impl Case {
             queue: ctx.queue.clone(),
             adapter_info: ctx.adapter_info.clone(),
             use_immediates: ctx.use_immediates,
+            caps: ctx.caps,
         });
         let mut session = backend.prepare(module).expect("prepare");
         let inputs = inputs

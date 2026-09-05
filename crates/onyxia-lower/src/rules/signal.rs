@@ -256,9 +256,7 @@ fn resize_core(
     let mut scale_all = vec![1.0f64; r];
     let mut size_all: Vec<i64> = xd.iter().map(|&v| v as i64).collect();
     let mut roi_all = vec![0.0f64; 2 * r];
-    for i in r..2 * r {
-        roi_all[i] = 1.0;
-    }
+    roi_all[r..].fill(1.0);
     if let Some(roi) = &roi {
         let na = axes.len();
         for (i, &a) in axes.iter().enumerate() {

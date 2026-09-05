@@ -1090,3 +1090,114 @@ fn fused_kernels_match_decompositions() {
         );
     }
 }
+
+/// Fused `MatMulNBits` (packed-nibble matvec for M=1, dequantize + tiled
+/// matmul for M>1) against its decomposition (`Prim::Dequantize` +
+/// `MatMul`) on the same device, and both against the interpreter.
+/// Covers zero points present/absent, a partial 4-row group (N=6), and a
+/// split-K decode (K=1024 → ks > 1).
+#[test]
+fn fused_matmul_nbits_matches_decomposition() {
+    let cases: [(usize, usize, usize, usize, bool); 5] = [
+        // (m, n, k, block_size, zero_points)
+        (1, 6, 64, 16, false),
+        (1, 6, 64, 16, true),
+        (5, 6, 64, 32, false),
+        (5, 6, 64, 32, true),
+        (1, 8, 1024, 32, true),
+    ];
+    for (m, n, k, bs, with_zp) in cases {
+        let nb = k / bs;
+        let mut b = GraphBuilder::new();
+        let a = b.input("a", TensorType::of(DataType::F32, &[m as u64, k as u64]));
+        // Deterministic nibbles covering the whole 0..16 range.
+        let packed: Vec<u8> = (0..n * nb * bs / 2)
+            .map(|i| ((i * 7 + 3) % 16) as u8 | ((((i * 11 + 5) % 16) as u8) << 4))
+            .collect();
+        let w = b
+            .constant(
+                TensorType::of(DataType::U4, &[n as u64, nb as u64, bs as u64]),
+                packed,
+            )
+            .unwrap();
+        let scales = b
+            .const_f32(
+                &f32s(n * nb, |i| 0.01 + (i as f32 * 0.37).sin().abs() * 0.05),
+                &[(n * nb) as u64],
+            )
+            .unwrap();
+        let mut inputs = vec![a, w, scales];
+        if with_zp {
+            let zpb: Vec<u8> = (0..(n * nb).div_ceil(2))
+                .map(|i| ((i * 5 + 1) % 16) as u8 | ((((i * 3 + 9) % 16) as u8) << 4))
+                .collect();
+            let zp = b
+                .constant(TensorType::of(DataType::U4, &[n as u64, nb as u64]), zpb)
+                .unwrap();
+            inputs.push(zp);
+        }
+        let y = b
+            .composite(
+                "com.microsoft.MatMulNBits",
+                Attrs::new()
+                    .with("K", AttrValue::Int(k as i64))
+                    .with("N", AttrValue::Int(n as i64))
+                    .with("bits", AttrValue::Int(4))
+                    .with("block_size", AttrValue::Int(bs as i64)),
+                &inputs,
+                vec![TensorType::of(DataType::F32, &[m as u64, n as u64])],
+            )
+            .unwrap()[0];
+        b.output("y", y);
+        let module = b.finish().unwrap();
+
+        let act = Tensor::from_f32(&f32s(m * k, |i| (i as f32 * 0.13).cos()), &[m, k]).unwrap();
+        let inlined = onyxia_ir::inline_composites(
+            module.clone(),
+            &onyxia_ir::standard_decompositions(),
+            &|_| false,
+        )
+        .unwrap();
+        let expected = onyxia_ir::interp::eval(&inlined, &[("a", act.clone())])
+            .unwrap()
+            .remove(0)
+            .1
+            .to_f32()
+            .unwrap();
+
+        let run = |backend: WgpuBackend, module: Module| -> Vec<f32> {
+            pollster::block_on(async {
+                let mut session = backend.prepare(module).unwrap();
+                let dev = session.upload(&act).unwrap();
+                let outs = session.run(&[("a", dev)]).await.unwrap();
+                session
+                    .download(&outs[0].1)
+                    .await
+                    .unwrap()
+                    .to_f32()
+                    .unwrap()
+            })
+        };
+        let fused = run(
+            WgpuBackend::new(pollster::block_on(GpuContext::new()).unwrap()),
+            module.clone(),
+        );
+        let decomposed = run(
+            WgpuBackend::without_fused_kernels(pollster::block_on(GpuContext::new()).unwrap()),
+            module,
+        );
+        assert_eq!(fused.len(), m * n);
+        for i in 0..m * n {
+            let (f, d, e) = (fused[i], decomposed[i], expected[i]);
+            let tol = 1e-3 + 1e-3 * e.abs();
+            assert!(
+                (f - e).abs() <= tol,
+                "case {m}x{n}x{k} bs={bs} zp={with_zp}: fused[{i}]={f} vs ref {e}"
+            );
+            assert!(
+                (d - e).abs() <= tol,
+                "case {m}x{n}x{k} bs={bs} zp={with_zp}: decomposed[{i}]={d} vs ref {e}"
+            );
+        }
+    }
+}

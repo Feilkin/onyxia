@@ -157,13 +157,18 @@ layouts (`onyxia-backend-wgpu/src/layout.rs`) are chosen per adapter:
 | f16 | native `f16` storage (`SHADER_F16`), computed in f32 | two per `u32` word, `pack2x16float` / `unpack2x16float` |
 | int64 | native `i64` (`SHADER_INT64`) | narrowed to `i32`, range-checked at upload |
 | uint8 / int8 | four per `u32` word, memory order (WebGPU has no 8-bit storage) | same |
+| uint4 / int4 | eight per `u32` word, low nibble first (the ONNX order) | same |
 | bool | one `u32` per element | same |
 
 Every generated kernel runs one thread per output *word*, so packed lanes
 are never written by two threads; the two fallback modes are exercised by
 `ONYXIA_NO_F16=1` / `ONYXIA_NO_INT64=1` and give the same results. Device
 bytes equal host bytes for every layout except the narrowed i64 and
-bool, so 8-bit weights cost one byte each on the device.
+bool, so 8-bit weights cost one byte each on the device and 4-bit weights
+half a byte. `MatMulNBits` has a fused kernel that multiplies straight from
+the packed nibbles at decode (M = 1) and dequantizes into a scratch matrix
+for the tiled matmul at prefill; the `Dequantize` primitive itself runs as
+a generated kernel, so the decomposition path works too.
 
 The two remaining failures are `DynamicQuantizeLinear`, where one element
 sits on a rounding tie that the GPU's `x / scale` (not correctly rounded
@@ -212,7 +217,7 @@ model are omitted.
 | DFT | 10/10 | 10/10 |  |
 | DeformConv | 0 (skip 4) | 0 (skip 4) | not written (gather-based, like GridSample) |
 | DepthToSpace | 2/2 | 2/2 |  |
-| DequantizeLinear | 3/3 (+11 skip) | 0/3 (+11 skip) |  |
+| DequantizeLinear | 3/3 (+11 skip) | 3/3 (+11 skip) |  |
 | Det | 0 (skip 2) | 0 (skip 2) | needs an LU / elimination kernel |
 | Div | 7/7 (+3 skip) | 5/7 (+3 skip) |  |
 | Dropout | 6/6 | 6/6 |  |

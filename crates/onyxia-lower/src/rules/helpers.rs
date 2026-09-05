@@ -3,7 +3,6 @@
 //! axis, linear-index gathers) most structural ops are built from.
 
 use crate::{LowerCtx, Lowered};
-use onyxia_ir::graph::Origin;
 use onyxia_ir::prim::{BinaryOp, CmpOp, Prim, ReduceOp, SliceSpec, UnaryOp};
 use onyxia_ir::{DataType, DimExpr, Error, Result, TensorType, ValueId};
 
@@ -280,11 +279,6 @@ pub(crate) fn const_i64(ctx: &mut LowerCtx, vals: &[i64], dims: &[u64]) -> Resul
     ctx.builder().const_i64(vals, dims)
 }
 
-/// Constant f32 tensor.
-pub(crate) fn const_f32(ctx: &mut LowerCtx, vals: &[f32], dims: &[u64]) -> Result<ValueId> {
-    ctx.builder().const_f32(vals, dims)
-}
-
 /// Constant tensor of `dt` from f64 values.
 pub(crate) fn const_typed(
     ctx: &mut LowerCtx,
@@ -427,11 +421,6 @@ pub(crate) fn axis_to_last(
         inv[p] = i;
     }
     Ok((transpose(ctx, x, &perm)?, inv))
-}
-
-/// Is `v` a pool constant?
-pub(crate) fn is_const(ctx: &LowerCtx, v: ValueId) -> bool {
-    matches!(ctx.builder_ref().module().value(v).origin, Origin::Const(_))
 }
 
 /// Record the single output.

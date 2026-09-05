@@ -1038,3 +1038,126 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
         h = header(),
     )
 }
+
+// ───────────────────────── block dequantization ─────────────────────────
+
+/// `Prim::Dequantize`: `out[e] = (q[e] - zp[e / bs]) * scale[e / bs]`,
+/// one thread per output word. `data` is a packed 4-/8-bit layout,
+/// `scales` a float layout (also the output's), `zp` (when bound) the
+/// data's layout. `p.zp_default` is the implicit zero point when no
+/// zero-point tensor is bound. Bindings: 0=data, 1=scales, [2=zp], last=out.
+pub fn dequantize(data: &Layout, scales: &Layout, zp: Option<&Layout>) -> String {
+    let (zp_bind, zp_ld, zp_expr, out_slot) = match zp {
+        Some(z) => (
+            format!(
+                "@group(0) @binding(2) var<storage, read> zp: {};\n",
+                z.binding()
+            ),
+            z.load_fn("ld_z", "zp"),
+            "i32(ld_z(blk))".to_string(),
+            3,
+        ),
+        None => (String::new(), String::new(), "p.zp_default".to_string(), 2),
+    };
+    format!(
+        "{h}
+struct P {{ size: u32, x_stride: u32, bs: u32, zp_default: i32 }}
+var<immediate> p: P;
+@group(0) @binding(0) var<storage, read> data: {db};
+@group(0) @binding(1) var<storage, read> scales: {sb};
+{zp_bind}@group(0) @binding({out_slot}) var<storage, read_write> out: {sb};
+{ldd}{lds}{zp_ld}
+fn compute(e: u32) -> f32 {{
+    let blk = e / p.bs;
+    let q = i32(ld_d(e));
+    let z = {zp_expr};
+    return f32(q - z) * ld_s(blk);
+}}
+{main}",
+        h = prelude(&[data, scales]),
+        db = data.binding(),
+        sb = scales.binding(),
+        ldd = data.load_fn("ld_d", "data"),
+        lds = scales.load_fn("ld_s", "scales"),
+        main = main_fn(scales),
+    )
+}
+
+/// Fused `MatMulNBits` decode step (M = 1): `y[n] = Σ_k a[k] · (q[n,k] -
+/// zp[n,blk]) · s[n,blk]` straight from the packed 4-bit weights — the
+/// dequantized matrix never exists. Same threading as
+/// [`matvec_transb_v4`]: 4 rows × 64 lanes per workgroup, each lane
+/// consuming one `u32` word (8 nibbles, two vec4 activation loads) per
+/// step, split-K across `ks` slices into `[ks, N]` partials.
+/// Bindings: 0=a (vec4 view, K/4), 1=b (packed `[N, K/8]` words),
+/// 2=scales (`[N, nb]`), [3=zp (packed `[N, nb]` nibbles)], last=dst.
+pub fn matmul_nbits_matvec(zp: bool) -> String {
+    let (zp_bind, zp_expr, dst_slot) = if zp {
+        (
+            "@group(0) @binding(3) var<storage, read> zp: array<u32>;\n",
+            "f32((zp[(n * p.nb + blk) >> 3u] >> (((n * p.nb + blk) & 7u) * 4u)) & 0xfu)",
+            4,
+        )
+    } else {
+        ("", "8.0", 3)
+    };
+    format!(
+        "
+struct P {{ n: u32, k8: u32, bs8: u32, nb: u32, ks: u32, chunk8: u32, x_wgs: u32 }}
+var<immediate> p: P;
+@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> b: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+{zp_bind}@group(0) @binding({dst_slot}) var<storage, read_write> dst: array<f32>;
+var<workgroup> scratch: array<f32, 256>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(workgroup_id) wg: vec3<u32>,
+        @builtin(local_invocation_id) lid: vec3<u32>) {{
+    let lane = lid.x % 64u;
+    let row_i = lid.x / 64u;
+    let wg_lin = wg.y * p.x_wgs + wg.x;
+    let groups = (p.n + 3u) / 4u;
+    // Grid rounding can overshoot; dead threads compute on row 0 and
+    // skip the write (no early return around the barriers).
+    let live_wg = wg_lin < groups * p.ks;
+    let g = select(0u, wg_lin / p.ks, live_wg);
+    let slice = select(0u, wg_lin % p.ks, live_wg);
+    let n = g * 4u + row_i;
+    let live = live_wg && n < p.n;
+    let k0 = slice * p.chunk8;
+    let k1 = min(k0 + p.chunk8, p.k8);
+    var acc = 0.0;
+    if (live) {{
+        // Blocks are whole words (bs % 8 == 0), so a lane's word never
+        // straddles two scales; consecutive lanes read consecutive words.
+        for (var i = k0 + lane; i < k1; i += 64u) {{
+            let w = b[n * p.k8 + i];
+            let blk = i / p.bs8;
+            let s = scales[n * p.nb + blk];
+            let z = {zp_expr};
+            let a0 = a[i * 2u];
+            let a1 = a[i * 2u + 1u];
+            let q0 = vec4<f32>(f32(w & 0xfu), f32((w >> 4u) & 0xfu),
+                               f32((w >> 8u) & 0xfu), f32((w >> 12u) & 0xfu));
+            let q1 = vec4<f32>(f32((w >> 16u) & 0xfu), f32((w >> 20u) & 0xfu),
+                               f32((w >> 24u) & 0xfu), f32(w >> 28u));
+            let asum = dot(a0, vec4<f32>(1.0)) + dot(a1, vec4<f32>(1.0));
+            acc += s * (dot(q0, a0) + dot(q1, a1) - z * asum);
+        }}
+    }}
+    scratch[lid.x] = acc;
+    workgroupBarrier();
+    for (var s = 32u; s > 0u; s = s >> 1u) {{
+        if (lane < s) {{
+            scratch[lid.x] = scratch[lid.x] + scratch[lid.x + s];
+        }}
+        workgroupBarrier();
+    }}
+    if (lane == 0u && live) {{
+        dst[slice * p.n + n] = scratch[lid.x];
+    }}
+}}
+"
+    )
+}
