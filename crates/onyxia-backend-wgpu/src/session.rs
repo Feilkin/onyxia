@@ -5,7 +5,7 @@
 //! legalization and execute fused; everything else inlines through its
 //! decomposition down to primitives, which run as generated
 //! one-thread-per-element kernels (correctness-first). Fused GQA,
-//! RotaryEmbedding, and MatMulNBits kernels are planned — see `fused.rs`.
+//! RotaryEmbedding, and MatMulNBits kernels live in `fused.rs`.
 
 use crate::gpu::{
     BindGroupCache, BufferPool, GpuContext, IMMEDIATE_SIZE, MemCounter, PipelineCache,
@@ -218,14 +218,35 @@ impl onyxia_ir::Backend for WgpuBackend {
             encoder: None,
             pass: None,
             use_immediates: self.ctx.use_immediates,
+            submit_chunk: self.ctx.submit_chunk,
+            matmul_tile: self.ctx.matmul_tile,
             imm_buffers: Vec::new(),
             imm_free: Vec::new(),
             profiler: None,
+            cpu: CpuTiming::default(),
             caps: self.ctx.caps,
         })
     }
 }
 
+/// Where the CPU spends a step, in nanoseconds, accumulated across calls:
+/// `shapes` = symbol binding + shape evaluation + register setup,
+/// `encode` = the dispatch loop through `queue.submit`, `wait` = blocking
+/// on the GPU in `download` (the GPU's own execution time plus queue
+/// latency), `readback` = staging copy setup and the host copies.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CpuTiming {
+    pub shapes_ns: u64,
+    pub encode_ns: u64,
+    pub wait_ns: u64,
+    pub readback_ns: u64,
+    /// Dispatches encoded.
+    pub dispatches: u64,
+    /// Bind-group cache misses (each one is a `create_bind_group`).
+    pub bind_misses: u64,
+}
+
+/// Dispatches encoded per intermediate `queue.submit` during a run.
 /// A prepared wgpu session.
 pub struct WgpuSession {
     device: Arc<wgpu::Device>,
@@ -248,6 +269,10 @@ pub struct WgpuSession {
     /// False → params bind as a storage buffer instead of `set_immediates`
     /// (the web path; see `gpu.rs` module docs).
     use_immediates: bool,
+    /// See [`GpuContext::submit_chunk`].
+    submit_chunk: usize,
+    /// See [`GpuContext::matmul_tile`].
+    matmul_tile: crate::gpu::MatmulTile,
     /// Params buffers for the in-flight batch. Each dispatch gets its own
     /// (all `write_buffer`s execute before the batch), returned to
     /// `imm_free` at submit. MUST NOT come from the tensor pool: a params
@@ -258,6 +283,8 @@ pub struct WgpuSession {
     imm_free: Vec<Arc<TrackedBuffer>>,
     /// Per-dispatch GPU timing, when enabled (see [`Self::enable_profiling`]).
     profiler: Option<Profiler>,
+    /// Accumulated CPU-side phase times since the last [`Self::take_cpu_timing`].
+    cpu: CpuTiming,
     /// Shader dtype features → physical layouts.
     caps: Caps,
 }
@@ -285,6 +312,16 @@ impl WgpuSession {
     /// when the device lacks timestamp queries — core WebGPU makes them
     /// optional, so callers must treat profiling as best-effort.
     ///
+    /// Drain the accumulated CPU-side phase times (see [`CpuTiming`]).
+    /// `bind_misses` is cumulative since the session was created.
+    pub fn take_cpu_timing(&mut self) -> CpuTiming {
+        let misses = self.cpu.bind_misses;
+        let mut out = std::mem::take(&mut self.cpu);
+        out.bind_misses = misses;
+        self.cpu.bind_misses = misses;
+        out
+    }
+
     /// While enabled, every dispatch's GPU execution time is recorded;
     /// drain the measurements with [`Self::take_timings`].
     pub fn enable_profiling(&mut self) -> bool {
@@ -370,6 +407,7 @@ impl WgpuSession {
                 .get_or_create(&self.device, label, &layout, &all)
         };
         self.encode_pass(label, &pipeline, &bind_group, imm, wg);
+        self.cpu.dispatches += 1;
         self.imm_buffers.extend(imm_buf);
         Ok(())
     }
@@ -537,7 +575,7 @@ fn size_imm_l(l: &Layout, numel: usize) -> (Imm, usize) {
 }
 
 /// Common immediate prefix: size + x_stride for the bounds check.
-fn size_imm(size: usize) -> (Imm, usize) {
+pub(crate) fn size_imm(size: usize) -> (Imm, usize) {
     let linear = (size as u32).div_ceil(WORKGROUP_SIZE);
     let (_wg, x_stride) = dispatch_size(linear);
     (Imm::new().u(size as u32).u(x_stride), size)
@@ -576,6 +614,7 @@ impl onyxia_ir::Session for WgpuSession {
     }
 
     async fn run(&mut self, inputs: &[(&str, GpuTensor)]) -> Result<Vec<(String, GpuTensor)>> {
+        let t0 = std::time::Instant::now();
         // 1. Bind symbols from the provided input shapes.
         let described: Vec<(&str, DataType, &[usize])> = inputs
             .iter()
@@ -614,6 +653,8 @@ impl onyxia_ir::Session for WgpuSession {
         }
 
         // 4. Dispatch.
+        let t1 = std::time::Instant::now();
+        self.cpu.shapes_ns += (t1 - t0).as_nanos() as u64;
         for step in 0..self.order.len() {
             let node_id = self.order[step];
             if let Some(p) = &mut self.profiler {
@@ -640,8 +681,18 @@ impl onyxia_ir::Session for WgpuSession {
                     }
                 }
             }
+            // Pipelining: hand the GPU the batch so far while the CPU keeps
+            // encoding. Queue order keeps every buffer hand-off correct.
+            if self.profiler.is_none()
+                && self.submit_chunk > 0
+                && (step + 1) % self.submit_chunk == 0
+            {
+                self.submit();
+            }
         }
         self.submit();
+        self.cpu.encode_ns += t1.elapsed().as_nanos() as u64;
+        self.cpu.bind_misses = self.bind_groups.misses;
 
         // 5. Collect outputs.
         self.module
@@ -657,6 +708,7 @@ impl onyxia_ir::Session for WgpuSession {
     }
 
     async fn download(&mut self, tensor: &GpuTensor) -> Result<Tensor> {
+        let t0 = std::time::Instant::now();
         self.submit();
         let size = self.layout(tensor.dtype)?.buffer_bytes(tensor.numel());
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -676,6 +728,8 @@ impl onyxia_ir::Session for WgpuSession {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
+        let t1 = std::time::Instant::now();
+        self.cpu.readback_ns += (t1 - t0).as_nanos() as u64;
         #[cfg(not(target_arch = "wasm32"))]
         self.device
             .poll(wgpu::PollType::Wait {
@@ -688,9 +742,13 @@ impl onyxia_ir::Session for WgpuSession {
         rx.await
             .map_err(|e| Error::Runtime(format!("buffer map canceled: {e}")))?
             .map_err(|e| Error::Runtime(format!("buffer map failed: {e}")))?;
+        let t2 = std::time::Instant::now();
+        self.cpu.wait_ns += (t2 - t1).as_nanos() as u64;
         let bytes = slice.get_mapped_range().to_vec();
         staging.unmap();
-        from_phys(tensor.dtype, &tensor.shape, &bytes, self.caps)
+        let out = from_phys(tensor.dtype, &tensor.shape, &bytes, self.caps);
+        self.cpu.readback_ns += t2.elapsed().as_nanos() as u64;
+        out
     }
 }
 
@@ -765,6 +823,181 @@ impl WgpuSession {
                 Ok(outs)
             }
         }
+    }
+
+    /// Workgroup grid for the tiled f32 matmul, or `None` when a dimension
+    /// exceeds the 65535-workgroup limit (the generic kernel runs then).
+    pub(crate) fn tiled_grid(&self, m: usize, n: usize, batch: usize) -> Option<[u32; 3]> {
+        let t = self.tile_size();
+        let grid = [n.div_ceil(t), m.div_ceil(t), batch];
+        grid.iter()
+            .all(|&g| g <= 65535)
+            .then(|| grid.map(|g| g as u32))
+    }
+
+    fn tile_size(&self) -> usize {
+        match self.matmul_tile {
+            crate::gpu::MatmulTile::Classic => 16,
+            crate::gpu::MatmulTile::Rb | crate::gpu::MatmulTile::Coop => 64,
+        }
+    }
+
+    /// Plain-f32 tiled matmul into `out`. `mnkb` = `[m, n, k, batch]`,
+    /// `strides` = per-batch element strides of `a`/`b` (0 = broadcast).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn matmul_tiled(
+        &mut self,
+        a: &GpuTensor,
+        b: &GpuTensor,
+        out: &GpuTensor,
+        mnkb: [usize; 4],
+        strides: [u32; 2],
+        trans_a: bool,
+        trans_b: bool,
+    ) -> Result<()> {
+        let [m, n, k, batch] = mnkb;
+        let grid = self.tiled_grid(m, n, batch).ok_or_else(|| {
+            Error::Unsupported(format!(
+                "tiled matmul grid for m={m} n={n} batch={batch} exceeds 65535 workgroups"
+            ))
+        })?;
+        use crate::gpu::MatmulTile;
+        let classic = self.matmul_tile == MatmulTile::Classic;
+        let label = format!(
+            "matmul_tiled{}_f32_{}{}",
+            match self.matmul_tile {
+                MatmulTile::Classic => "",
+                MatmulTile::Rb => "_rb",
+                MatmulTile::Coop => "_coop",
+            },
+            if trans_a { "t" } else { "n" },
+            if trans_b { "t" } else { "n" },
+        );
+        if classic {
+            let imm = Imm::new()
+                .u(m as u32)
+                .u(n as u32)
+                .u(k as u32)
+                .u(strides[0])
+                .u(strides[1]);
+            return self.dispatch_grid(
+                &label,
+                || kernels::matmul_tiled(trans_a, trans_b),
+                &[&a.buffer, &b.buffer, &out.buffer],
+                &imm,
+                grid,
+            );
+        }
+        // Split K when the tile grid can't fill the device.
+        const TARGET_WG: usize = 256;
+        const MAX_KS: usize = 32;
+        let base_wg = (grid[0] as usize) * (grid[1] as usize) * batch;
+        let ks = if base_wg >= TARGET_WG {
+            1
+        } else {
+            TARGET_WG
+                .div_ceil(base_wg)
+                .min(k.div_ceil(64))
+                .clamp(1, MAX_KS)
+        };
+        let chunk = k.div_ceil(ks).div_ceil(32) * 32;
+        let ks = k.div_ceil(chunk.max(1)).max(1);
+        let size = batch * m * n;
+        let scratch = (ks > 1).then(|| self.acquire_scratch((ks * size * 4) as u64));
+        let dst = scratch.as_ref().unwrap_or(&out.buffer);
+        let imm = Imm::new()
+            .u(m as u32)
+            .u(n as u32)
+            .u(k as u32)
+            .u(strides[0])
+            .u(strides[1])
+            .u(batch as u32)
+            .u(chunk as u32);
+        let coop = self.matmul_tile == MatmulTile::Coop;
+        self.dispatch_grid(
+            &label,
+            || {
+                if coop {
+                    kernels::matmul_coop(trans_a, trans_b)
+                } else {
+                    kernels::matmul_tiled_rb(trans_a, trans_b)
+                }
+            },
+            &[&a.buffer, &b.buffer, dst],
+            &imm,
+            [grid[0], grid[1], (ks * batch) as u32],
+        )?;
+        if let Some(scratch) = scratch {
+            let (imm, n_out) = size_imm(size);
+            let imm = imm.u(ks as u32);
+            self.dispatch(
+                "matvec_reduce_f32",
+                kernels::matvec_reduce,
+                &[&scratch, &out.buffer],
+                &imm,
+                n_out,
+            )?;
+            self.release_scratch(scratch);
+        }
+        Ok(())
+    }
+
+    /// Block dequantization (`Prim::Dequantize` and the prefill half of
+    /// the fused `MatMulNBits`): `(q - zp) * scale` per element, output in
+    /// the scales' dtype.
+    pub(crate) fn dequantize(
+        &mut self,
+        data: &GpuTensor,
+        scales: &GpuTensor,
+        zp: Option<&GpuTensor>,
+        block_size: usize,
+        out_dtype: DataType,
+        out_shape: Vec<usize>,
+    ) -> Result<GpuTensor> {
+        let (dl, sl) = (self.layout(data.dtype)?, self.layout(scales.dtype)?);
+        if out_dtype != scales.dtype {
+            return Err(Error::Unsupported(format!(
+                "dequantize output dtype {out_dtype} differs from the scales' {}",
+                scales.dtype
+            )));
+        }
+        let zl = zp.map(|z| self.layout(z.dtype)).transpose()?;
+        let default_zp: i32 = if data.dtype == DataType::I4 {
+            0
+        } else {
+            1 << (data.dtype.bits() - 1)
+        };
+        let out = self.alloc_out(out_dtype, out_shape);
+        let (imm, size) = size_imm_l(&sl, out.numel());
+        let imm = imm.u(block_size as u32).i(default_zp);
+        let mut buffers = vec![&data.buffer, &scales.buffer];
+        if let Some(z) = zp {
+            buffers.push(&z.buffer);
+        }
+        buffers.push(&out.buffer);
+        self.dispatch(
+            &format!(
+                "dequantize_{}_{}{}",
+                dl.tag(),
+                sl.tag(),
+                zl.map(|z| format!("_zp{}", z.tag())).unwrap_or_default()
+            ),
+            || kernels::dequantize(&dl, &sl, zl.as_ref()),
+            &buffers,
+            &imm,
+            size,
+        )?;
+        Ok(out)
+    }
+
+    /// A pooled scratch buffer of at least `bytes` (return it with
+    /// [`Self::release_scratch`] once its last dispatch is encoded).
+    pub(crate) fn acquire_scratch(&mut self, bytes: u64) -> Arc<TrackedBuffer> {
+        self.pool.acquire(&self.device, bytes, &self.mem)
+    }
+
+    pub(crate) fn release_scratch(&mut self, buffer: Arc<TrackedBuffer>) {
+        self.pool.release(buffer);
     }
 
     /// M=1 matmul via the split-K matvec kernels (see the matvec section
@@ -1073,25 +1306,16 @@ impl WgpuSession {
                         let out = self.alloc_out(out_dtype, out_shape);
                         return self.matvec(&a, &b, out, n, k, *trans_b);
                     }
-                    let grid = [n.div_ceil(16), m.div_ceil(16), batch];
-                    if grid.iter().all(|&g| g <= 65535) {
+                    if self.tiled_grid(m, n, batch).is_some() {
                         let out = self.alloc_out(out_dtype, out_shape);
-                        let imm = Imm::new()
-                            .u(m as u32)
-                            .u(n as u32)
-                            .u(k as u32)
-                            .u(a_bs)
-                            .u(b_bs);
-                        self.dispatch_grid(
-                            &format!(
-                                "matmul_tiled_f32_{}{}",
-                                if *trans_a { "t" } else { "n" },
-                                if *trans_b { "t" } else { "n" },
-                            ),
-                            || kernels::matmul_tiled(*trans_a, *trans_b),
-                            &[&a.buffer, &b.buffer, &out.buffer],
-                            &imm,
-                            grid.map(|g| g as u32),
+                        self.matmul_tiled(
+                            &a,
+                            &b,
+                            &out,
+                            [m, n, k, batch],
+                            [a_bs, b_bs],
+                            *trans_a,
+                            *trans_b,
                         )?;
                         return Ok(out);
                     }
@@ -1360,11 +1584,22 @@ impl WgpuSession {
                 self.upload(&t)
             }
 
-            Prim::Dequantize { .. } => Err(Error::Unsupported(
-                "Dequantize kernel not yet implemented on the wgpu backend \
-                 (needed for quantized models only)"
-                    .into(),
-            )),
+            Prim::Dequantize { block_size, .. } => {
+                let (data, scales) = (input(0)?.clone(), input(1)?.clone());
+                let zp = if node.inputs.len() > 2 {
+                    Some(input(2)?.clone())
+                } else {
+                    None
+                };
+                self.dequantize(
+                    &data,
+                    &scales,
+                    zp.as_ref(),
+                    *block_size,
+                    out_dtype,
+                    out_shape,
+                )
+            }
         }
     }
 }

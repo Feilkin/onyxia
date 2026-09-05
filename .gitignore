@@ -17,3 +17,5 @@
 
 # Claude Code local permission settings
 /.claude/settings.local.json
+ortenv/
+doc/benchmarks/ort-bench-rs/target/

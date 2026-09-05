@@ -172,3 +172,97 @@ Post fix 1–3, decode should land in the 25–40 ms/tok range
 - The lm_head transpose also costs VRAM: its 671 MB intermediate lands in
   a 1 GiB buffer-pool bucket, nearly doubling resident memory
   (2.07 GiB for a 1.08 GiB model). Fix 1 removes that too.
+
+## Update 2026-09-05: the CPU side, measured
+
+`bench` now prints a host-clock split of each decode step (shapes /
+encode / GPU wait / readback). On the RTX 5090 with the 1B q4, before this
+change: 5.65 ms/tok = shapes 0.16 + **encode 2.11** + GPU wait 3.18 +
+readback 0.07 + inputs/sampling 0.12. Nothing was submitted until the
+whole step (663 dispatches) was encoded, so the 2 ms of encoding sat
+strictly in front of the GPU's work.
+
+Fix: submit every 64 dispatches (`GpuContext::submit_chunk`,
+`ONYXIA_SUBMIT_CHUNK=n`; 32 ties, 16 loses to submit overhead). The GPU
+now starts on the first chunk while the CPU encodes the rest:
+
+| model | before | after |
+|---|---|---|
+| 270m fp32 | 4.6 ms/tok | 3.3 ms/tok (307 tok/s) |
+| 270m q4 | 4.1 | 2.8 (360 tok/s) |
+| 1B fp32 | 8.2 | 6.1 (163 tok/s) |
+| 1B q4 | 5.7 | 3.8 (262 tok/s) |
+
+Where the remaining ~2 ms of encode goes (1B q4, 663 dispatches, ≈3 µs
+each), from a one-off finer instrumentation: bind-group lookup 0.9 ms,
+`run_prim` bodies (label formatting, immediates, pool acquire) 1.0 ms,
+pipeline lookup 0.03, pass encoding 0.06, node clone 0.05, frees 0.04.
+The bind-group cache misses on **every** dispatch in steady state: pooled
+intermediates change buffer identity from step to step (the KV
+present/past hand-off rotates the free lists), so each dispatch pays a
+`create_bind_group`. Next levers, in order: a stable per-step buffer
+assignment (or in-place KV buffers) so bind groups hit; fewer dispatches
+(residual Add into RMS norm, gate Mul into Gelu, dropping the split-K
+reduce where N already fills the device — 130 of the 1B's 663 dispatches
+are `matvec_reduce`); precomputed per-node dispatch plans to shrink the
+`run_prim` bodies.
+
+## Update 2026-09-05, later: prefill matmul — register blocking, and tensor cores tried
+
+The M>1 matmul was a 16×16 shared-memory tile with one output per
+thread: per K step each thread did 2 global loads, 32 shared loads and
+16 FMAs. `matmul_tiled_rb` replaces it as the default: 64×64 tile, 256
+threads each owning a 4×4 micro-tile, operand tiles staged k-major as
+`vec4` columns so the inner loop is 2 vec4 shared loads per 16 FMAs, and
+split-K (partials + `matvec_reduce`) when the tile grid alone can't fill
+the device — the 64-wide tile otherwise leaves a `[64×6912]·[6912×1152]`
+at 18 workgroups. The q4 prefill kernel (`matmul_nbits_tiled`) got the
+same structure with the weight tile dequantized on load.
+
+Kernel microbench (`cargo bench -p onyxia-backend-wgpu -- prefill_matmul`,
+RTX 5090, M = 64):
+
+| shape | classic | rb | coop (f16 in / f32 acc) |
+|---|---|---|---|
+| 270m lm_head 640×262144 (nn) | 4.27 ms | **1.55 ms** | 2.80 ms |
+| 270m down 2048×640 (nn) | 109 µs | **63 µs** | 70 µs |
+| 1B gate 1152×6912 (nn) | 226 µs | **101 µs** | 114 µs |
+| 1B down 6912×1152 (nn) | 307 µs | **107 µs** | 126 µs |
+| 1B lm_head 1152×262144 (nt) | 7.06 ms | **2.34 ms** | 4.05 ms |
+
+Model-level prefill, 64 tokens: 270m fp32 25.9 → 20.0 ms, 270m q4
+26.5 → 19.7, 1B fp32 45.7 → 26.4, 1B q4 50.3 → 24.7 (the q4 tiled kernel
+went from 33.5 to 6.7 ms of GPU time). Against onnxruntime-CUDA's
+cuBLAS prefill (11.9 / 19.2 ms on the 1B) that is 0.45× / 0.78×, up
+from 0.26× / 0.38×. Decode is unchanged.
+
+**Cooperative matrices.** wgpu 29 exposes
+`EXPERIMENTAL_COOPERATIVE_MATRIX` (`coop_mat8x8` / `coop_mat16x16`,
+`coopLoad[T]` / `coopStore[T]` / `coopMultiplyAdd`), and the 5090
+reports it — but the driver's property list has **no f32-input shape**:
+only f16 A/B at 16×16×16 / 16×8×16 / 16×8×8 with f16 or f32
+accumulation. The 8×8 f32 form wgpu documents compiles and silently
+produces zeros. `matmul_coop` therefore stages operands as f16 (same
+10-bit mantissa as the TF32 cuBLAS uses by default, narrower exponent)
+and accumulates in f32; it is correct to ~1e-3 relative against the
+interpreter, and *slower* than `rb` at every prefill shape above — at
+M = 64 these matmuls are bound by streaming the weights, not by MMA
+throughput, and its f16 staging keeps fewer bytes in flight. It stays
+opt-in (`ONYXIA_MATMUL_TILE=coop`; `classic|rb` also selectable), and
+would need vectorized staging and a taller tile before it pays off; it
+only becomes the right tool for long prompts (M ≥ 256), where the
+problem turns compute-bound. Also gated: 32-wide subgroups
+(`AdapterInfo::subgroup_{min,max}_size`) and ≥ 24 KB workgroup memory;
+the device opts into `ExperimentalFeatures` only when selected.
+
+Remaining prefill budget on the 1B fp32 (GPU 15 ms/step in profile
+mode): matmuls ~8.5 ms, `matvec_reduce` for split-K 1.0 ms, RMS norm
+1.1 ms, attention 0.9 ms. Next: vec4 global loads in the rb staging
+(the kernel reaches ~500 GB/s of the 5090's 1.8 TB/s on the lm_head),
+and folding the split-K reduce away where N is wide enough.
+
+Also fixed along the way: the bind-group cache pinned every buffer its
+bind groups referenced (a bind group keeps its buffers alive in wgpu),
+so a benchmark creating a fresh 64 MB output per iteration ran out of
+memory before the 4096-entry wholesale clear; dead entries are now
+swept every 64 misses.

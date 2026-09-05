@@ -43,6 +43,97 @@ Onyxia decode = **73 % of ORT-CUDA**, **3.0× ORT-WebGPU**; prefill = 29 % of CU
 
 Onyxia decode = **73 % of ORT-CUDA**, **5.4× ORT-WebGPU**; prefill = 23 % of CUDA, 1.06× WebGPU.
 
+## Update 2026-09-05: q4 models, chunked submits — same protocol, D = 128
+
+Onyxia @ `6205dca` (fused MatMulNBits + GatherBlockQuantized, submits every
+64 dispatches); onnxruntime-gpu 1.29.0 CUDA EP and `onnxruntime-ep-webgpu`
+0.2.1, freshly installed the same day. 64-token prefill, 128 measured
+decode steps; ORT rows show the better of numpy / IOBinding KV. Onyxia
+resident VRAM in parentheses.
+
+| model | Onyxia (wgpu/Vulkan) | ORT CUDA EP | ORT WebGPU EP | Onyxia / CUDA | Onyxia / WebGPU |
+|---|---|---|---|---|---|
+| 270m fp32 decode | **307 tok/s** (3.26 ms) (1.07 GiB) | 287 tok/s (3.48 ms) | 84 tok/s (11.9 ms) | **1.07×** | 3.6× |
+| 270m q4 decode | **360 tok/s** (2.78 ms) (0.76 GiB) | 315 tok/s (3.17 ms) | 98 tok/s (10.2 ms) | **1.14×** | 3.7× |
+| 1B fp32 decode | **163 tok/s** (6.14 ms) (3.81 GiB) | 164 tok/s (6.09 ms) | 24 tok/s (41.2 ms) | **0.99×** | 6.7× |
+| 1B q4 decode | **262 tok/s** (3.82 ms) (0.82 GiB) | 237 tok/s (4.23 ms) | 71 tok/s (14.1 ms) | **1.11×** | 3.7× |
+| 270m fp32 prefill | 25.9 ms | 7.4 ms | 20.6 ms | 0.29× | 0.80× |
+| 270m q4 prefill | 26.5 ms | 8.1 ms | 19.6 ms | 0.31× | 0.74× |
+| 1B fp32 prefill | 45.7 ms | 11.7 ms | 56.8 ms | 0.26× | 1.24× |
+| 1B q4 prefill | 50.3 ms | 19.3 ms | 35.4 ms | 0.38× | 0.70× |
+
+Reading it:
+
+- **Decode is now at parity with ORT-CUDA** on every model (0.99–1.14×),
+  up from 73 % in August; the whole gain is the chunked submission
+  (`doc/perf-baseline-2026-07.md`, 2026-09-05 section). Both runtimes
+  are launch-bound here — ORT's q4 1B step is 4.2 ms for 0.86 GB of
+  weights that the 5090 could stream in ~0.5 ms — so this is a statement
+  about per-step overhead, not kernels.
+- **Prefill is still cuBLAS's**: 2.6–3.9× behind. Onyxia's 16×16
+  shared-memory tile is the limit; the q4 variant, which dequantizes the
+  weight tile on load, is ~10 % slower than the fp32 tile at 1B and is
+  the one place ORT's WebGPU EP is ahead (35 vs 50 ms).
+- ORT-CUDA on q4 gains less than Onyxia does (237 vs 164 tok/s on the
+  1B, +45 %; Onyxia +61 %), and its IOBinding mode is *slower* than
+  numpy KV on every row — Python-side binding cost again. The ORT numbers
+  carry that per-step Python overhead; `onnxruntime-genai` would remove
+  it and was not measured.
+- The 1B fp32 ORT-WebGPU row (24 tok/s) is unchanged from August, so the
+  plugin is the same build; its q4 decode (71 tok/s) is ~3× its fp32.
+
+### Same day, onnxruntime through the C API (no Python)
+
+`ort-bench-rs/` in this directory drives the same `libonnxruntime.so`
+1.29.0 CUDA EP from Rust through the C API (via the `ort` crate 2.0
+rc.13, `load-dynamic`), same protocol. This removes the Python per-step
+cost the earlier rows carried:
+
+| model | Onyxia | ORT CUDA, C API, host KV | ORT CUDA, C API, IoBinding | ORT CUDA via Python (above) | Onyxia / ORT C API |
+|---|---|---|---|---|---|
+| 270m fp32 decode | 307 tok/s (3.26 ms) | **298 tok/s** (3.35 ms) | 220 tok/s (4.54 ms) | 287 tok/s | 1.03× |
+| 270m q4 decode | 360 tok/s (2.78 ms) | **374 tok/s** (2.67 ms) | 290 tok/s (3.45 ms) | 315 tok/s | 0.96× |
+| 1B fp32 decode | 163 tok/s (6.14 ms) | **169 tok/s** (5.91 ms) | 149 tok/s (6.71 ms) | 164 tok/s | 0.96× |
+| 1B q4 decode | 262 tok/s (3.82 ms) | **241 tok/s** (4.15 ms) | 181 tok/s (5.53 ms) | 237 tok/s | 1.09× |
+| 270m fp32 prefill | 25.9 ms | 7.4 ms | 7.7 ms | 7.4 ms | 0.29× |
+| 270m q4 prefill | 26.5 ms | 8.8 ms | 8.3 ms | 8.1 ms | 0.31× |
+| 1B fp32 prefill | 45.7 ms | 11.9 ms | 12.2 ms | 11.7 ms | 0.26× |
+| 1B q4 prefill | 50.3 ms | 19.2 ms | 19.2 ms | 19.3 ms | 0.38× |
+
+- Python was worth 0.1–0.5 ms per step to ORT; the C API rows are the
+  fair ceiling for onnxruntime-CUDA on this export. Onyxia is within
+  ±10 % on decode either way (0.96–1.09×) and unchanged on prefill.
+- IoBinding is slower than plain host-side KV **from Rust too**, so that
+  is ORT's binding path (a binding object per step, device-side output
+  allocation, `GetBoundOutputValues`), not the Python wrapper. At these
+  KV sizes (a few MB at ≤200 tokens) the host round-trip is cheaper.
+- ORT-CUDA on the 270m q4 is now the one row where it leads (374 vs 360
+  tok/s) — 2.7 ms per step for 126 MatMulNBits + attention is close to
+  what its launch count allows, and Onyxia's per-dispatch CPU cost
+  (bind-group misses, `run_prim` bodies) is what stands between them.
+
+```sh
+cd doc/benchmarks/ort-bench-rs && cargo build --release
+./target/release/ort-bench-rs ../../../ortenv/lib/python3.12/site-packages/onnxruntime/capi/libonnxruntime.so.1.29.0 \
+    ../../../models/gemma-3-1b-it-ONNX-GQA/onnx/model_q4.onnx cuda-host 64 128
+```
+
+### Same day, after the register-blocked prefill tile (`matmul_tiled_rb`)
+
+Prefill only changed; decode within noise. Onyxia 64-token prefill vs
+the ORT C-API rows above: 270m fp32 **20.0 ms** (0.37× cuBLAS, 1.03×
+ORT-WebGPU), 270m q4 **19.7 ms** (0.45× / 0.99×), 1B fp32 **26.4 ms**
+(0.45× / 2.15×), 1B q4 **24.7 ms** (0.78× / 1.43×). Details and the
+tensor-core experiment in `doc/perf-baseline-2026-07.md`.
+
+Reproduce (`ortenv` as below, then):
+
+```sh
+cargo run --release -p onyxia-cli -- bench models/gemma-3-1b-it-ONNX-GQA/onnx/model_q4.onnx --prefill-len 64 --decode-tokens 128
+ortenv/bin/python doc/benchmarks/ort_bench.py models/gemma-3-1b-it-ONNX-GQA/onnx/model_q4.onnx cuda-numpy 64 128
+ortenv/bin/python doc/benchmarks/ort_bench.py models/gemma-3-1b-it-ONNX-GQA/onnx/model_q4.onnx webgpu 64 128
+```
+
 ## Onyxia's CubeCL backend on the same GPU (270m, 2026-08-23)
 
 Re-run after the July perf pass, which only touched the wgpu backend. The

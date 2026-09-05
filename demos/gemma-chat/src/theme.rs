@@ -249,8 +249,8 @@ pub fn visuals(p: &Palette, theme: Theme) -> egui::Visuals {
     v.extreme_bg_color = p.input_bg; // TextEdit background
     v.override_text_color = Some(p.text);
     v.selection.bg_fill = p.accent.gamma_multiply(0.35);
-    v.selection.stroke = Stroke::new(1.0, p.accent);
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, p.border_soft);
+    v.selection.stroke = Stroke::new(1.0f32, p.accent);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0f32, p.border_soft);
     v
 }
 

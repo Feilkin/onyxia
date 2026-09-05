@@ -3927,6 +3927,7 @@ dependencies = [
  "async-trait",
  "criterion",
  "futures-channel",
+ "half",
  "naga",
  "onyxia-backend-ref",
  "onyxia-ir",

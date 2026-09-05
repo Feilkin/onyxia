@@ -241,6 +241,7 @@ fn apply_axis_matrices(
     cast(ctx, y, dt)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resize_core(
     ctx: &mut LowerCtx,
     x: ValueId,
@@ -256,9 +257,7 @@ fn resize_core(
     let mut scale_all = vec![1.0f64; r];
     let mut size_all: Vec<i64> = xd.iter().map(|&v| v as i64).collect();
     let mut roi_all = vec![0.0f64; 2 * r];
-    for i in r..2 * r {
-        roi_all[i] = 1.0;
-    }
+    roi_all[r..].fill(1.0);
     if let Some(roi) = &roi {
         let na = axes.len();
         for (i, &a) in axes.iter().enumerate() {
@@ -804,14 +803,14 @@ fn grid_sample(ctx: &mut LowerCtx) -> Result<()> {
     // Per spatial axis j (grid column nd-1-j): denormalized float coord
     // of shape [N, 1, out...].
     let mut coords = Vec::with_capacity(nd);
-    for j in 0..nd {
+    for (j, &spj) in sp.iter().enumerate().take(nd) {
         let col = nd - 1 - j;
         let g = slice_axis(ctx, grid, nd + 1, col as u64, col as u64 + 1)?; // [N, out..., 1]
         let mut gs = vec![c(n), c(1)];
         gs.extend(out_sp.iter().cloned());
         let g = reshape(ctx, g, gs)?;
         let g = cast(ctx, g, cdt)?;
-        let len = sp[j] as f64;
+        let len = spj as f64;
         let one = scalar(ctx, cdt, 1.0)?;
         let g1 = add(ctx, g, one)?;
         let v = if align {

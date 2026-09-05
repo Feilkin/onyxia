@@ -1,0 +1,15 @@
+[package]
+name = "ort-bench-rs"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Stand-alone: keeps onnxruntime out of the onyxia workspace.
+[workspace]
+
+[dependencies]
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["load-dynamic", "cuda", "ndarray", "std"] }
+ndarray = "0.17"
+
+[profile.release]
+debug = 1

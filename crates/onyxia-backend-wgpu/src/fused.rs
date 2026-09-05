@@ -14,8 +14,9 @@
 //! `com.microsoft.RotaryEmbedding` (single elementwise pass with inline
 //! cos/sin gather), and `com.microsoft.GroupQueryAttention` (three
 //! dispatches: present-K/V concat + a chunked online-softmax attention
-//! pass). Planned next, following the same pattern: `MatMulNBits`
-//! (reference WGSL lives in `legacy-shaders/`).
+//! pass), and `com.microsoft.MatMulNBits` (a matvec straight from the
+//! packed 4-bit weights at decode; a tiled matmul dequantizing weight
+//! tiles into shared memory at prefill).
 
 use crate::gpu::WORKGROUP_SIZE;
 use crate::kernels::{self, Imm};
@@ -82,6 +83,7 @@ pub fn standard_kernels() -> KernelRegistry {
             "com.microsoft.GroupQueryAttention",
             Box::new(GroupQueryAttentionKernel),
         ),
+        ("com.microsoft.MatMulNBits", Box::new(MatMulNBitsKernel)),
     ])
 }
 
@@ -91,6 +93,217 @@ fn check_rows(rows: usize, what: &str) -> Result<()> {
         return Err(Error::Unsupported(format!(
             "{what}: {rows} rows exceed the 1-D dispatch limit (needs 2-D row kernels)"
         )));
+    }
+    Ok(())
+}
+
+/// Fused `MatMulNBits` (4-bit block-quantized weights, `[N, K]`).
+///
+/// Decode (M = 1) reads the packed nibbles directly — a quarter of the
+/// bytes of the f32 weights, which is the whole point of q4 on a
+/// bandwidth-bound decode step. Prefill (M > 1) is the shared-memory
+/// tiled matmul with the weight tile dequantized on load — no f32 copy of
+/// the weights, which matters for the 1B's 262144-row tied head.
+struct MatMulNBitsKernel;
+
+impl CompositeKernel for MatMulNBitsKernel {
+    fn execute(
+        &self,
+        session: &mut WgpuSession,
+        attrs: &Attrs,
+        inputs: &[GpuTensor],
+        outs: &[(DataType, Vec<usize>)],
+    ) -> Result<Vec<GpuTensor>> {
+        let (a, b, scales, zp) = match inputs {
+            [a, b, s] => (a, b, s, None),
+            [a, b, s, z] => (a, b, s, Some(z)),
+            _ => {
+                return Err(Error::InvalidGraph(
+                    "MatMulNBits expects 3 or 4 inputs".into(),
+                ));
+            }
+        };
+        let bits = attrs.int_or("bits", 4)?;
+        let k = attrs.int("K")? as usize;
+        let n = attrs.int("N")? as usize;
+        let bs = attrs.int("block_size")? as usize;
+        if bits != 4 || b.dtype != DataType::U4 {
+            return Err(Error::Unsupported(format!(
+                "fused MatMulNBits: bits={bits} {} weights (4-bit u4 only)",
+                b.dtype
+            )));
+        }
+        if a.dtype != DataType::F32 || scales.dtype != DataType::F32 {
+            return Err(Error::Unsupported(
+                "fused MatMulNBits: f32 activations and scales only".into(),
+            ));
+        }
+        if bs % 8 != 0 || k % 8 != 0 || k == 0 || n == 0 {
+            return Err(Error::Unsupported(format!(
+                "fused MatMulNBits: K={k} and block_size={bs} must be multiples of 8"
+            )));
+        }
+        if let Some(z) = zp {
+            if z.dtype != DataType::U4 {
+                return Err(Error::Unsupported(format!(
+                    "fused MatMulNBits: {} zero points (u4 only)",
+                    z.dtype
+                )));
+            }
+        }
+        let nb = k.div_ceil(bs);
+        if b.shape != [n, nb, bs] {
+            return Err(Error::InvalidGraph(format!(
+                "MatMulNBits weights are {:?}, expected [{n}, {nb}, {bs}]",
+                b.shape
+            )));
+        }
+        let m = a.numel() / k;
+        let out = session.alloc_out(outs[0].0, outs[0].1.clone());
+
+        if m == 1 {
+            matvec_nbits(session, a, b, scales, zp, &out, n, k, bs)?;
+            return Ok(vec![out]);
+        }
+
+        // Prefill: register-blocked tiled matmul with the weight tile
+        // dequantized into shared memory on load; split-K when the tile
+        // grid can't fill the device.
+        let grid_x = n.div_ceil(64);
+        let grid_y = m.div_ceil(64);
+        if grid_x > 65535 || grid_y > 65535 {
+            return Err(Error::Unsupported(format!(
+                "fused MatMulNBits prefill grid {grid_x}×{grid_y} exceeds 65535 workgroups"
+            )));
+        }
+        const TARGET_WG: usize = 256;
+        const MAX_KS: usize = 32;
+        let base_wg = grid_x * grid_y;
+        let ks = if base_wg >= TARGET_WG {
+            1
+        } else {
+            TARGET_WG
+                .div_ceil(base_wg)
+                .min(k.div_ceil(64))
+                .clamp(1, MAX_KS)
+        };
+        let chunk = k.div_ceil(ks).div_ceil(32) * 32;
+        let ks = k.div_ceil(chunk).max(1);
+        let size = m * n;
+        let scratch = (ks > 1).then(|| session.acquire_scratch((ks * size * 4) as u64));
+        let dst = scratch.as_ref().unwrap_or(&out.buffer);
+        let imm = Imm::new()
+            .u(m as u32)
+            .u(n as u32)
+            .u((k / 8) as u32)
+            .u((nb * bs / 8) as u32)
+            .u((bs / 8) as u32)
+            .u(nb as u32)
+            .u(chunk as u32);
+        let mut buffers = vec![&a.buffer, &b.buffer, &scales.buffer];
+        if let Some(z) = zp {
+            buffers.push(&z.buffer);
+        }
+        buffers.push(dst);
+        let has_zp = zp.is_some();
+        session.dispatch_grid(
+            if has_zp {
+                "fused_matmul_nbits_tiled_zp_f32"
+            } else {
+                "fused_matmul_nbits_tiled_f32"
+            },
+            || kernels::matmul_nbits_tiled(has_zp),
+            &buffers,
+            &imm,
+            [grid_x as u32, grid_y as u32, ks as u32],
+        )?;
+        if let Some(scratch) = scratch {
+            let (imm, n_out) = crate::session::size_imm(size);
+            let imm = imm.u(ks as u32);
+            session.dispatch(
+                "matvec_reduce_f32",
+                kernels::matvec_reduce,
+                &[&scratch, &out.buffer],
+                &imm,
+                n_out,
+            )?;
+            session.release_scratch(scratch);
+        }
+        Ok(vec![out])
+    }
+}
+
+/// M=1 half of the fused `MatMulNBits`: same split-K scheme as the f32
+/// matvec in `session.rs` (4 rows × 64 lanes per workgroup, `ks` slices
+/// when N alone can't fill the device, partials folded by
+/// `matvec_reduce`).
+#[allow(clippy::too_many_arguments)]
+fn matvec_nbits(
+    session: &mut WgpuSession,
+    a: &GpuTensor,
+    b: &GpuTensor,
+    scales: &GpuTensor,
+    zp: Option<&GpuTensor>,
+    out: &GpuTensor,
+    n: usize,
+    k: usize,
+    bs: usize,
+) -> Result<()> {
+    const TARGET_WG: usize = 512;
+    const MAX_KS: usize = 64;
+    let k8 = k / 8;
+    let nb = k.div_ceil(bs);
+    let base_wg = n.div_ceil(4);
+    let ks = if base_wg >= TARGET_WG {
+        1
+    } else {
+        TARGET_WG
+            .div_ceil(base_wg)
+            .min(k8.div_ceil(64))
+            .clamp(1, MAX_KS)
+    };
+    let scratch = (ks > 1).then(|| session.acquire_scratch((ks * n * 4) as u64));
+    let dst = scratch.as_ref().unwrap_or(&out.buffer);
+    let total = (base_wg * ks) as u32;
+    let x_wgs = total.min(65535);
+    let grid = [x_wgs, total.div_ceil(x_wgs), 1];
+    let imm = Imm::new()
+        .u(n as u32)
+        .u(k8 as u32)
+        .u((nb * bs / 8) as u32)
+        .u((bs / 8) as u32)
+        .u(nb as u32)
+        .u(ks as u32)
+        .u(k8.div_ceil(ks) as u32)
+        .u(x_wgs);
+    let mut buffers = vec![&a.buffer, &b.buffer, &scales.buffer];
+    if let Some(z) = zp {
+        buffers.push(&z.buffer);
+    }
+    buffers.push(dst);
+    let has_zp = zp.is_some();
+    session.dispatch_grid(
+        if has_zp {
+            "fused_matmul_nbits_matvec_zp_f32"
+        } else {
+            "fused_matmul_nbits_matvec_f32"
+        },
+        || kernels::matmul_nbits_matvec(has_zp),
+        &buffers,
+        &imm,
+        grid,
+    )?;
+    if let Some(scratch) = scratch {
+        let (imm, size) = crate::session::size_imm(n);
+        let imm = imm.u(ks as u32);
+        session.dispatch(
+            "matvec_reduce_f32",
+            kernels::matvec_reduce,
+            &[&scratch, &out.buffer],
+            &imm,
+            size,
+        )?;
+        session.release_scratch(scratch);
     }
     Ok(())
 }

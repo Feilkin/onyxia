@@ -170,9 +170,10 @@ flow, random sampling, and image decoding), all expressed over the same 16
 primitives. On the official onnx node tests, the reference backend passes
 every test that is in scope (1275 of 1765; the rest are unsupported dtypes
 such as float64/int16/float8, or ops outside the tensor model) and the wgpu
-backend passes 1273, with 8-bit and f16 tensors stored packed (or as native
-f16 / i64 where the adapter has the shader features). Per-operator results, the primitive-count analysis, and
-the remaining gaps are in [doc/onnx-coverage.md](doc/onnx-coverage.md).
+backend passes 1273, with 4-bit, 8-bit and f16 tensors stored packed (or as
+native f16 / i64 where the adapter has the shader features). Per-operator
+results, the primitive-count analysis, and the remaining gaps are in
+[doc/onnx-coverage.md](doc/onnx-coverage.md).
 
 ## Profiling
 
@@ -201,11 +202,30 @@ works: the older `gemma-3-1b-it-ONNX` repo is a raw PyTorch export
 (decomposed attention, in-graph mask construction) that its own model card
 supersedes, and Onyxia does not support it.
 
-Use the fp32 `onnx/model.onnx`: the community q4 quantization badly degrades
-these small models. Both models generate token-for-token identically to
-onnxruntime under greedy decoding (including past the 1B's 512-token sliding
-window). On an RTX 3060 Ti: 270m ≈ 128 tok/s decode, 1b ≈ 60 tok/s decode
-at 3.9 GiB peak VRAM.
+Both the fp32 `onnx/model.onnx` and the 4-bit `onnx/model_q4.onnx`
+(`MatMulNBits` and `GatherBlockQuantized`, block size 32) run. The q4
+weights stay packed on the device: decode multiplies straight from the
+nibbles through a fused matvec kernel, and prefill's tiled matmul
+dequantizes each weight tile into shared memory on load. On an RTX 5090,
+64-token prefill, greedy decode:
+
+| model | resident VRAM | decode | prefill |
+|---|---|---|---|
+| 270m fp32 | 1.07 GiB | 3.2 ms/tok (311 tok/s) | 20 ms |
+| 270m q4 | 0.76 GiB | 2.7 ms/tok (371 tok/s) | 20 ms |
+| 1B fp32 | 3.81 GiB | 6.0 ms/tok (166 tok/s) | 26 ms |
+| 1B q4 | 0.82 GiB | 3.8 ms/tok (266 tok/s) | 25 ms |
+
+A decode step is 500–700 kernel launches; the session submits them to
+the GPU in chunks of 64 so it starts executing while the CPU is still
+encoding the rest (`ONYXIA_SUBMIT_CHUNK` overrides), and `bench` prints
+the host-side split (shapes / encode / GPU wait / readback). At 270m the
+launch floor dominates, so smaller weights help a little; at 1B the
+weight reads dominate and q4 is 1.6× faster. Prefer fp32 for quality — the community
+q4 quantization noticeably degrades these small models. The fp32 models
+generate token-for-token identically to onnxruntime under greedy decoding
+(including past the 1B's 512-token sliding window). On an RTX 3060 Ti:
+270m ≈ 128 tok/s decode, 1b ≈ 60 tok/s decode at 3.9 GiB peak VRAM.
 
 ## License
 

@@ -11,6 +11,48 @@ use onyxia_conformance::{
 };
 use std::collections::BTreeMap;
 
+/// Collapse a skip message to a short category for the summary.
+fn skip_reason(m: &str) -> String {
+    if let Some(rest) = m.strip_prefix("out of scope: ") {
+        return format!("out of scope: {rest}");
+    }
+    if m.contains("non-tensor type") {
+        return "non-tensor type (sequence / optional / map)".into();
+    }
+    if m.contains("has no primitive decomposition") {
+        return "no primitive decomposition: Det".into();
+    }
+    if let Some(i) = m.rfind("Unsupported data type: ") {
+        let t = m[i + "Unsupported data type: ".len()..]
+            .split(|c: char| !c.is_alphanumeric())
+            .next()
+            .unwrap_or("?");
+        return format!("dtype not supported: {t}");
+    }
+    if m.contains("non-tensor type") {
+        return "non-tensor type (sequence / optional / map)".into();
+    }
+    if let Some(i) = m.find("no lowering rule for '") {
+        let op = m[i + "no lowering rule for '".len()..]
+            .split('\'')
+            .next()
+            .unwrap_or("?");
+        return format!("no lowering rule: {op}");
+    }
+    if m.contains("data-dependent output shape") {
+        return "data-dependent output shape".into();
+    }
+    if let Some(i) = m.find("ONNX tensor data type ") {
+        let code = m[i + "ONNX tensor data type ".len()..]
+            .split_whitespace()
+            .next()
+            .unwrap_or("?");
+        return format!("dtype not supported: TensorProto type {code}");
+    }
+    let short: String = m.chars().take(90).collect();
+    short.split(" (node").next().unwrap_or(&short).to_string()
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let mut backend = "ref".to_string();
@@ -107,8 +149,8 @@ fn main() {
     if show_ops {
         let ops = by_op(results.iter().map(|(n, o)| (n.as_str(), o)));
         println!(
-            "\n{:<28} {:>5} {:>5} {:>5}   {}",
-            "op", "pass", "fail", "skip", "(bound)"
+            "\n{:<28} {:>5} {:>5} {:>5}   (bound)",
+            "op", "pass", "fail", "skip"
         );
         for (op, s) in &ops {
             let b = if s.bound > 0 {
@@ -139,25 +181,25 @@ fn main() {
             partial.len(),
             none.len()
         );
-        // Skip reasons, aggregated.
+        // Skips, aggregated by a normalized reason. These are tests the
+        // harness does not attempt (unsupported dtypes, non-tensor types,
+        // ops outside the tensor model) — not failures.
         let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
         for (_, o) in &results {
             if let Outcome::Skip(m) = o {
-                let key = m.split(" (node").next().unwrap_or(m).to_string();
-                let key = key
-                    .split(": initializer")
-                    .next()
-                    .unwrap_or(&key)
-                    .to_string();
-                *reasons.entry(key).or_default() += 1;
+                *reasons.entry(skip_reason(m)).or_default() += 1;
             }
         }
-        println!("\nskip reasons:");
+        println!("\nskipped (not attempted; out of scope for this harness), by reason:");
         let mut v: Vec<_> = reasons.into_iter().collect();
-        v.sort_by(|a, b| b.1.cmp(&a.1));
+        v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         for (r, n) in v.iter().take(40) {
             println!("{n:>5}  {r}");
         }
+        println!(
+            "\nPASS* = passed with parameter inputs (axes, shapes, …) bound as constants; \
+             see doc/onnx-coverage.md"
+        );
     }
 
     if update {

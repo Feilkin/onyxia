@@ -3,8 +3,9 @@
 //!
 //! WGSL storage buffers hold 32-bit scalars, optionally `f16` (with the
 //! `SHADER_F16` feature) and 64-bit integers (`SHADER_INT64`). Everything
-//! else is packed into `u32` words: four 8-bit values or two `f16`s per
-//! word, in memory order, so the device bytes are exactly the host bytes.
+//! else is packed into `u32` words: eight 4-bit values, four 8-bit values
+//! or two `f16`s per word, in memory order (low nibble first for 4-bit),
+//! so the device bytes are exactly the host bytes.
 //! Kernels always *compute* in a 32-bit type (or `i64` when native);
 //! [`Layout::load_fn`] and [`Layout::store_block`] generate the WGSL that
 //! converts at the buffer boundary, and every kernel runs one thread per
@@ -42,6 +43,10 @@ pub enum Repr {
     U8Packed,
     /// Four `i8` per `u32` word, memory order.
     I8Packed,
+    /// Eight `u4` per `u32` word, low nibble first (the ONNX/ORT order).
+    U4Packed,
+    /// Eight `i4` per `u32` word, low nibble first, two's complement.
+    I4Packed,
 }
 
 /// A logical dtype with its physical representation.
@@ -78,11 +83,8 @@ impl Layout {
             }
             DataType::U8 => Repr::U8Packed,
             DataType::I8 => Repr::I8Packed,
-            DataType::U4 | DataType::I4 => {
-                return Err(Error::Unsupported(format!(
-                    "dtype {dt} on the wgpu backend (only Dequantize reads packed 4-bit data)"
-                )));
-            }
+            DataType::U4 => Repr::U4Packed,
+            DataType::I4 => Repr::I4Packed,
         };
         Ok(Layout { logical: dt, repr })
     }
@@ -98,7 +100,9 @@ impl Layout {
             Repr::F16Native => "f16",
             Repr::I64Native => "i64",
             Repr::I64Narrow => "i32",
-            Repr::F16Packed | Repr::U8Packed | Repr::I8Packed => "u32",
+            Repr::F16Packed | Repr::U8Packed | Repr::I8Packed | Repr::U4Packed | Repr::I4Packed => {
+                "u32"
+            }
         }
     }
 
@@ -109,8 +113,8 @@ impl Layout {
             Repr::F16Native | Repr::F16Packed => "f32",
             Repr::I64Native => "i64",
             Repr::I64Narrow => "i32",
-            Repr::U8Packed => "u32",
-            Repr::I8Packed => "i32",
+            Repr::U8Packed | Repr::U4Packed => "u32",
+            Repr::I8Packed | Repr::I4Packed => "i32",
         }
     }
 
@@ -119,6 +123,7 @@ impl Layout {
         match self.repr {
             Repr::F16Packed => 2,
             Repr::U8Packed | Repr::I8Packed => 4,
+            Repr::U4Packed | Repr::I4Packed => 8,
             _ => 1,
         }
     }
@@ -173,6 +178,8 @@ impl Layout {
             (Repr::I64Narrow, _) => "i64n",
             (Repr::U8Packed, _) => "u8p",
             (Repr::I8Packed, _) => "i8p",
+            (Repr::U4Packed, _) => "u4p",
+            (Repr::I4Packed, _) => "i4p",
         }
     }
 
@@ -203,6 +210,10 @@ impl Layout {
             Repr::U8Packed => format!("return ({buf}[i >> 2u] >> ((i & 3u) * 8u)) & 0xffu;"),
             Repr::I8Packed => {
                 format!("let w = {buf}[i >> 2u]; return i32(w << (24u - (i & 3u) * 8u)) >> 24u;")
+            }
+            Repr::U4Packed => format!("return ({buf}[i >> 3u] >> ((i & 7u) * 4u)) & 0xfu;"),
+            Repr::I4Packed => {
+                format!("let w = {buf}[i >> 3u]; return i32(w << (28u - (i & 7u) * 4u)) >> 28u;")
             }
         };
         format!("fn {name}(i: u32) -> {c} {{ {body} }}\n")
@@ -253,6 +264,26 @@ impl Layout {
     }}
     {out}[w] = acc;"
             ),
+            Repr::U4Packed => format!(
+                "    let w = linear_idx(gid, p.x_stride);
+    if (w >= (p.size + 7u) >> 3u) {{ return; }}
+    var acc = 0u;
+    for (var l = 0u; l < 8u; l = l + 1u) {{
+        let e = w * 8u + l;
+        if (e < p.size) {{ acc = acc | ((compute(e) & 0xfu) << (l * 4u)); }}
+    }}
+    {out}[w] = acc;"
+            ),
+            Repr::I4Packed => format!(
+                "    let w = linear_idx(gid, p.x_stride);
+    if (w >= (p.size + 7u) >> 3u) {{ return; }}
+    var acc = 0u;
+    for (var l = 0u; l < 8u; l = l + 1u) {{
+        let e = w * 8u + l;
+        if (e < p.size) {{ acc = acc | ((u32(compute(e)) & 0xfu) << (l * 4u)); }}
+    }}
+    {out}[w] = acc;"
+            ),
         }
     }
 
@@ -267,6 +298,10 @@ impl Layout {
             (Repr::U8Packed, _) => format!("(({old} >> ({lane} * 8u)) & 0xffu)"),
             (Repr::I8Packed, _) => {
                 format!("(i32({old} << (24u - {lane} * 8u)) >> 24u)")
+            }
+            (Repr::U4Packed, _) => format!("(({old} >> ({lane} * 4u)) & 0xfu)"),
+            (Repr::I4Packed, _) => {
+                format!("(i32({old} << (28u - {lane} * 4u)) >> 28u)")
             }
             _ => {
                 return Err(Error::Unsupported(format!(
@@ -293,6 +328,12 @@ impl Layout {
             (Repr::I8Packed, _) => format!(
                 "(({old} & ~(0xffu << ({lane} * 8u))) | ((u32({v}) & 0xffu) << ({lane} * 8u)))"
             ),
+            (Repr::U4Packed, _) => {
+                format!("(({old} & ~(0xfu << ({lane} * 4u))) | (({v} & 0xfu) << ({lane} * 4u)))")
+            }
+            (Repr::I4Packed, _) => format!(
+                "(({old} & ~(0xfu << ({lane} * 4u))) | ((u32({v}) & 0xfu) << ({lane} * 4u)))"
+            ),
             _ => {
                 return Err(Error::Unsupported(format!(
                     "atomic lane access on {} storage",
@@ -317,6 +358,11 @@ mod tests {
         let f16 = Layout::of(DataType::F16, caps).unwrap();
         assert_eq!(f16.repr, Repr::F16Packed);
         assert_eq!(f16.buffer_bytes(3), 8);
+        let u4 = Layout::of(DataType::U4, caps).unwrap();
+        assert_eq!(u4.lanes(), 8);
+        assert_eq!(u4.buffer_bytes(9), 8);
+        assert_eq!(u4.buffer_bytes(16), 8);
+        assert_eq!(Layout::of(DataType::I4, caps).unwrap().compute(), "i32");
         let f16n = Layout::of(
             DataType::F16,
             Caps {
