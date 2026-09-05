@@ -90,7 +90,11 @@ fn node_with(
         .with_outputs(outputs.iter().map(|s| s.to_string()).collect());
     n.attributes = attributes;
     n.name = format!("/test/{op}");
-    if op == "GroupQueryAttention" || op == "MatMulNBits" || op.contains("Rotary") {
+    if op == "GroupQueryAttention"
+        || op == "MatMulNBits"
+        || op == "GatherBlockQuantized"
+        || op.contains("Rotary")
+    {
         n.domain = "com.microsoft".into();
     }
     g.add_node(n);
@@ -540,4 +544,67 @@ fn gqa_through_lowering_runs() {
     assert_eq!(outs[0].1.to_f32().unwrap(), vec![42.0, 7.0, 42.0, 7.0]);
     assert_eq!(outs[1].1.to_f32().unwrap(), vec![0.7, 0.7]);
     assert_eq!(outs[2].1.to_f32().unwrap(), vec![42.0, 7.0]);
+}
+
+#[test]
+fn gather_block_quantized_end_to_end() {
+    // Table of V=3 rows × D=8 nibbles (block_size 4 → 2 blocks per row),
+    // shipped as ORT does: u8 [V, D/2] data, f32 [V, nb] scales,
+    // u8 [V, nb/2] zero points. Gather rows [2, 0] and dequantize.
+    let (v, d, bs) = (3usize, 8usize, 4usize);
+    let nb = d / bs;
+    let q_vals: Vec<u8> = (0..v * d).map(|i| ((i * 5 + 3) % 16) as u8).collect();
+    let mut packed = vec![0u8; v * d / 2];
+    for (i, &q) in q_vals.iter().enumerate() {
+        packed[i / 2] |= (q & 0xF) << ((i % 2) * 4);
+    }
+    let scales: Vec<f32> = (0..v * nb).map(|i| 0.5 + i as f32 * 0.25).collect();
+    let zps: Vec<u8> = (0..v * nb).map(|i| ((i * 7 + 1) % 16) as u8).collect();
+    let mut zp_packed = vec![0u8; v * nb / 2];
+    for (i, &z) in zps.iter().enumerate() {
+        zp_packed[i / 2] |= (z & 0xF) << ((i % 2) * 4);
+    }
+
+    let mut g = Graph::new();
+    input(
+        &mut g,
+        "idx",
+        DataType::I64,
+        TensorShape::Static(vec![1, 2]),
+    );
+    weight_u8(&mut g, "table", packed, &[v, d / 2]);
+    weight_f32(&mut g, "scales", &scales, &[v, nb]);
+    weight_u8(&mut g, "zp", zp_packed, &[v, nb / 2]);
+    node_with(
+        &mut g,
+        "GatherBlockQuantized",
+        &["table", "idx", "scales", "zp"],
+        &["out"],
+        HashMap::from([
+            ("bits".into(), AttributeValue::Int(4)),
+            ("block_size".into(), AttributeValue::Int(bs as i64)),
+            ("gather_axis".into(), AttributeValue::Int(0)),
+            ("quantize_axis".into(), AttributeValue::Int(1)),
+        ]),
+    );
+    output(&mut g, "out");
+
+    let module = lower(g, &standard_registry()).unwrap();
+    let outs = eval(
+        &module,
+        &[("idx", Tensor::from_i64(&[2, 0], &[1, 2]).unwrap())],
+    )
+    .unwrap();
+    let got = outs[0].1.to_f32().unwrap();
+    assert_eq!(outs[0].1.shape(), &[1, 2, d]);
+    let mut expect = Vec::new();
+    for &row in &[2usize, 0] {
+        for k in 0..d {
+            let b = row * nb + k / bs;
+            expect.push((q_vals[row * d + k] as f32 - zps[b] as f32) * scales[b]);
+        }
+    }
+    for (i, (a, e)) in got.iter().zip(&expect).enumerate() {
+        assert!((a - e).abs() < 1e-6, "[{i}] got {a}, expected {e}");
+    }
 }

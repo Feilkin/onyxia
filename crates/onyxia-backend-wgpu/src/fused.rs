@@ -14,8 +14,9 @@
 //! `com.microsoft.RotaryEmbedding` (single elementwise pass with inline
 //! cos/sin gather), and `com.microsoft.GroupQueryAttention` (three
 //! dispatches: present-K/V concat + a chunked online-softmax attention
-//! pass), and `com.microsoft.MatMulNBits` (decode: a matvec straight from
-//! the packed 4-bit weights; prefill: block dequantize + tiled matmul).
+//! pass), and `com.microsoft.MatMulNBits` (a matvec straight from the
+//! packed 4-bit weights at decode; a tiled matmul dequantizing weight
+//! tiles into shared memory at prefill).
 
 use crate::gpu::WORKGROUP_SIZE;
 use crate::kernels::{self, Imm};
@@ -100,9 +101,9 @@ fn check_rows(rows: usize, what: &str) -> Result<()> {
 ///
 /// Decode (M = 1) reads the packed nibbles directly — a quarter of the
 /// bytes of the f32 weights, which is the whole point of q4 on a
-/// bandwidth-bound decode step. Prefill (M > 1) dequantizes into a
-/// pooled scratch matrix and runs the tuned tiled matmul: compute-bound,
-/// so the extra pass over a few MB is noise.
+/// bandwidth-bound decode step. Prefill (M > 1) is the shared-memory
+/// tiled matmul with the weight tile dequantized on load — no f32 copy of
+/// the weights, which matters for the 1B's 262144-row tied head.
 struct MatMulNBitsKernel;
 
 impl CompositeKernel for MatMulNBitsKernel {
@@ -151,7 +152,6 @@ impl CompositeKernel for MatMulNBitsKernel {
             }
         }
         let nb = k.div_ceil(bs);
-        let padded_k = nb * bs;
         if b.shape != [n, nb, bs] {
             return Err(Error::InvalidGraph(format!(
                 "MatMulNBits weights are {:?}, expected [{n}, {nb}, {bs}]",
@@ -166,19 +166,39 @@ impl CompositeKernel for MatMulNBitsKernel {
             return Ok(vec![out]);
         }
 
-        // Prefill: dequantize `[N, padded_k]` then `a · wᵀ`.
-        if padded_k != k {
+        // Prefill: tiled matmul with the weight tile dequantized into
+        // shared memory on load.
+        let grid_x = n.div_ceil(16);
+        let grid_y = m.div_ceil(16);
+        if grid_x > 65535 || grid_y > 65535 {
             return Err(Error::Unsupported(format!(
-                "fused MatMulNBits prefill with K={k} not a multiple of block_size={bs}"
+                "fused MatMulNBits prefill grid {grid_x}×{grid_y} exceeds 65535 workgroups"
             )));
         }
-        let scales2 = GpuTensor {
-            buffer: Arc::clone(&scales.buffer),
-            dtype: scales.dtype,
-            shape: vec![n, nb],
-        };
-        let w = session.dequantize(b, &scales2, zp, bs, DataType::F32, vec![n, k])?;
-        session.matmul_tiled(a, &w, &out, [m, n, k, 1], [0, 0], false, true)?;
+        let imm = Imm::new()
+            .u(m as u32)
+            .u(n as u32)
+            .u((k / 8) as u32)
+            .u((nb * bs / 8) as u32)
+            .u((bs / 8) as u32)
+            .u(nb as u32);
+        let mut buffers = vec![&a.buffer, &b.buffer, &scales.buffer];
+        if let Some(z) = zp {
+            buffers.push(&z.buffer);
+        }
+        buffers.push(&out.buffer);
+        let has_zp = zp.is_some();
+        session.dispatch_grid(
+            if has_zp {
+                "fused_matmul_nbits_tiled_zp_f32"
+            } else {
+                "fused_matmul_nbits_tiled_f32"
+            },
+            || kernels::matmul_nbits_tiled(has_zp),
+            &buffers,
+            &imm,
+            [grid_x as u32, grid_y as u32, 1],
+        )?;
         Ok(vec![out])
     }
 }
@@ -220,6 +240,7 @@ fn matvec_nbits(
     let imm = Imm::new()
         .u(n as u32)
         .u(k8 as u32)
+        .u((nb * bs / 8) as u32)
         .u((bs / 8) as u32)
         .u(nb as u32)
         .u(ks as u32)

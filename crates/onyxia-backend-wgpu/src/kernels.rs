@@ -1088,8 +1088,9 @@ fn compute(e: u32) -> f32 {{
 /// dequantized matrix never exists. Same threading as
 /// [`matvec_transb_v4`]: 4 rows × 64 lanes per workgroup, each lane
 /// consuming one `u32` word (8 nibbles, two vec4 activation loads) per
-/// step, split-K across `ks` slices into `[ks, N]` partials.
-/// Bindings: 0=a (vec4 view, K/4), 1=b (packed `[N, K/8]` words),
+/// step, split-K across `ks` slices into `[ks, N]` partials. `p.rw` is
+/// the packed row stride in words (K padded to whole blocks).
+/// Bindings: 0=a (vec4 view, K/4), 1=b (packed `[N, rw]` words),
 /// 2=scales (`[N, nb]`), [3=zp (packed `[N, nb]` nibbles)], last=dst.
 pub fn matmul_nbits_matvec(zp: bool) -> String {
     let (zp_bind, zp_expr, dst_slot) = if zp {
@@ -1103,7 +1104,7 @@ pub fn matmul_nbits_matvec(zp: bool) -> String {
     };
     format!(
         "
-struct P {{ n: u32, k8: u32, bs8: u32, nb: u32, ks: u32, chunk8: u32, x_wgs: u32 }}
+struct P {{ n: u32, k8: u32, rw: u32, bs8: u32, nb: u32, ks: u32, chunk8: u32, x_wgs: u32 }}
 var<immediate> p: P;
 @group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read> b: array<u32>;
@@ -1132,7 +1133,7 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
         // Blocks are whole words (bs % 8 == 0), so a lane's word never
         // straddles two scales; consecutive lanes read consecutive words.
         for (var i = k0 + lane; i < k1; i += 64u) {{
-            let w = b[n * p.k8 + i];
+            let w = b[n * p.rw + i];
             let blk = i / p.bs8;
             let s = scales[n * p.nb + blk];
             let z = {zp_expr};
@@ -1156,6 +1157,88 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
     }}
     if (lane == 0u && live) {{
         dst[slice * p.n + n] = scratch[lid.x];
+    }}
+}}
+"
+    )
+}
+
+/// Fused `MatMulNBits` prefill (M > 1): the tiled matmul of
+/// [`matmul_tiled`] with the weight tile dequantized on the way into
+/// shared memory, so the f32 weight matrix never exists. 16×16 output
+/// tile, 32-wide K step (4 packed words per weight row; blocks are whole
+/// words). Grid: `x` = ceil(N/16), `y` = ceil(M/16). Bindings: 0=a
+/// (`[M, K]`), 1=b (packed `[N, rw]` words, `rw` = K padded to whole
+/// blocks, in words), 2=scales (`[N, nb]`),
+/// [3=zp (packed `[N, nb]` nibbles)], last=out (`[M, N]`).
+pub fn matmul_nbits_tiled(zp: bool) -> String {
+    let (zp_bind, zp_expr, out_slot) = if zp {
+        (
+            "@group(0) @binding(3) var<storage, read> zp: array<u32>;\n",
+            "f32((zp[(n * p.nb + blk) >> 3u] >> (((n * p.nb + blk) & 7u) * 4u)) & 0xfu)",
+            4,
+        )
+    } else {
+        ("", "8.0", 3)
+    };
+    format!(
+        "
+struct P {{ m: u32, n: u32, k8: u32, rw: u32, bs8: u32, nb: u32 }}
+var<immediate> p: P;
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<u32>;
+@group(0) @binding(2) var<storage, read> scales: array<f32>;
+{zp_bind}@group(0) @binding({out_slot}) var<storage, read_write> out: array<f32>;
+var<workgroup> As: array<f32, 528>;
+var<workgroup> Bs: array<f32, 528>;
+
+@compute @workgroup_size(16, 16)
+fn main(@builtin(workgroup_id) wg: vec3<u32>,
+        @builtin(local_invocation_id) lid: vec3<u32>) {{
+    let tx = lid.x;
+    let ty = lid.y;
+    let n0 = wg.x * 16u;
+    let m0 = wg.y * 16u;
+    let k = p.k8 * 8u;
+    let lin = ty * 16u + tx;
+    var acc = 0.0;
+    for (var w0 = 0u; w0 < p.k8; w0 += 4u) {{
+        let kb = w0 * 8u;
+        // A tile: 16 rows × 32 k, two loads per thread.
+        for (var j = 0u; j < 2u; j += 1u) {{
+            let kk = tx + j * 16u;
+            var av = 0.0;
+            if (m0 + ty < p.m && kb + kk < k) {{ av = a[(m0 + ty) * k + kb + kk]; }}
+            As[ty * 33u + kk] = av;
+        }}
+        // B tile: 16 rows × 4 words, dequantized by the first 64 threads.
+        if (lin < 64u) {{
+            let row = lin / 4u;
+            let wi = lin % 4u;
+            let n = n0 + row;
+            let word = w0 + wi;
+            var vals = array<f32, 8>();
+            if (n < p.n && word < p.k8) {{
+                let w = b[n * p.rw + word];
+                let blk = word / p.bs8;
+                let s = scales[n * p.nb + blk];
+                let z = {zp_expr};
+                for (var j = 0u; j < 8u; j += 1u) {{
+                    vals[j] = (f32((w >> (j * 4u)) & 0xfu) - z) * s;
+                }}
+            }}
+            for (var j = 0u; j < 8u; j += 1u) {{
+                Bs[row * 33u + wi * 8u + j] = vals[j];
+            }}
+        }}
+        workgroupBarrier();
+        for (var kk = 0u; kk < 32u; kk += 1u) {{
+            acc += As[ty * 33u + kk] * Bs[tx * 33u + kk];
+        }}
+        workgroupBarrier();
+    }}
+    if (m0 + ty < p.m && n0 + tx < p.n) {{
+        out[(m0 + ty) * p.n + (n0 + tx)] = acc;
     }}
 }}
 "

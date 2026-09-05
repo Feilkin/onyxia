@@ -166,9 +166,11 @@ are never written by two threads; the two fallback modes are exercised by
 bytes equal host bytes for every layout except the narrowed i64 and
 bool, so 8-bit weights cost one byte each on the device and 4-bit weights
 half a byte. `MatMulNBits` has a fused kernel that multiplies straight from
-the packed nibbles at decode (M = 1) and dequantizes into a scratch matrix
-for the tiled matmul at prefill; the `Dequantize` primitive itself runs as
-a generated kernel, so the decomposition path works too.
+the packed nibbles at decode (M = 1) and dequantizes weight tiles into
+shared memory inside the tiled matmul at prefill; the `Dequantize`
+primitive itself runs as a generated kernel, so the decomposition path
+(and `GatherBlockQuantized`, which lowers to Gather + Dequantize) works
+too.
 
 The two remaining failures are `DynamicQuantizeLinear`, where one element
 sits on a rounding tie that the GPU's `x / scale` (not correctly rounded

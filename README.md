@@ -203,16 +203,26 @@ works: the older `gemma-3-1b-it-ONNX` repo is a raw PyTorch export
 supersedes, and Onyxia does not support it.
 
 Both the fp32 `onnx/model.onnx` and the 4-bit `onnx/model_q4.onnx`
-(`MatMulNBits`, block size 32) run. The q4 weights stay packed on the
-device: decode multiplies straight from the nibbles through a fused
-matvec kernel and prefill dequantizes per layer into a pooled scratch
-matrix, so the 270m drops from 1.07 to 0.76 GiB resident. Prefer fp32 for
-quality — the community q4 quantization noticeably degrades these small
-models — and note that at 270m the decode step is launch-bound, so q4 is
-only a few percent faster. The fp32 models generate token-for-token
-identically to onnxruntime under greedy decoding (including past the 1B's
-512-token sliding window). On an RTX 3060 Ti: 270m ≈ 128 tok/s decode,
-1b ≈ 60 tok/s decode at 3.9 GiB peak VRAM.
+(`MatMulNBits` and `GatherBlockQuantized`, block size 32) run. The q4
+weights stay packed on the device: decode multiplies straight from the
+nibbles through a fused matvec kernel, and prefill's tiled matmul
+dequantizes each weight tile into shared memory on load. On an RTX 5090,
+64-token prefill, greedy decode:
+
+| model | resident VRAM | decode | prefill |
+|---|---|---|---|
+| 270m fp32 | 1.07 GiB | 4.6 ms/tok (218 tok/s) | 27 ms |
+| 270m q4 | 0.76 GiB | 4.1 ms/tok (244 tok/s) | 27 ms |
+| 1B fp32 | 3.81 GiB | 8.2 ms/tok (122 tok/s) | 53 ms |
+| 1B q4 | 0.82 GiB | 5.7 ms/tok (176 tok/s) | 51 ms |
+
+At 270m the decode step is launch-bound (about 470 kernel launches per
+token), so smaller weights barely move it; at 1B the weight reads
+dominate and q4 is 1.4× faster. Prefer fp32 for quality — the community
+q4 quantization noticeably degrades these small models. The fp32 models
+generate token-for-token identically to onnxruntime under greedy decoding
+(including past the 1B's 512-token sliding window). On an RTX 3060 Ti:
+270m ≈ 128 tok/s decode, 1b ≈ 60 tok/s decode at 3.9 GiB peak VRAM.
 
 ## License
 

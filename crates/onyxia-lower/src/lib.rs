@@ -75,7 +75,7 @@ fn normalize_domain(domain: &str) -> String {
 }
 
 /// The rules shipped with onyxia: standard ONNX ops plus the
-/// `com.microsoft` contrib ops the Gemma models use.
+/// `com.microsoft` contrib ops the Gemma models (fp32 and q4 exports) use.
 pub fn standard_registry() -> LoweringRegistry {
     let mut r = LoweringRegistry::new();
     rules::register_all(&mut r);

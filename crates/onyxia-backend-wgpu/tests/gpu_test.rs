@@ -1098,16 +1098,19 @@ fn fused_kernels_match_decompositions() {
 /// split-K decode (K=1024 → ks > 1).
 #[test]
 fn fused_matmul_nbits_matches_decomposition() {
-    let cases: [(usize, usize, usize, usize, bool); 5] = [
+    let cases: [(usize, usize, usize, usize, bool); 8] = [
         // (m, n, k, block_size, zero_points)
         (1, 6, 64, 16, false),
         (1, 6, 64, 16, true),
         (5, 6, 64, 32, false),
         (5, 6, 64, 32, true),
         (1, 8, 1024, 32, true),
+        (20, 40, 96, 32, true),  // multi-tile prefill
+        (1, 6, 1000, 32, true),  // K padded to whole blocks (decode)
+        (3, 6, 1000, 32, false), // … and prefill
     ];
     for (m, n, k, bs, with_zp) in cases {
-        let nb = k / bs;
+        let nb = k.div_ceil(bs);
         let mut b = GraphBuilder::new();
         let a = b.input("a", TensorType::of(DataType::F32, &[m as u64, k as u64]));
         // Deterministic nibbles covering the whole 0..16 range.

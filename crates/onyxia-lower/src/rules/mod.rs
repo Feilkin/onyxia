@@ -112,6 +112,11 @@ pub(crate) fn register_all(r: &mut LoweringRegistry) {
         group_query_attention,
     );
     r.register("com.microsoft", "MatMulNBits", matmul_nbits);
+    r.register(
+        "com.microsoft",
+        "GatherBlockQuantized",
+        gather_block_quantized,
+    );
 }
 
 // ─────────────────────────── element-wise ──────────────────────────────
@@ -1239,6 +1244,111 @@ fn matmul_nbits(ctx: &mut LowerCtx) -> Result<()> {
         ctx.builder()
             .composite("com.microsoft.MatMulNBits", attrs_, &inputs, vec![out_ty])?;
     ctx.set_value(0, outs[0]);
+    Ok(())
+}
+
+/// com.microsoft.GatherBlockQuantized: gather rows of a block-quantized
+/// table (the q4 exports' embedding matrix), then dequantize only the
+/// gathered rows. Data arrives either as logical u4 or as a u8 blob
+/// packing two nibbles per byte along the quantize axis; both become
+/// logical `U4` in place. Lowers to Gather ×3 + Reshape + Dequantize.
+fn gather_block_quantized(ctx: &mut LowerCtx) -> Result<()> {
+    let bits = ctx.attr_i("bits").unwrap_or(4);
+    if bits != 4 {
+        return Err(Error::Unsupported(format!(
+            "GatherBlockQuantized bits={bits}"
+        )));
+    }
+    let block_size = ctx
+        .attr_i("block_size")
+        .ok_or_else(|| ctx.missing_attr("block_size"))? as u64;
+    let (data, indices, scales) = (ctx.value(0)?, ctx.value(1)?, ctx.value(2)?);
+    let zp = if ctx.has_input(3) {
+        Some(ctx.value(3)?)
+    } else {
+        None
+    };
+    let dd = ctx.ty(data).shape.dims().to_vec();
+    let r = dd.len();
+    let gather_axis = ctx.norm_axis(ctx.attr_i("gather_axis").unwrap_or(0), r)?;
+    let quantize_axis = ctx.norm_axis(ctx.attr_i("quantize_axis").unwrap_or(1), r)?;
+    if quantize_axis != r - 1 || gather_axis == quantize_axis {
+        return Err(Error::Unsupported(format!(
+            "GatherBlockQuantized with quantize_axis={quantize_axis} (only the last axis, \
+             distinct from gather_axis={gather_axis})"
+        )));
+    }
+    let const_last = |d: &[DimExpr]| -> Result<u64> {
+        d[r - 1].as_const().ok_or_else(|| {
+            Error::Unsupported("GatherBlockQuantized on a symbolic quantize axis".into())
+        })
+    };
+    // Logical element count along the quantize axis.
+    let d_bytes = const_last(&dd)?;
+    let d_elems = match ctx.ty(data).dtype {
+        DataType::U4 => d_bytes,
+        DataType::U8 => d_bytes * 2,
+        other => {
+            return Err(Error::Unsupported(format!(
+                "GatherBlockQuantized data dtype {other} (u4 or packed u8)"
+            )));
+        }
+    };
+    let n_blocks = d_elems.div_ceil(block_size);
+    if n_blocks * block_size != d_elems {
+        return Err(Error::Unsupported(format!(
+            "GatherBlockQuantized: quantize axis {d_elems} not a multiple of block_size {block_size}"
+        )));
+    }
+    let mut u4_dims = dd.clone();
+    u4_dims[r - 1] = DimExpr::constant(d_elems);
+    let u4_ty = TensorType::new(DataType::U4, onyxia_ir::SymbolicShape(u4_dims.clone()));
+    if ctx.ty(data).dtype == DataType::U8 {
+        reinterpret_const(ctx, data, u4_ty)?;
+    }
+    if let Some(z) = zp {
+        let zd = ctx.ty(z).shape.dims().to_vec();
+        if ctx.ty(z).dtype == DataType::U8 {
+            let zb = const_last(&zd)?;
+            if zb * 2 != n_blocks {
+                return Err(Error::Unsupported(format!(
+                    "GatherBlockQuantized zero_points row of {zb} bytes for {n_blocks} \
+                     blocks (odd block counts are per-row padded)"
+                )));
+            }
+            let mut zdims = zd;
+            zdims[r - 1] = DimExpr::constant(n_blocks);
+            reinterpret_const(
+                ctx,
+                z,
+                TensorType::new(DataType::U4, onyxia_ir::SymbolicShape(zdims)),
+            )?;
+        }
+    }
+
+    let axis = gather_axis;
+    let g = ctx.emit(Prim::Gather { axis }, &[data, indices])?;
+    let gs = ctx.emit(Prim::Gather { axis }, &[scales, indices])?;
+    let gz = match zp {
+        Some(z) => Some(ctx.emit(Prim::Gather { axis }, &[z, indices])?),
+        None => None,
+    };
+    // [.., D] → [.., n_blocks, block_size] for the block-wise Dequantize.
+    let out_dims = ctx.ty(g).shape.dims().to_vec();
+    let mut blocked = out_dims[..out_dims.len() - 1].to_vec();
+    blocked.push(DimExpr::constant(n_blocks));
+    blocked.push(DimExpr::constant(block_size));
+    let gb = ctx.builder().reshape(g, blocked)?;
+    let mut deq_inputs = vec![gb, gs];
+    deq_inputs.extend(gz);
+    let y = ctx.emit(
+        Prim::Dequantize {
+            block_size: block_size as usize,
+            out_shape: out_dims,
+        },
+        &deq_inputs,
+    )?;
+    ctx.set_value(0, y);
     Ok(())
 }
 

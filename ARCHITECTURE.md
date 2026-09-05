@@ -48,7 +48,8 @@ name plus normalized attributes. Its *decomposition* — a function expanding
 it into primitives — lives in a registry (`decomp.rs`), not in the graph.
 Softmax, Gelu, Trilu, LayerNormalization, RMSNormalization,
 SimplifiedLayerNormalization, Attention (the opset-23 standard op),
-RotaryEmbedding, GroupQueryAttention, and MatMulNBits are composites. Ops
+RotaryEmbedding, GroupQueryAttention, and MatMulNBits are composites
+(GatherBlockQuantized lowers straight to primitives). Ops
 without a plausible fused kernel (Conv via im2col, Resize via an
 interpolation matrix, TopK via rank counting, the RNN family unrolled, …)
 lower straight to primitives in `onyxia-lower/src/rules/`.
@@ -132,7 +133,7 @@ explicit `ExecutionPlan` and replaced it with this model within a week.)
 | `onyxia-onnx` | `Graph`/`Node`/`TensorInfo` (stable API over protobuf), external-data loading, ONNX-level DOT export |
 | `onyxia-ir` | `graph.rs` Module/values/nodes/ConstPool · `prim.rs` the primitive enum · `dim.rs` DimExpr/SymbolTable/Bindings · `types.rs` dtypes incl. Q4/Q8 layout · `builder.rs` GraphBuilder · `infer.rs` shape inference · `fold.rs` constant folding + symbolic shape values · `decomp.rs` standard decompositions + legalization · `interp.rs` reference interpreter · `backend.rs` Backend/Session traits · `validate.rs`, `dot.rs`, `attrs.rs` |
 | `onyxia-lower` | `LoweringRegistry`, `lower()` driver (symbols from dim_param, initializers moved — not copied — into the ConstPool, inference + folding at the end), `rules.rs` for the standard op set |
-| `onyxia-backend-wgpu` | `session.rs` prepare/run/upload/download, register file, liveness-driven pooling, live/peak VRAM accounting (`resident_bytes`) · `kernels.rs` generated one-thread-per-element WGSL for primitives, plus split-K matvec and tiled matmul fast paths · `fused.rs` CompositeKernel trait + registry (Softmax, RMS-norm, Gelu, RotaryEmbedding, GroupQueryAttention with chunked online-softmax) · `profile.rs` opt-in per-dispatch GPU timing via timestamp queries (`enable_profiling`/`take_timings`) · `gpu.rs` device/queue, pipeline cache (bind group layouts built by reflecting shader bindings via naga; where the adapter lacks `IMMEDIATES` — all browsers, core WebGPU has no push constants — kernels are rewritten to take params as a storage buffer; `ONYXIA_NO_IMMEDIATES=1` forces this for native testing, and every GPU differential test runs in both modes), buffer pool · `benches/kernels.rs` criterion microbenchmarks at LLM shapes · `legacy-shaders/` hand-written WGSL kept as reference for fused kernels not yet written |
+| `onyxia-backend-wgpu` | `session.rs` prepare/run/upload/download, register file, liveness-driven pooling, live/peak VRAM accounting (`resident_bytes`) · `kernels.rs` generated one-thread-per-element WGSL for primitives, plus split-K matvec and tiled matmul fast paths · `fused.rs` CompositeKernel trait + registry (Softmax, RMS-norm, Gelu, RotaryEmbedding, GroupQueryAttention with chunked online-softmax, MatMulNBits matvec + dequantizing tiled matmul) · `profile.rs` opt-in per-dispatch GPU timing via timestamp queries (`enable_profiling`/`take_timings`) · `gpu.rs` device/queue, pipeline cache (bind group layouts built by reflecting shader bindings via naga; where the adapter lacks `IMMEDIATES` — all browsers, core WebGPU has no push constants — kernels are rewritten to take params as a storage buffer; `ONYXIA_NO_IMMEDIATES=1` forces this for native testing, and every GPU differential test runs in both modes), buffer pool · `benches/kernels.rs` criterion microbenchmarks at LLM shapes · `legacy-shaders/` hand-written WGSL kept as reference for fused kernels not yet written |
 | `onyxia-backend-cubecl` | `Backend`/`Session` over [CubeCL](https://github.com/tracel-ai/cubecl) (`#[cube]` Rust kernels, JIT-compiled; runs on `cubecl-wgpu`). Primitives only — every composite legalizes through its decomposition, which is the demonstration that the primitive set is the whole backend contract |
 | `onyxia-backend-ref` | `run_once(module, inputs)` + `Backend` impl over the interpreter |
 | `onyxia-conformance` | onnx node-test harness: discovery, `TensorProto` loading, per-backend runners, per-operator matrix, expected-pass regression lists |
@@ -169,10 +170,12 @@ written by two threads.
 
 - Fused kernels: GQA, RotaryEmbedding, Softmax, RMS norm, Gelu, and
   MatMulNBits (4-bit only: decode reads the packed nibbles directly;
-  prefill dequantizes into scratch and runs the tiled matmul, so it
-  requires K to be a multiple of the block size). MatMul has split-K
-  matvec kernels for M=1 and a shared-memory tiled kernel for M>1.
-  Decode-speed history in `doc/perf-baseline-2026-07.md`.
+  prefill dequantizes weight tiles into shared memory inside the tiled
+  matmul). `GatherBlockQuantized` (the q4 exports' embedding table)
+  lowers to Gather + Dequantize primitives — no fused kernel, none
+  needed. MatMul has split-K matvec kernels for M=1 and a shared-memory
+  tiled kernel for M>1. Decode-speed history in
+  `doc/perf-baseline-2026-07.md`.
 - 8-bit `MatMulNBits` and the CubeCL backend's Dequantize/Scatter kernels
   are not written (q4 models run on the reference and wgpu backends).
 - On the wgpu backend: late-bound dims (data-dependent shapes),
