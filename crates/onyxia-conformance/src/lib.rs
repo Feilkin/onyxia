@@ -328,7 +328,7 @@ pub fn compare(expected: &Tensor, got: &Tensor) -> Result<(), String> {
                 if !ok {
                     bad += 1;
                     let err = (a - b).abs();
-                    if worst.map_or(true, |(_, wa, wb)| err > (wa - wb).abs()) {
+                    if worst.is_none_or(|(_, wa, wb)| err > (wa - wb).abs()) {
                         worst = Some((i, *a, *b));
                     }
                 }
@@ -638,7 +638,7 @@ pub fn op_of(test_name: &str) -> String {
     ];
     let mut best: Option<(&str, usize)> = None;
     for (alias, op) in ALIASES {
-        if n.starts_with(alias) && best.map_or(true, |(_, l)| alias.len() > l) {
+        if n.starts_with(alias) && best.is_none_or(|(_, l)| alias.len() > l) {
             best = Some((op, alias.len()));
         }
     }
@@ -648,7 +648,7 @@ pub fn op_of(test_name: &str) -> String {
             .filter(|c| *c != '_')
             .collect::<String>()
             .to_ascii_lowercase();
-        if n.starts_with(&key) && best.map_or(true, |(_, l)| key.len() > l) {
+        if n.starts_with(&key) && best.is_none_or(|(_, l)| key.len() > l) {
             best = Some((op, key.len()));
         }
     }

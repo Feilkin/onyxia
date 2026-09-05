@@ -401,8 +401,8 @@ fn conv_transpose(ctx: &mut LowerCtx) -> Result<()> {
     }
     // Stride-dilate the input, then pad for the equivalent direct conv.
     let mut xd = x;
-    for i in 0..nd {
-        xd = dilate_axis(ctx, xd, 2 + i, strides[i])?;
+    for (i, &stride) in strides.iter().enumerate().take(nd) {
+        xd = dilate_axis(ctx, xd, 2 + i, stride)?;
     }
     let dt = dtype(ctx, x);
     let zero = scalar(ctx, dt, 0.0)?;
@@ -485,13 +485,13 @@ fn pool(ctx: &mut LowerCtx, kind: PoolKind) -> Result<()> {
                         let mut o = 0i64;
                         if col_major {
                             let mut stride = 1i64;
-                            for i in 0..nd {
-                                o += coords[i].clamp(0, geo.input[i] - 1) * stride;
+                            for (i, &cd) in coords.iter().enumerate().take(nd) {
+                                o += cd.clamp(0, geo.input[i] - 1) * stride;
                                 stride *= geo.input[i];
                             }
                         } else {
-                            for i in 0..nd {
-                                o = o * geo.input[i] + coords[i].clamp(0, geo.input[i] - 1);
+                            for (i, &cd) in coords.iter().enumerate().take(nd) {
+                                o = o * geo.input[i] + cd.clamp(0, geo.input[i] - 1);
                             }
                         }
                         o

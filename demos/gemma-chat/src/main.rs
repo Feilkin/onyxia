@@ -445,7 +445,7 @@ impl ChatApp {
                 // Theme toggle: a segmented control of two icon buttons.
                 egui::Frame::new()
                     .fill(pal.seg_dim)
-                    .stroke(Stroke::new(1.0, pal.border))
+                    .stroke(Stroke::new(1.0f32, pal.border))
                     .corner_radius(CornerRadius::same(12))
                     .inner_margin(Margin::same(3))
                     .show(ui, |ui| {
@@ -498,7 +498,7 @@ impl ChatApp {
                 let mut submit = false;
                 egui::Frame::new()
                     .fill(pal.input_bg)
-                    .stroke(Stroke::new(1.0, pal.input_border))
+                    .stroke(Stroke::new(1.0f32, pal.input_border))
                     .corner_radius(CornerRadius::same(14))
                     .inner_margin(Margin::symmetric(18, 0))
                     .show(ui, |ui| {
@@ -686,7 +686,7 @@ fn icon_button(
 /// The bordered "↻ reload" pill. Returns true when clicked.
 fn reload_button(ui: &mut egui::Ui, pal: &theme::Palette) -> bool {
     let inner = egui::Frame::new()
-        .stroke(Stroke::new(1.0, pal.border))
+        .stroke(Stroke::new(1.0f32, pal.border))
         .corner_radius(CornerRadius::same(11))
         .inner_margin(Margin::symmetric(12, 8))
         .show(ui, |ui| {
@@ -732,7 +732,7 @@ fn send_button(ui: &mut egui::Ui, pal: &theme::Palette, enabled: bool) -> bool {
 /// The outlined "Stop" pill shown while generating.
 fn stop_button(ui: &mut egui::Ui, pal: &theme::Palette) -> bool {
     let inner = egui::Frame::new()
-        .stroke(Stroke::new(1.0, pal.stop_border))
+        .stroke(Stroke::new(1.0f32, pal.stop_border))
         .corner_radius(CornerRadius::same(14))
         .inner_margin(Margin::symmetric(18, 0))
         .show(ui, |ui| {
@@ -866,7 +866,7 @@ fn bot_bubble(
         let maxw = ui.available_width() * 0.82;
         let mut frame = egui::Frame::new()
             .fill(pal.bot_bg)
-            .stroke(Stroke::new(1.0, pal.border))
+            .stroke(Stroke::new(1.0f32, pal.border))
             .corner_radius(CornerRadius {
                 nw: 20,
                 ne: 20,
