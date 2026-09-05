@@ -292,7 +292,7 @@ pub struct WgpuSession {
 impl WgpuSession {
     /// Buffer-pool statistics `(fresh_allocations, reuses)`.
     pub fn pool_stats(&self) -> (usize, usize) {
-        (self.pool.allocations, self.pool.reuses)
+        self.pool.stats()
     }
 
     /// Total bytes of live GPU buffers created by this session: uploaded
@@ -596,18 +596,15 @@ impl onyxia_ir::Session for WgpuSession {
     type Tensor = GpuTensor;
 
     fn upload(&mut self, tensor: &Tensor) -> Result<GpuTensor> {
+        // Pooled, so per-step inputs (ids, positions, masks) reuse the
+        // same buffers — and the bind groups that read them — step to step.
         let data = to_phys(tensor, self.caps)?;
-        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("upload"),
-            size: data.len() as u64,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let buffer = self
+            .pool
+            .acquire(&self.device, data.len() as u64, &self.mem);
         self.queue.write_buffer(&buffer, 0, &data);
         Ok(GpuTensor {
-            buffer: Arc::new(TrackedBuffer::new(buffer, &self.mem)),
+            buffer,
             dtype: tensor.dtype(),
             shape: tensor.shape().to_vec(),
         })
@@ -673,13 +670,10 @@ impl onyxia_ir::Session for WgpuSession {
                     Error::Runtime(format!("{} (node '{name}'): {e}", kind_name(node)))
                 })?;
 
-            // Release dead intermediates to the pool.
+            // Release dead intermediates: dropping the last handle returns
+            // the buffer to the pool (see `TrackedBuffer`).
             for &vi in &self.deaths[step] {
-                if let Some(t) = regs[vi as usize].take() {
-                    if let Ok(buffer) = Arc::try_unwrap(t.buffer) {
-                        self.pool.release(Arc::new(buffer));
-                    }
-                }
+                regs[vi as usize] = None;
             }
             // Pipelining: hand the GPU the batch so far while the CPU keeps
             // encoding. Queue order keeps every buffer hand-off correct.

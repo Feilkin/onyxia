@@ -249,7 +249,11 @@ fn matvec_nbits(
     k: usize,
     bs: usize,
 ) -> Result<()> {
-    const TARGET_WG: usize = 512;
+    // Split K only for very narrow N: measured on the 1B q4 (N ≥ 256,
+    // 64+ workgroups), the split's `matvec_reduce` dispatch costs more
+    // than the occupancy buys — 130 fewer dispatches took decode from
+    // 3.68 to 3.53 ms/tok.
+    const TARGET_WG: usize = 64;
     const MAX_KS: usize = 64;
     let k8 = k / 8;
     let nb = k.div_ceil(bs);

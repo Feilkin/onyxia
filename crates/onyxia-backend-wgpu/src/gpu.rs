@@ -18,8 +18,8 @@
 
 use onyxia_ir::{Error, Result};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Reserved immediate (push-constant) space per pipeline, in bytes.
 pub const IMMEDIATE_SIZE: u32 = 256;
@@ -395,18 +395,35 @@ impl MemCounter {
 }
 
 /// A `wgpu::Buffer` counted against a [`MemCounter`] for its whole
-/// lifetime. Derefs to the underlying buffer.
+/// lifetime, with a stable identity. Derefs to the underlying buffer.
+///
+/// Buffers handed out by a [`BufferPool`] go back to it when their last
+/// handle drops — wherever that happens, inside a run (dead
+/// intermediates) or in the caller (a KV tensor replaced by the next
+/// step's). They keep their `id` across trips through the pool, which is
+/// what lets the bind-group cache hit on the next step: the same node
+/// binds the same buffer identities as long as the pool hands them back
+/// in the same order.
 pub struct TrackedBuffer {
-    buffer: wgpu::Buffer,
+    buffer: Option<wgpu::Buffer>,
     mem: Arc<MemCounter>,
+    /// Identity for caching; never reused, preserved across pool recycling.
+    pub id: u64,
+    /// The pool to return to on drop (pooled buffers only).
+    pool: Option<std::sync::Weak<Mutex<PoolInner>>>,
 }
 
+static NEXT_BUFFER_ID: AtomicU64 = AtomicU64::new(1);
+
 impl TrackedBuffer {
+    /// A standalone (non-pooled) buffer: destroyed when dropped.
     pub fn new(buffer: wgpu::Buffer, mem: &Arc<MemCounter>) -> Self {
         mem.add(buffer.size());
         Self {
-            buffer,
+            buffer: Some(buffer),
             mem: Arc::clone(mem),
+            id: NEXT_BUFFER_ID.fetch_add(1, Ordering::Relaxed),
+            pool: None,
         }
     }
 }
@@ -414,15 +431,33 @@ impl TrackedBuffer {
 impl std::ops::Deref for TrackedBuffer {
     type Target = wgpu::Buffer;
     fn deref(&self) -> &wgpu::Buffer {
-        &self.buffer
+        self.buffer.as_ref().expect("buffer taken only in drop")
     }
 }
 
 impl Drop for TrackedBuffer {
     fn drop(&mut self) {
-        self.mem
-            .live
-            .fetch_sub(self.buffer.size(), Ordering::Relaxed);
+        let Some(buffer) = self.buffer.take() else {
+            return;
+        };
+        if let Some(pool) = self.pool.as_ref().and_then(std::sync::Weak::upgrade) {
+            if let Ok(mut inner) = pool.lock() {
+                // Back to the free list under the same id; still live.
+                let size = buffer.size();
+                inner
+                    .free
+                    .entry(size)
+                    .or_default()
+                    .push(Arc::new(TrackedBuffer {
+                        buffer: Some(buffer),
+                        mem: Arc::clone(&self.mem),
+                        id: self.id,
+                        pool: self.pool.clone(),
+                    }));
+                return;
+            }
+        }
+        self.mem.live.fetch_sub(buffer.size(), Ordering::Relaxed);
     }
 }
 
@@ -430,38 +465,25 @@ impl Drop for TrackedBuffer {
 /// buffers. Descriptor-set creation is a dominant per-dispatch CPU cost
 /// (wgpu-core tracking plus driver work); across decode steps the same
 /// weights and pooled buffers bind again and again, so hits are the
-/// common case.
+/// common case once buffer identities are stable (see [`TrackedBuffer`]).
 ///
-/// Keys are `Arc` pointers, pinned by `Weak` references: a `Weak` keeps
-/// the `ArcInner` allocation — the address the key is built from —
-/// alive without extending the buffer's lifetime or its strong count
-/// (so the session's `Arc::try_unwrap` pool recycling keeps working).
-/// A key match against a caller's *live* `Arc`s therefore always means
-/// "that same buffer": the address cannot have been reused while the
-/// entry pins it. Entries whose buffers have died can never be hit
-/// again and are shed by the wholesale clear at [`Self::CAP`].
+/// Keys are [`TrackedBuffer::id`]s, which are never reused, so a hit
+/// always means "those same buffers". Every buffer a kernel binds is
+/// either a session constant or pooled — both live as long as the
+/// session — so entries never go stale; the cap only bounds growth.
 #[derive(Default)]
 pub struct BindGroupCache {
-    map: HashMap<String, HashMap<Vec<usize>, CachedBindGroup>>,
+    map: HashMap<String, HashMap<Vec<u64>, Arc<wgpu::BindGroup>>>,
     len: usize,
     /// Lookup statistics since creation (diagnostics).
     pub hits: u64,
     pub misses: u64,
 }
 
-struct CachedBindGroup {
-    bind_group: Arc<wgpu::BindGroup>,
-    /// Pins the keyed addresses (see type docs) — never upgraded.
-    _pins: Vec<std::sync::Weak<TrackedBuffer>>,
-}
-
 impl BindGroupCache {
-    /// Entry cap: one-shot buffers (per-step uploads) accrete entries, so
-    /// the cache is dropped wholesale when it grows past this and rebuilt
-    /// from the steady-state working set within a step or two.
-    const CAP: usize = 4096;
-    /// Misses between sweeps of entries whose buffers have died.
-    const SWEEP_EVERY: u64 = 64;
+    /// Entry cap: dropped wholesale when exceeded and rebuilt from the
+    /// steady-state working set within a step.
+    const CAP: usize = 8192;
 
     pub fn get_or_create(
         &mut self,
@@ -470,25 +492,12 @@ impl BindGroupCache {
         layout: &wgpu::BindGroupLayout,
         buffers: &[&Arc<TrackedBuffer>],
     ) -> Arc<wgpu::BindGroup> {
-        let key: Vec<usize> = buffers.iter().map(|b| Arc::as_ptr(b) as usize).collect();
+        let key: Vec<u64> = buffers.iter().map(|b| b.id).collect();
         if let Some(hit) = self.map.get(label).and_then(|m| m.get(&key)) {
             self.hits += 1;
-            return Arc::clone(&hit.bind_group);
+            return Arc::clone(hit);
         }
         self.misses += 1;
-        // A bind group keeps its buffers alive inside wgpu, so an entry
-        // whose buffer has been dropped is a leak (one 64 MB output per
-        // iteration adds up to an OOM long before CAP). Sweep dead entries
-        // every so often; the pins tell us which those are.
-        if self.misses % Self::SWEEP_EVERY == 0 {
-            let mut removed = 0;
-            for m in self.map.values_mut() {
-                let before = m.len();
-                m.retain(|_, e| e._pins.iter().all(|w| w.strong_count() > 0));
-                removed += before - m.len();
-            }
-            self.len -= removed;
-        }
         if self.len >= Self::CAP {
             self.map.clear();
             self.len = 0;
@@ -507,25 +516,26 @@ impl BindGroupCache {
             entries: &entries,
         }));
         self.len += 1;
-        self.map.entry(label.to_string()).or_default().insert(
-            key,
-            CachedBindGroup {
-                bind_group: Arc::clone(&bind_group),
-                _pins: buffers.iter().map(|&b| Arc::downgrade(b)).collect(),
-            },
-        );
+        self.map
+            .entry(label.to_string())
+            .or_default()
+            .insert(key, Arc::clone(&bind_group));
         bind_group
     }
 }
 
 /// Size-bucketed free list of GPU buffers (power-of-two buckets, ≥4 bytes).
+/// Shared with the buffers it hands out, which return themselves on drop.
 #[derive(Default)]
 pub struct BufferPool {
+    inner: Arc<Mutex<PoolInner>>,
+}
+
+#[derive(Default)]
+struct PoolInner {
     free: HashMap<u64, Vec<Arc<TrackedBuffer>>>,
-    /// Fresh allocations made (diagnostics).
-    pub allocations: usize,
-    /// Buffers served from the pool (diagnostics).
-    pub reuses: usize,
+    allocations: usize,
+    reuses: usize,
 }
 
 impl BufferPool {
@@ -541,29 +551,37 @@ impl BufferPool {
         mem: &Arc<MemCounter>,
     ) -> Arc<TrackedBuffer> {
         let bucket = Self::bucket(size);
-        if let Some(buf) = self.free.get_mut(&bucket).and_then(Vec::pop) {
-            self.reuses += 1;
+        let mut inner = self.inner.lock().expect("buffer pool poisoned");
+        if let Some(buf) = inner.free.get_mut(&bucket).and_then(Vec::pop) {
+            inner.reuses += 1;
             return buf;
         }
-        self.allocations += 1;
-        Arc::new(TrackedBuffer::new(
-            device.create_buffer(&wgpu::BufferDescriptor {
+        inner.allocations += 1;
+        mem.add(bucket);
+        Arc::new(TrackedBuffer {
+            buffer: Some(device.create_buffer(&wgpu::BufferDescriptor {
                 label: None,
                 size: bucket,
                 usage: wgpu::BufferUsages::STORAGE
                     | wgpu::BufferUsages::COPY_SRC
                     | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
-            }),
-            mem,
-        ))
+            })),
+            mem: Arc::clone(mem),
+            id: NEXT_BUFFER_ID.fetch_add(1, Ordering::Relaxed),
+            pool: Some(Arc::downgrade(&self.inner)),
+        })
     }
 
-    /// Return a buffer to the pool (it stays resident, and counted).
+    /// Return a buffer to the pool. Dropping the handle does the same;
+    /// this just makes the intent explicit at call sites.
     pub fn release(&mut self, buffer: Arc<TrackedBuffer>) {
-        self.free
-            .entry(Self::bucket(buffer.size()))
-            .or_default()
-            .push(buffer);
+        drop(buffer);
+    }
+
+    /// `(fresh allocations, buffers served from the pool)`.
+    pub fn stats(&self) -> (usize, usize) {
+        let inner = self.inner.lock().expect("buffer pool poisoned");
+        (inner.allocations, inner.reuses)
     }
 }

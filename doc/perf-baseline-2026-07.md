@@ -266,3 +266,43 @@ bind groups referenced (a bind group keeps its buffers alive in wgpu),
 so a benchmark creating a fresh 64 MB output per iteration ran out of
 memory before the 4096-entry wholesale clear; dead entries are now
 swept every 64 misses.
+
+## Update 2026-09-05, later still: the CPU side, second pass
+
+After chunked submits the 1B q4 step was encode 1.95 ms + GPU wait 1.65
++ 0.2, with the bind-group cache missing on **every** dispatch. Root
+cause: a pooled buffer's identity was its `Arc` address, and buffers that
+left the session (the KV `present.*` outputs, per-step uploads) were
+destroyed on drop rather than pooled, so every step allocated ~50 new
+buffers and shifted the pool's hand-out order for everything else.
+
+Fix (`TrackedBuffer` / `BufferPool` in `gpu.rs`): pooled buffers carry
+a stable `id` and return themselves to the pool when their last handle
+drops — wherever that is, including the CLI replacing last step's KV —
+and `upload` draws from the pool too. The bind-group cache keys on ids.
+Misses fell from 663 to 8 per step (the 8 are the KV buffers crossing
+a power-of-two bucket boundary as the sequence grows).
+
+Then the q4 matvec's split-K was switched off for N ≥ 256 (its
+`matvec_reduce` cost more than the occupancy bought; the fp32 matvec
+*needs* the split — removing it doubles the step — so its threshold
+stays at 512).
+
+| model | before | encode → | GPU wait → | after | dispatches |
+|---|---|---|---|---|---|
+| 1B q4 | 3.76 ms/tok | 1.95 → 0.92 | 1.65 → 2.41 | **3.55 ms/tok** (281 tok/s) | 663 → 533 |
+| 270m q4 | 2.70 | 1.36 → 0.65 | 1.25 → 1.70 | **2.51** (398 tok/s) | 493 → 403 |
+| 1B fp32 | 6.01 | 2.08 → 1.26 | 3.84 → 4.53 | 5.99 (167 tok/s) | 712 |
+| 270m fp32 | 3.22 | 1.40 → 0.80 | 1.70 → 2.19 | 3.14 (318 tok/s) | 529 |
+
+Read the wait column: as encode shrank the GPU wait grew by the same
+amount. The step is now **GPU-bound** — the GPU needs ~3.3 ms for the
+1B q4's 533 dispatches (~6 µs each, the per-dispatch floor plus small
+kernels) and the CPU finishes encoding well before it. Further CPU work
+would not move wall time; the levers are now GPU-side: fewer dispatches
+(fusing the residual Add into the RMS norm, the gate Mul into Gelu, and
+the two GQA concat passes into attention would remove ~130 more), and
+the attention + RMS-norm kernels themselves (~1 ms each per step).
+
+Pooling everything costs ~0.1 GiB of resident VRAM (power-of-two buckets
+for the KV buffers as they grow), visible in the README table.

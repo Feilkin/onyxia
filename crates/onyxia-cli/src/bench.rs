@@ -220,8 +220,7 @@ pub fn run(session: &mut LlmSession<WgpuSession>, cfg: &BenchConfig) -> Result<(
             (stats.mean * 1e3 - accounted).max(0.0),
         );
         println!(
-            "  encode: {} dispatches/step, {:.0} bind-group cache misses/step (pooled buffers \
-             change identity between steps)",
+            "  encode: {} dispatches/step, {:.0} bind-group cache misses/step",
             cpu.dispatches / cfg.decode_tokens.max(1) as u64,
             (cpu.bind_misses - misses_before) as f64 / n,
         );
