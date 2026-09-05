@@ -750,13 +750,6 @@ impl WgpuSession {
                         }
                     }
                 }
-                // Fused kernels read index tensors as i32; with native
-                // i64 storage that needs a conversion (an alias otherwise).
-                for t in &mut inputs {
-                    if t.dtype == DataType::I64 {
-                        *t = self.cast_to(t, DataType::I32)?;
-                    }
-                }
                 if f16 {
                     for (i, (d, _)) in outs_meta.iter_mut().enumerate() {
                         if *d == DataType::F16 {
