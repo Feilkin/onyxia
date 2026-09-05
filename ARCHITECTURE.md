@@ -173,9 +173,11 @@ written by two threads.
   prefill dequantizes weight tiles into shared memory inside the tiled
   matmul). `GatherBlockQuantized` (the q4 exports' embedding table)
   lowers to Gather + Dequantize primitives — no fused kernel, none
-  needed. MatMul has split-K matvec kernels for M=1 and a shared-memory
-  tiled kernel for M>1. Decode-speed history in
-  `doc/perf-baseline-2026-07.md`.
+  needed. MatMul has split-K matvec kernels for M=1 and a register-blocked
+  64×64 tile (4×4 outputs per thread, split-K when the grid is small) for
+  M>1; a cooperative-matrix (tensor core, f16-in/f32-acc) tile exists
+  behind `ONYXIA_MATMUL_TILE=coop` but is not faster at prefill sizes.
+  Speed history in `doc/perf-baseline-2026-07.md`.
 - 8-bit `MatMulNBits` and the CubeCL backend's Dequantize/Scatter kernels
   are not written (q4 models run on the reference and wgpu backends).
 - On the wgpu backend: late-bound dims (data-dependent shapes),

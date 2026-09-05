@@ -1163,14 +1163,16 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
     )
 }
 
-/// Fused `MatMulNBits` prefill (M > 1): the tiled matmul of
-/// [`matmul_tiled`] with the weight tile dequantized on the way into
-/// shared memory, so the f32 weight matrix never exists. 16×16 output
-/// tile, 32-wide K step (4 packed words per weight row; blocks are whole
-/// words). Grid: `x` = ceil(N/16), `y` = ceil(M/16). Bindings: 0=a
-/// (`[M, K]`), 1=b (packed `[N, rw]` words, `rw` = K padded to whole
-/// blocks, in words), 2=scales (`[N, nb]`),
-/// [3=zp (packed `[N, nb]` nibbles)], last=out (`[M, N]`).
+/// Fused `MatMulNBits` prefill (M > 1): the register-blocked tile of
+/// [`matmul_tiled_rb`] with the weight tile dequantized on the way into
+/// workgroup memory, so the f32 weight matrix never exists. 64×64 output
+/// tile, 256 threads × 4×4 outputs, K step 32 (4 packed words per weight
+/// row; blocks are whole words). Grid: `x` = ceil(N/64), `y` =
+/// ceil(M/64), `z` = `ks` K-slices (partials `[ks, M, N]`, folded by
+/// `matvec_reduce`; `p.chunk` in elements, a multiple of 32).
+/// Bindings: 0=a (`[M, K]`), 1=b (packed `[N, rw]` words, `rw` = K padded
+/// to whole blocks, in words), 2=scales (`[N, nb]`), [3=zp (packed
+/// `[N, nb]` nibbles)], last=out.
 pub fn matmul_nbits_tiled(zp: bool) -> String {
     let (zp_bind, zp_expr, out_slot) = if zp {
         (
@@ -1183,42 +1185,49 @@ pub fn matmul_nbits_tiled(zp: bool) -> String {
     };
     format!(
         "
-struct P {{ m: u32, n: u32, k8: u32, rw: u32, bs8: u32, nb: u32 }}
+struct P {{ m: u32, n: u32, k8: u32, rw: u32, bs8: u32, nb: u32, chunk: u32 }}
 var<immediate> p: P;
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read> b: array<u32>;
 @group(0) @binding(2) var<storage, read> scales: array<f32>;
 {zp_bind}@group(0) @binding({out_slot}) var<storage, read_write> out: array<f32>;
-var<workgroup> As: array<f32, 528>;
-var<workgroup> Bs: array<f32, 528>;
+// k-major vec4 tiles: As[k][m/4], Bs[k][n/4]; 32 k × 64 columns each.
+var<workgroup> As: array<vec4<f32>, 512>;
+var<workgroup> Bs: array<vec4<f32>, 512>;
 
 @compute @workgroup_size(16, 16)
 fn main(@builtin(workgroup_id) wg: vec3<u32>,
         @builtin(local_invocation_id) lid: vec3<u32>) {{
     let tx = lid.x;
     let ty = lid.y;
-    let n0 = wg.x * 16u;
-    let m0 = wg.y * 16u;
-    let k = p.k8 * 8u;
     let lin = ty * 16u + tx;
-    var acc = 0.0;
-    for (var w0 = 0u; w0 < p.k8; w0 += 4u) {{
-        let kb = w0 * 8u;
-        // A tile: 16 rows × 32 k, two loads per thread.
-        for (var j = 0u; j < 2u; j += 1u) {{
-            let kk = tx + j * 16u;
-            var av = 0.0;
-            if (m0 + ty < p.m && kb + kk < k) {{ av = a[(m0 + ty) * k + kb + kk]; }}
-            As[ty * 33u + kk] = av;
+    let n0 = wg.x * 64u;
+    let m0 = wg.y * 64u;
+    let k = p.k8 * 8u;
+    let k_lo = wg.z * p.chunk;
+    let k_hi = min(k_lo + p.chunk, k);
+    var acc: array<vec4<f32>, 4>;
+    for (var k0 = k_lo; k0 < k_hi; k0 += 32u) {{
+        // A tile 64 m × 32 k: thread owns (m, 8 consecutive k).
+        {{
+            let mm = lin / 4u;
+            let kq = (lin % 4u) * 8u;
+            let m = m0 + mm;
+            for (var j = 0u; j < 8u; j += 1u) {{
+                let kk = k0 + kq + j;
+                var v = 0.0;
+                if (m < p.m && kk < k_hi) {{ v = a[m * k + kk]; }}
+                As[(kq + j) * 16u + mm / 4u][mm % 4u] = v;
+            }}
         }}
-        // B tile: 16 rows × 4 words, dequantized by the first 64 threads.
-        if (lin < 64u) {{
-            let row = lin / 4u;
+        // B tile 32 k × 64 n: one packed word (8 k) per thread, dequantized.
+        {{
+            let nn = lin / 4u;
             let wi = lin % 4u;
-            let n = n0 + row;
-            let word = w0 + wi;
+            let n = n0 + nn;
+            let word = k0 / 8u + wi;
             var vals = array<f32, 8>();
-            if (n < p.n && word < p.k8) {{
+            if (n < p.n && word * 8u < k_hi) {{
                 let w = b[n * p.rw + word];
                 let blk = word / p.bs8;
                 let s = scales[n * p.nb + blk];
@@ -1228,19 +1237,304 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
                 }}
             }}
             for (var j = 0u; j < 8u; j += 1u) {{
-                Bs[row * 33u + wi * 8u + j] = vals[j];
+                Bs[(wi * 8u + j) * 16u + nn / 4u][nn % 4u] = vals[j];
             }}
         }}
         workgroupBarrier();
         for (var kk = 0u; kk < 32u; kk += 1u) {{
-            acc += As[ty * 33u + kk] * Bs[tx * 33u + kk];
+            let av = As[kk * 16u + ty];
+            let bv = Bs[kk * 16u + tx];
+            acc[0] += av.x * bv;
+            acc[1] += av.y * bv;
+            acc[2] += av.z * bv;
+            acc[3] += av.w * bv;
         }}
         workgroupBarrier();
     }}
-    if (m0 + ty < p.m && n0 + tx < p.n) {{
-        out[(m0 + ty) * p.n + (n0 + tx)] = acc;
+    let out_base = wg.z * p.m * p.n;
+    for (var i = 0u; i < 4u; i += 1u) {{
+        let m = m0 + ty * 4u + i;
+        if (m < p.m) {{
+            for (var j = 0u; j < 4u; j += 1u) {{
+                let n = n0 + tx * 4u + j;
+                if (n < p.n) {{ out[out_base + m * p.n + n] = acc[i][j]; }}
+            }}
+        }}
     }}
 }}
 "
+    )
+}
+
+/// Register-blocked tiled matmul: 64×64 output tile per workgroup, 256
+/// threads each owning a 4×4 micro-tile, K step 16. Operand tiles are
+/// staged in workgroup memory *k-major* as `vec4` columns (`As[k][m/4]`,
+/// `Bs[k][n/4]`), so the inner loop is two vec4 shared loads per 16
+/// FMAs — versus one shared load per FMA in [`matmul_tiled`]. Global
+/// loads put consecutive threads on the contiguous axis of each layout.
+/// Bindings as [`matmul_tiled`]; grid `x` = ceil(N/64), `y` = ceil(M/64),
+/// `z` = `ks × batch`: when the tile grid alone can't fill the device
+/// (small N, long K — the down projections) K is split into `ks` slices
+/// of `p.chunk` whose partial sums land in `[ks, batch, M, N]` and are
+/// folded by `matvec_reduce`.
+pub fn matmul_tiled_rb(trans_a: bool, trans_b: bool) -> String {
+    // A tile: 64 m × 16 k. Four elements per thread.
+    let a_load = if trans_a {
+        // a is [K,M]: contiguous along m → thread owns (k, 4 consecutive m).
+        "
+        {
+            let kk = lin / 16u;
+            let mq = (lin % 16u) * 4u;
+            var v = vec4<f32>(0.0);
+            let k = k0 + kk;
+            if (k < k_hi) {
+                for (var j = 0u; j < 4u; j += 1u) {
+                    let m = m0 + mq + j;
+                    if (m < p.m) { v[j] = a[a_base + k * p.m + m]; }
+                }
+            }
+            As[kk * 16u + mq / 4u] = v;
+        }"
+    } else {
+        // a is [M,K]: contiguous along k → thread owns (m, 4 consecutive k).
+        "
+        {
+            let mm = lin / 4u;
+            let kq = (lin % 4u) * 4u;
+            let m = m0 + mm;
+            for (var j = 0u; j < 4u; j += 1u) {
+                let k = k0 + kq + j;
+                var v = 0.0;
+                if (m < p.m && k < k_hi) { v = a[a_base + m * p.k + k]; }
+                As[(kq + j) * 16u + mm / 4u][mm % 4u] = v;
+            }
+        }"
+    };
+    // B tile: 16 k × 64 n.
+    let b_load = if trans_b {
+        // b is [N,K]: contiguous along k → thread owns (n, 4 consecutive k).
+        "
+        {
+            let nn = lin / 4u;
+            let kq = (lin % 4u) * 4u;
+            let n = n0 + nn;
+            for (var j = 0u; j < 4u; j += 1u) {
+                let k = k0 + kq + j;
+                var v = 0.0;
+                if (n < p.n && k < k_hi) { v = b[b_base + n * p.k + k]; }
+                Bs[(kq + j) * 16u + nn / 4u][nn % 4u] = v;
+            }
+        }"
+    } else {
+        // b is [K,N]: contiguous along n → thread owns (k, 4 consecutive n).
+        "
+        {
+            let kk = lin / 16u;
+            let nq = (lin % 16u) * 4u;
+            var v = vec4<f32>(0.0);
+            let k = k0 + kk;
+            if (k < k_hi) {
+                for (var j = 0u; j < 4u; j += 1u) {
+                    let n = n0 + nq + j;
+                    if (n < p.n) { v[j] = b[b_base + k * p.n + n]; }
+                }
+            }
+            Bs[kk * 16u + nq / 4u] = v;
+        }"
+    };
+    format!(
+        "
+struct P {{ m: u32, n: u32, k: u32, a_bs: u32, b_bs: u32, batch: u32, chunk: u32 }}
+var<immediate> p: P;
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> out: array<f32>;
+var<workgroup> As: array<vec4<f32>, 256>;
+var<workgroup> Bs: array<vec4<f32>, 256>;
+
+@compute @workgroup_size(16, 16)
+fn main(@builtin(workgroup_id) wg: vec3<u32>,
+        @builtin(local_invocation_id) lid: vec3<u32>) {{
+    let tx = lid.x;
+    let ty = lid.y;
+    let lin = ty * 16u + tx;
+    let n0 = wg.x * 64u;
+    let m0 = wg.y * 64u;
+    // z = slice * batch + bz: K slices are the leading dim of the partials.
+    let bz = wg.z % p.batch;
+    let slice = wg.z / p.batch;
+    let a_base = bz * p.a_bs;
+    let b_base = bz * p.b_bs;
+    let k_lo = slice * p.chunk;
+    let k_hi = min(k_lo + p.chunk, p.k);
+    var acc: array<vec4<f32>, 4>;
+    for (var k0 = k_lo; k0 < k_hi; k0 += 16u) {{
+        {a_load}
+        {b_load}
+        workgroupBarrier();
+        for (var kk = 0u; kk < 16u; kk += 1u) {{
+            let av = As[kk * 16u + ty];
+            let bv = Bs[kk * 16u + tx];
+            acc[0] += av.x * bv;
+            acc[1] += av.y * bv;
+            acc[2] += av.z * bv;
+            acc[3] += av.w * bv;
+        }}
+        workgroupBarrier();
+    }}
+    let out_base = wg.z * p.m * p.n;
+    for (var i = 0u; i < 4u; i += 1u) {{
+        let m = m0 + ty * 4u + i;
+        if (m < p.m) {{
+            for (var j = 0u; j < 4u; j += 1u) {{
+                let n = n0 + tx * 4u + j;
+                if (n < p.n) {{ out[out_base + m * p.n + n] = acc[i][j]; }}
+            }}
+        }}
+    }}
+}}"
+    )
+}
+
+/// Cooperative-matrix (tensor core) tiled matmul, native only
+/// (`Features::EXPERIMENTAL_COOPERATIVE_MATRIX`, 32-wide subgroups).
+///
+/// Uses the configuration desktop Vulkan drivers actually expose —
+/// **f16 A/B, f32 accumulate, 16×16×16** (NVIDIA lists no f32-input
+/// shape at all; the 8×8 f32 form wgpu documents silently produces
+/// zeros there). Operands are therefore rounded to f16 on the way into
+/// workgroup memory: the same 10-bit mantissa as TF32, the default for
+/// fp32 matmuls in cuBLAS/onnxruntime, but with f16's narrower exponent
+/// range — hence opt-in, see `MatmulTile`.
+///
+/// Same 64×64 tile, split-K partials, immediates and grid as
+/// [`matmul_tiled_rb`]; K step 32. 128 threads = 4 subgroups, each
+/// owning a 32×32 quadrant as 2×2 `coop_mat16x16<f32, C>`. Tiles are
+/// staged k-major (`As[k][m]`, `Bs[k][n]`), which makes A column-major
+/// (`coopLoad`) and B row-major (`coopLoadT`); the C quadrant goes
+/// through workgroup memory for the bounds-guarded store.
+pub fn matmul_coop(trans_a: bool, trans_b: bool) -> String {
+    // Tile loads: 128 threads; A 64×32 and B 32×64 → 16 elements each.
+    let a_load = if trans_a {
+        // a [K,M], contiguous along m: thread owns (k, 16 consecutive m).
+        "
+        {
+            let kk = lin / 4u;
+            let mq = (lin % 4u) * 16u;
+            let k = k0 + kk;
+            for (var j = 0u; j < 16u; j += 1u) {
+                let m = m0 + mq + j;
+                var v = 0.0;
+                if (k < k_hi && m < p.m) { v = a[a_base + k * p.m + m]; }
+                As[kk * 64u + mq + j] = f16(v);
+            }
+        }"
+    } else {
+        // a [M,K], contiguous along k: thread owns (m, 16 consecutive k).
+        "
+        {
+            let mm = lin / 2u;
+            let kq = (lin % 2u) * 16u;
+            let m = m0 + mm;
+            for (var j = 0u; j < 16u; j += 1u) {
+                let k = k0 + kq + j;
+                var v = 0.0;
+                if (m < p.m && k < k_hi) { v = a[a_base + m * p.k + k]; }
+                As[(kq + j) * 64u + mm] = f16(v);
+            }
+        }"
+    };
+    let b_load = if trans_b {
+        // b [N,K], contiguous along k: thread owns (n, 16 consecutive k).
+        "
+        {
+            let nn = lin / 2u;
+            let kq = (lin % 2u) * 16u;
+            let n = n0 + nn;
+            for (var j = 0u; j < 16u; j += 1u) {
+                let k = k0 + kq + j;
+                var v = 0.0;
+                if (n < p.n && k < k_hi) { v = b[b_base + n * p.k + k]; }
+                Bs[(kq + j) * 64u + nn] = f16(v);
+            }
+        }"
+    } else {
+        // b [K,N], contiguous along n: thread owns (k, 16 consecutive n).
+        "
+        {
+            let kk = lin / 4u;
+            let nq = (lin % 4u) * 16u;
+            let k = k0 + kk;
+            for (var j = 0u; j < 16u; j += 1u) {
+                let n = n0 + nq + j;
+                var v = 0.0;
+                if (k < k_hi && n < p.n) { v = b[b_base + k * p.n + n]; }
+                Bs[kk * 64u + nq + j] = f16(v);
+            }
+        }"
+    };
+    format!(
+        "enable f16;
+enable wgpu_cooperative_matrix;
+struct P {{ m: u32, n: u32, k: u32, a_bs: u32, b_bs: u32, batch: u32, chunk: u32 }}
+var<immediate> p: P;
+@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> out: array<f32>;
+var<workgroup> As: array<f16, 2048>;
+var<workgroup> Bs: array<f16, 2048>;
+var<workgroup> Cs: array<f32, 4096>;
+
+@compute @workgroup_size(128)
+fn main(@builtin(workgroup_id) wg: vec3<u32>,
+        @builtin(local_invocation_id) lid: vec3<u32>) {{
+    let lin = lid.x;
+    // Subgroup index, assuming 32-wide subgroups (gated at device creation).
+    let sg = lin / 32u;
+    let n0 = wg.x * 64u;
+    let m0 = wg.y * 64u;
+    let bz = wg.z % p.batch;
+    let slice = wg.z / p.batch;
+    let a_base = bz * p.a_bs;
+    let b_base = bz * p.b_bs;
+    let k_lo = slice * p.chunk;
+    let k_hi = min(k_lo + p.chunk, p.k);
+    let qm = sg / 2u;
+    let qn = sg % 2u;
+    var c00 = coop_mat16x16<f32, C>();
+    var c01 = coop_mat16x16<f32, C>();
+    var c10 = coop_mat16x16<f32, C>();
+    var c11 = coop_mat16x16<f32, C>();
+    for (var k0 = k_lo; k0 < k_hi; k0 += 32u) {{
+        {a_load}
+        {b_load}
+        workgroupBarrier();
+        for (var ks = 0u; ks < 32u; ks += 16u) {{
+            let a0 = coopLoad<coop_mat16x16<f16, A>>(&As[ks * 64u + qm * 32u], 64u);
+            let a1 = coopLoad<coop_mat16x16<f16, A>>(&As[ks * 64u + qm * 32u + 16u], 64u);
+            let b0 = coopLoadT<coop_mat16x16<f16, B>>(&Bs[ks * 64u + qn * 32u], 64u);
+            let b1 = coopLoadT<coop_mat16x16<f16, B>>(&Bs[ks * 64u + qn * 32u + 16u], 64u);
+            c00 = coopMultiplyAdd(a0, b0, c00);
+            c01 = coopMultiplyAdd(a0, b1, c01);
+            c10 = coopMultiplyAdd(a1, b0, c10);
+            c11 = coopMultiplyAdd(a1, b1, c11);
+        }}
+        workgroupBarrier();
+    }}
+    coopStoreT(c00, &Cs[(qm * 32u) * 64u + qn * 32u], 64u);
+    coopStoreT(c01, &Cs[(qm * 32u) * 64u + qn * 32u + 16u], 64u);
+    coopStoreT(c10, &Cs[(qm * 32u + 16u) * 64u + qn * 32u], 64u);
+    coopStoreT(c11, &Cs[(qm * 32u + 16u) * 64u + qn * 32u + 16u], 64u);
+    workgroupBarrier();
+    // Guarded store: 4096 outputs over 128 threads, 32 each, coalesced.
+    let out_base = wg.z * p.m * p.n;
+    for (var e = lin; e < 4096u; e += 128u) {{
+        let r = e / 64u;
+        let c = e % 64u;
+        let m = m0 + r;
+        let n = n0 + c;
+        if (m < p.m && n < p.n) {{ out[out_base + m * p.n + n] = Cs[e]; }}
+    }}
+}}"
     )
 }

@@ -47,6 +47,24 @@ pub struct GpuContext {
     /// `ONYXIA_SUBMIT_CHUNK=n` overrides (tests use 1 to stress the
     /// cross-submit buffer hand-offs).
     pub submit_chunk: usize,
+    /// Which M>1 f32 matmul kernel the session dispatches. Default: the
+    /// register-blocked tile. `ONYXIA_MATMUL_TILE=classic|rb|coop`
+    /// overrides; `coop` (tensor cores, f16 inputs / f32 accumulate) needs
+    /// the adapter feature and 32-wide subgroups, and is opt-in because it
+    /// rounds operands to f16 and, at prefill sizes, is not faster.
+    pub matmul_tile: MatmulTile,
+}
+
+/// M>1 f32 matmul kernel family (see `kernels.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatmulTile {
+    /// 16×16 tile, one output per thread (`matmul_tiled`).
+    Classic,
+    /// 64×64 tile, 4×4 outputs per thread (`matmul_tiled_rb`).
+    Rb,
+    /// Cooperative-matrix (tensor core) tile, f16 inputs / f32 accumulate
+    /// (`matmul_coop`); opt-in.
+    Coop,
 }
 
 /// Default [`GpuContext::submit_chunk`]: measured on an RTX 5090 with the
@@ -98,6 +116,20 @@ impl GpuContext {
             required_features |= wgpu::Features::SHADER_INT64;
             caps.int64 = true;
         }
+        // Cooperative matrices (tensor cores): experimental, native only.
+        // The kernel assumes 32-wide subgroups (4 per 128-thread workgroup).
+        let coop = adapter
+            .features()
+            .contains(wgpu::Features::EXPERIMENTAL_COOPERATIVE_MATRIX)
+            && adapter.features().contains(wgpu::Features::SUBGROUP)
+            && adapter_info.subgroup_min_size == 32
+            && adapter_info.subgroup_max_size == 32
+            && adapter.limits().max_compute_workgroup_storage_size >= 24576
+            && !env_off("ONYXIA_NO_COOPMAT");
+        if coop {
+            required_features |=
+                wgpu::Features::EXPERIMENTAL_COOPERATIVE_MATRIX | wgpu::Features::SUBGROUP;
+        }
         // Take the adapter's full limits: model weights (embedding tables)
         // exceed the 128/256 MiB downlevel buffer defaults.
         let (device, queue) = adapter
@@ -108,10 +140,30 @@ impl GpuContext {
                     max_immediate_size: if use_immediates { IMMEDIATE_SIZE } else { 0 },
                     ..adapter.limits()
                 },
+                // SAFETY: opts into wgpu's experimental feature set (the
+                // cooperative-matrix kernel); the only kernel using it is
+                // differential-tested against the register-blocked tile.
+                experimental_features: if coop {
+                    unsafe { wgpu::ExperimentalFeatures::enabled() }
+                } else {
+                    wgpu::ExperimentalFeatures::disabled()
+                },
                 ..Default::default()
             })
             .await
             .map_err(|e| Error::Runtime(format!("device request failed: {e}")))?;
+        let matmul_tile = match std::env::var("ONYXIA_MATMUL_TILE").as_deref() {
+            Ok("classic") => MatmulTile::Classic,
+            Ok("rb") => MatmulTile::Rb,
+            Ok("coop") if coop => MatmulTile::Coop,
+            Ok("coop") => {
+                eprintln!(
+                    "onyxia: ONYXIA_MATMUL_TILE=coop but the adapter lacks cooperative matrices; using rb"
+                );
+                MatmulTile::Rb
+            }
+            _ => MatmulTile::Rb,
+        };
         let submit_chunk = std::env::var("ONYXIA_SUBMIT_CHUNK")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -123,6 +175,7 @@ impl GpuContext {
             use_immediates,
             caps,
             submit_chunk,
+            matmul_tile,
         })
     }
 
@@ -393,6 +446,8 @@ impl BindGroupCache {
     /// the cache is dropped wholesale when it grows past this and rebuilt
     /// from the steady-state working set within a step or two.
     const CAP: usize = 4096;
+    /// Misses between sweeps of entries whose buffers have died.
+    const SWEEP_EVERY: u64 = 64;
 
     pub fn get_or_create(
         &mut self,
@@ -407,6 +462,19 @@ impl BindGroupCache {
             return Arc::clone(&hit.bind_group);
         }
         self.misses += 1;
+        // A bind group keeps its buffers alive inside wgpu, so an entry
+        // whose buffer has been dropped is a leak (one 64 MB output per
+        // iteration adds up to an OOM long before CAP). Sweep dead entries
+        // every so often; the pins tell us which those are.
+        if self.misses % Self::SWEEP_EVERY == 0 {
+            let mut removed = 0;
+            for m in self.map.values_mut() {
+                let before = m.len();
+                m.retain(|_, e| e._pins.iter().all(|w| w.strong_count() > 0));
+                removed += before - m.len();
+            }
+            self.len -= removed;
+        }
         if self.len >= Self::CAP {
             self.map.clear();
             self.len = 0;

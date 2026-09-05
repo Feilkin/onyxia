@@ -118,6 +118,14 @@ cd doc/benchmarks/ort-bench-rs && cargo build --release
     ../../../models/gemma-3-1b-it-ONNX-GQA/onnx/model_q4.onnx cuda-host 64 128
 ```
 
+### Same day, after the register-blocked prefill tile (`matmul_tiled_rb`)
+
+Prefill only changed; decode within noise. Onyxia 64-token prefill vs
+the ORT C-API rows above: 270m fp32 **20.0 ms** (0.37× cuBLAS, 1.03×
+ORT-WebGPU), 270m q4 **19.7 ms** (0.45× / 0.99×), 1B fp32 **26.4 ms**
+(0.45× / 2.15×), 1B q4 **24.7 ms** (0.78× / 1.43×). Details and the
+tensor-core experiment in `doc/perf-baseline-2026-07.md`.
+
 Reproduce (`ortenv` as below, then):
 
 ```sh

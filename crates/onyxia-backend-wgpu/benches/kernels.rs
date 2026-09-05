@@ -35,6 +35,7 @@ impl Case {
             use_immediates: ctx.use_immediates,
             caps: ctx.caps,
             submit_chunk: ctx.submit_chunk,
+            matmul_tile: ctx.matmul_tile,
         });
         let mut session = backend.prepare(module).expect("prepare");
         let inputs = inputs
@@ -155,6 +156,18 @@ fn bench_kernels(c: &mut Criterion) {
     g.throughput(Throughput::Bytes(weight_bytes(FFN, HIDDEN)));
     let mut case = matmul_case(&ctx, 64, FFN, HIDDEN, false);
     g.bench_function("down_64x2048x640", |b| b.iter(|| case.run()));
+    // Gemma 3 1B shapes (hidden 1152, ffn 6912): the compute-heavy prefill.
+    g.throughput(Throughput::Bytes(weight_bytes(1152, 6912)));
+    let mut case = matmul_case(&ctx, 64, 1152, 6912, false);
+    g.bench_function("1b_gate_64x1152x6912", |b| b.iter(|| case.run()));
+    g.throughput(Throughput::Bytes(weight_bytes(6912, 1152)));
+    let mut case = matmul_case(&ctx, 64, 6912, 1152, false);
+    g.bench_function("1b_down_64x6912x1152", |b| b.iter(|| case.run()));
+    g.throughput(Throughput::Bytes(weight_bytes(1152, 262144)));
+    let mut case = matmul_case(&ctx, 64, 1152, 262144, true);
+    g.bench_function("1b_lm_head_64x1152x262144_transb", |b| {
+        b.iter(|| case.run())
+    });
     g.finish();
 
     let mut g = c.benchmark_group("data_movement");

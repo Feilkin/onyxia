@@ -219,6 +219,7 @@ impl onyxia_ir::Backend for WgpuBackend {
             pass: None,
             use_immediates: self.ctx.use_immediates,
             submit_chunk: self.ctx.submit_chunk,
+            matmul_tile: self.ctx.matmul_tile,
             imm_buffers: Vec::new(),
             imm_free: Vec::new(),
             profiler: None,
@@ -270,6 +271,8 @@ pub struct WgpuSession {
     use_immediates: bool,
     /// See [`GpuContext::submit_chunk`].
     submit_chunk: usize,
+    /// See [`GpuContext::matmul_tile`].
+    matmul_tile: crate::gpu::MatmulTile,
     /// Params buffers for the in-flight batch. Each dispatch gets its own
     /// (all `write_buffer`s execute before the batch), returned to
     /// `imm_free` at submit. MUST NOT come from the tensor pool: a params
@@ -824,11 +827,19 @@ impl WgpuSession {
 
     /// Workgroup grid for the tiled f32 matmul, or `None` when a dimension
     /// exceeds the 65535-workgroup limit (the generic kernel runs then).
-    pub(crate) fn tiled_grid(m: usize, n: usize, batch: usize) -> Option<[u32; 3]> {
-        let grid = [n.div_ceil(16), m.div_ceil(16), batch];
+    pub(crate) fn tiled_grid(&self, m: usize, n: usize, batch: usize) -> Option<[u32; 3]> {
+        let t = self.tile_size();
+        let grid = [n.div_ceil(t), m.div_ceil(t), batch];
         grid.iter()
             .all(|&g| g <= 65535)
             .then(|| grid.map(|g| g as u32))
+    }
+
+    fn tile_size(&self) -> usize {
+        match self.matmul_tile {
+            crate::gpu::MatmulTile::Classic => 16,
+            crate::gpu::MatmulTile::Rb | crate::gpu::MatmulTile::Coop => 64,
+        }
     }
 
     /// Plain-f32 tiled matmul into `out`. `mnkb` = `[m, n, k, batch]`,
@@ -845,28 +856,90 @@ impl WgpuSession {
         trans_b: bool,
     ) -> Result<()> {
         let [m, n, k, batch] = mnkb;
-        let grid = Self::tiled_grid(m, n, batch).ok_or_else(|| {
+        let grid = self.tiled_grid(m, n, batch).ok_or_else(|| {
             Error::Unsupported(format!(
                 "tiled matmul grid for m={m} n={n} batch={batch} exceeds 65535 workgroups"
             ))
         })?;
+        use crate::gpu::MatmulTile;
+        let classic = self.matmul_tile == MatmulTile::Classic;
+        let label = format!(
+            "matmul_tiled{}_f32_{}{}",
+            match self.matmul_tile {
+                MatmulTile::Classic => "",
+                MatmulTile::Rb => "_rb",
+                MatmulTile::Coop => "_coop",
+            },
+            if trans_a { "t" } else { "n" },
+            if trans_b { "t" } else { "n" },
+        );
+        if classic {
+            let imm = Imm::new()
+                .u(m as u32)
+                .u(n as u32)
+                .u(k as u32)
+                .u(strides[0])
+                .u(strides[1]);
+            return self.dispatch_grid(
+                &label,
+                || kernels::matmul_tiled(trans_a, trans_b),
+                &[&a.buffer, &b.buffer, &out.buffer],
+                &imm,
+                grid,
+            );
+        }
+        // Split K when the tile grid can't fill the device.
+        const TARGET_WG: usize = 256;
+        const MAX_KS: usize = 32;
+        let base_wg = (grid[0] as usize) * (grid[1] as usize) * batch;
+        let ks = if base_wg >= TARGET_WG {
+            1
+        } else {
+            TARGET_WG
+                .div_ceil(base_wg)
+                .min(k.div_ceil(64))
+                .clamp(1, MAX_KS)
+        };
+        let chunk = k.div_ceil(ks).div_ceil(32) * 32;
+        let ks = k.div_ceil(chunk.max(1)).max(1);
+        let size = batch * m * n;
+        let scratch = (ks > 1).then(|| self.acquire_scratch((ks * size * 4) as u64));
+        let dst = scratch.as_ref().unwrap_or(&out.buffer);
         let imm = Imm::new()
             .u(m as u32)
             .u(n as u32)
             .u(k as u32)
             .u(strides[0])
-            .u(strides[1]);
+            .u(strides[1])
+            .u(batch as u32)
+            .u(chunk as u32);
+        let coop = self.matmul_tile == MatmulTile::Coop;
         self.dispatch_grid(
-            &format!(
-                "matmul_tiled_f32_{}{}",
-                if trans_a { "t" } else { "n" },
-                if trans_b { "t" } else { "n" },
-            ),
-            || kernels::matmul_tiled(trans_a, trans_b),
-            &[&a.buffer, &b.buffer, &out.buffer],
+            &label,
+            || {
+                if coop {
+                    kernels::matmul_coop(trans_a, trans_b)
+                } else {
+                    kernels::matmul_tiled_rb(trans_a, trans_b)
+                }
+            },
+            &[&a.buffer, &b.buffer, dst],
             &imm,
-            grid,
-        )
+            [grid[0], grid[1], (ks * batch) as u32],
+        )?;
+        if let Some(scratch) = scratch {
+            let (imm, n_out) = size_imm(size);
+            let imm = imm.u(ks as u32);
+            self.dispatch(
+                "matvec_reduce_f32",
+                kernels::matvec_reduce,
+                &[&scratch, &out.buffer],
+                &imm,
+                n_out,
+            )?;
+            self.release_scratch(scratch);
+        }
+        Ok(())
     }
 
     /// Block dequantization (`Prim::Dequantize` and the prefill half of
@@ -1233,7 +1306,7 @@ impl WgpuSession {
                         let out = self.alloc_out(out_dtype, out_shape);
                         return self.matvec(&a, &b, out, n, k, *trans_b);
                     }
-                    if Self::tiled_grid(m, n, batch).is_some() {
+                    if self.tiled_grid(m, n, batch).is_some() {
                         let out = self.alloc_out(out_dtype, out_shape);
                         self.matmul_tiled(
                             &a,

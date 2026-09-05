@@ -211,10 +211,10 @@ dequantizes each weight tile into shared memory on load. On an RTX 5090,
 
 | model | resident VRAM | decode | prefill |
 |---|---|---|---|
-| 270m fp32 | 1.07 GiB | 3.3 ms/tok (307 tok/s) | 26 ms |
-| 270m q4 | 0.76 GiB | 2.8 ms/tok (360 tok/s) | 27 ms |
-| 1B fp32 | 3.81 GiB | 6.1 ms/tok (163 tok/s) | 46 ms |
-| 1B q4 | 0.82 GiB | 3.8 ms/tok (262 tok/s) | 50 ms |
+| 270m fp32 | 1.07 GiB | 3.2 ms/tok (311 tok/s) | 20 ms |
+| 270m q4 | 0.76 GiB | 2.7 ms/tok (371 tok/s) | 20 ms |
+| 1B fp32 | 3.81 GiB | 6.0 ms/tok (166 tok/s) | 26 ms |
+| 1B q4 | 0.82 GiB | 3.8 ms/tok (266 tok/s) | 25 ms |
 
 A decode step is 500–700 kernel launches; the session submits them to
 the GPU in chunks of 64 so it starts executing while the CPU is still

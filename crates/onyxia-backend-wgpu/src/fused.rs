@@ -166,27 +166,45 @@ impl CompositeKernel for MatMulNBitsKernel {
             return Ok(vec![out]);
         }
 
-        // Prefill: tiled matmul with the weight tile dequantized into
-        // shared memory on load.
-        let grid_x = n.div_ceil(16);
-        let grid_y = m.div_ceil(16);
+        // Prefill: register-blocked tiled matmul with the weight tile
+        // dequantized into shared memory on load; split-K when the tile
+        // grid can't fill the device.
+        let grid_x = n.div_ceil(64);
+        let grid_y = m.div_ceil(64);
         if grid_x > 65535 || grid_y > 65535 {
             return Err(Error::Unsupported(format!(
                 "fused MatMulNBits prefill grid {grid_x}×{grid_y} exceeds 65535 workgroups"
             )));
         }
+        const TARGET_WG: usize = 256;
+        const MAX_KS: usize = 32;
+        let base_wg = grid_x * grid_y;
+        let ks = if base_wg >= TARGET_WG {
+            1
+        } else {
+            TARGET_WG
+                .div_ceil(base_wg)
+                .min(k.div_ceil(64))
+                .clamp(1, MAX_KS)
+        };
+        let chunk = k.div_ceil(ks).div_ceil(32) * 32;
+        let ks = k.div_ceil(chunk).max(1);
+        let size = m * n;
+        let scratch = (ks > 1).then(|| session.acquire_scratch((ks * size * 4) as u64));
+        let dst = scratch.as_ref().unwrap_or(&out.buffer);
         let imm = Imm::new()
             .u(m as u32)
             .u(n as u32)
             .u((k / 8) as u32)
             .u((nb * bs / 8) as u32)
             .u((bs / 8) as u32)
-            .u(nb as u32);
+            .u(nb as u32)
+            .u(chunk as u32);
         let mut buffers = vec![&a.buffer, &b.buffer, &scales.buffer];
         if let Some(z) = zp {
             buffers.push(&z.buffer);
         }
-        buffers.push(&out.buffer);
+        buffers.push(dst);
         let has_zp = zp.is_some();
         session.dispatch_grid(
             if has_zp {
@@ -197,8 +215,20 @@ impl CompositeKernel for MatMulNBitsKernel {
             || kernels::matmul_nbits_tiled(has_zp),
             &buffers,
             &imm,
-            [grid_x as u32, grid_y as u32, 1],
+            [grid_x as u32, grid_y as u32, ks as u32],
         )?;
+        if let Some(scratch) = scratch {
+            let (imm, n_out) = crate::session::size_imm(size);
+            let imm = imm.u(ks as u32);
+            session.dispatch(
+                "matvec_reduce_f32",
+                kernels::matvec_reduce,
+                &[&scratch, &out.buffer],
+                &imm,
+                n_out,
+            )?;
+            session.release_scratch(scratch);
+        }
         Ok(vec![out])
     }
 }
