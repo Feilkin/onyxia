@@ -3963,6 +3963,7 @@ dependencies = [
 name = "onyxia-conformance"
 version = "0.1.0"
 dependencies = [
+ "onyxia-backend-cubecl",
  "onyxia-backend-ref",
  "onyxia-backend-wgpu",
  "onyxia-ir",

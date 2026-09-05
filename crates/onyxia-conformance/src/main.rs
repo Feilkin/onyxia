@@ -47,8 +47,12 @@ fn main() {
         "ref" => Box::new(RefRunner),
         #[cfg(feature = "wgpu")]
         "wgpu" => Box::new(onyxia_conformance::WgpuRunner::new().expect("GPU")),
+        #[cfg(feature = "cubecl")]
+        "cubecl" => Box::new(onyxia_conformance::CubeclRunner::new()),
         other => {
-            eprintln!("unknown backend '{other}' (build with --features wgpu for the GPU backend)");
+            eprintln!(
+                "unknown backend '{other}' (build with --features wgpu or --features cubecl)"
+            );
             std::process::exit(2);
         }
     };

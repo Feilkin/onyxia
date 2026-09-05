@@ -126,6 +126,47 @@ impl Runner for WgpuRunner {
     }
 }
 
+#[cfg(feature = "cubecl")]
+pub struct CubeclRunner {
+    backend: onyxia_backend_cubecl::CubeclBackend,
+}
+
+#[cfg(feature = "cubecl")]
+impl CubeclRunner {
+    pub fn new() -> Self {
+        Self {
+            backend: onyxia_backend_cubecl::CubeclBackend::new(),
+        }
+    }
+}
+
+#[cfg(feature = "cubecl")]
+impl Runner for CubeclRunner {
+    fn name(&self) -> &str {
+        "cubecl"
+    }
+    fn run(
+        &mut self,
+        module: Module,
+        inputs: &[(&str, Tensor)],
+    ) -> onyxia_ir::Result<Vec<(String, Tensor)>> {
+        use onyxia_ir::{Backend, Session};
+        let mut session = self.backend.prepare(module)?;
+        let dev: Vec<(&str, _)> = inputs
+            .iter()
+            .map(|(n, t)| Ok((*n, session.upload(t)?)))
+            .collect::<onyxia_ir::Result<_>>()?;
+        pollster::block_on(async {
+            let outs = session.run(&dev).await?;
+            let mut host = Vec::new();
+            for (n, t) in outs {
+                host.push((n, session.download(&t).await?));
+            }
+            Ok(host)
+        })
+    }
+}
+
 // ───────────────────────────── discovery ────────────────────────────────
 
 /// Locate the node test directory.

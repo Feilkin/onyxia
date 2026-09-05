@@ -17,6 +17,7 @@ onyxia-ir.workspace = true
 onyxia-lower.workspace = true
 onyxia-backend-ref.workspace = true
 onyxia-backend-wgpu = { workspace = true, optional = true }
+onyxia-backend-cubecl = { workspace = true, optional = true }
 pollster = { version = "0.4", optional = true }
 prost = "0.14.3"
 
@@ -24,6 +25,8 @@ prost = "0.14.3"
 default = []
 # Run the node tests on the wgpu backend as well (`--backend wgpu`).
 wgpu = ["dep:onyxia-backend-wgpu", "dep:pollster"]
+# Run the node tests on the CubeCL backend (`--backend cubecl`).
+cubecl = ["dep:onyxia-backend-cubecl", "dep:pollster"]
 
 [[bin]]
 name = "onyxia-conformance"
