@@ -211,7 +211,7 @@ impl CompositeKernel for GeluKernel {
         let imm = Imm::new().u(size as u32).u(x_stride);
         session.dispatch(
             label,
-            || kernels::unary("f32", expr, !tanh_form),
+            || kernels::unary(&crate::layout::F32, &crate::layout::F32, expr, !tanh_form),
             &[&x.buffer, &out.buffer],
             &imm,
             size,

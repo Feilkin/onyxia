@@ -170,7 +170,8 @@ flow, random sampling, and image decoding), all expressed over the same 16
 primitives. On the official onnx node tests, the reference backend passes
 every test that is in scope (1275 of 1765; the rest are unsupported dtypes
 such as float64/int16/float8, or ops outside the tensor model) and the wgpu
-backend passes 1162. Per-operator results, the primitive-count analysis, and
+backend passes 1273, with 8-bit and f16 tensors stored packed (or as native
+f16 / i64 where the adapter has the shader features). Per-operator results, the primitive-count analysis, and
 the remaining gaps are in [doc/onnx-coverage.md](doc/onnx-coverage.md).
 
 ## Profiling

@@ -36,6 +36,10 @@ pub struct GpuContext {
     /// Whether the device has real push constants (`Features::IMMEDIATES`).
     /// False in browsers (core WebGPU has none) → storage-buffer fallback.
     pub use_immediates: bool,
+    /// Shader dtype features that pick physical layouts (see `layout.rs`).
+    /// `ONYXIA_NO_F16=1` / `ONYXIA_NO_INT64=1` force the fallbacks so
+    /// native test runs cover the packed / narrowed paths.
+    pub caps: crate::layout::Caps,
 }
 
 impl GpuContext {
@@ -72,6 +76,17 @@ impl GpuContext {
         if adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
             required_features |= wgpu::Features::TIMESTAMP_QUERY;
         }
+        let env_off = |name: &str| std::env::var(name).is_ok_and(|v| v != "0");
+        let mut caps = crate::layout::Caps::default();
+        if adapter.features().contains(wgpu::Features::SHADER_F16) && !env_off("ONYXIA_NO_F16") {
+            required_features |= wgpu::Features::SHADER_F16;
+            caps.f16 = true;
+        }
+        if adapter.features().contains(wgpu::Features::SHADER_INT64) && !env_off("ONYXIA_NO_INT64")
+        {
+            required_features |= wgpu::Features::SHADER_INT64;
+            caps.int64 = true;
+        }
         // Take the adapter's full limits: model weights (embedding tables)
         // exceed the 128/256 MiB downlevel buffer defaults.
         let (device, queue) = adapter
@@ -91,6 +106,7 @@ impl GpuContext {
             queue: Arc::new(queue),
             adapter_info,
             use_immediates,
+            caps,
         })
     }
 

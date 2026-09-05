@@ -139,8 +139,12 @@ explicit `ExecutionPlan` and replaced it with this model within a week.)
 | `onyxia-cli` | `run-model`/`chat` generation (`llm.rs` device-resident KV session, `generate.rs`, `sampling.rs`, `tokenizer.rs`), `bench` (prefill/decode throughput + per-kernel GPU-time breakdown, `bench.rs`; see `doc/perf-baseline-2026-07.md`), `validate` (parse + lower, no GPU), ONNX inspection (`inspect.rs`), `dot`/`ir-dot` |
 | `demos/gemma-chat` | egui chat UI, native + wasm32 (trunk); vendors its own async LLM session, sampling, tokenizer — application-layer by design |
 
-Backend-private layout decisions live in the backend: logical `I64` is stored
-as `i32` on device (range-checked at upload), `Bool` as `u32`.
+Backend-private layout decisions live in the backend (`layout.rs` in the wgpu
+backend): `f16` and `i64` are native when the adapter has `SHADER_F16` /
+`SHADER_INT64` and otherwise packed two-per-word (f16) or narrowed to `i32`
+(range-checked at upload); `u8`/`i8` are always packed four per `u32` word
+(WebGPU has no 8-bit storage), `Bool` is a `u32`. Kernels run one thread
+per output word, so packed lanes are never written by two threads.
 
 ## Testing strategy
 
@@ -168,10 +172,9 @@ as `i32` on device (range-checked at upload), `Bool` as `u32`.
   and a shared-memory tiled kernel for M>1. Decode-speed history in
   `doc/perf-baseline-2026-07.md`.
 - No Dequantize GPU kernel (q4 models run only on the reference backend).
-- On the wgpu backend: f16 and 8-bit storage, Scatter reductions (need
-  atomics), integer Pow with a runtime exponent, some MatMul batch-broadcast
-  patterns, late-bound dims (data-dependent shapes), >65535-row fused
-  reductions.
+- On the wgpu backend: late-bound dims (data-dependent shapes),
+  >65535-row fused reductions, fused kernels are f32-only (f16 composites
+  cast at the boundary), Scatter reductions serialize on contended words.
 - Not lowered: data-dependent output shapes (NonZero, Unique, Compress,
   NonMaxSuppression), Det, DeformConv, RoiAlign, MaxRoiPool, QLinearConv;
   sequences/optionals, strings, random sampling, image decoding.

@@ -1,18 +1,21 @@
 //! Generated WGSL kernels for the primitive set.
 //!
-//! One uniform scheme: each kernel is a template specialized by physical
-//! scalar type and operation expression, generated as plain WGSL text and
-//! compiled through naga's front-end. All shape information travels in
-//! immediates (push constants) as `u32`s, ranks are capped at
-//! [`MAX_RANK`], and every kernel runs one thread per output element —
-//! correctness-first; fused/tiled kernels come later via the composite
-//! kernel registry.
+//! One uniform scheme: each kernel is a template specialized by the
+//! physical [`Layout`]s of its operands and an operation expression,
+//! generated as plain WGSL text and compiled through naga's front-end.
+//! All shape information travels in immediates (push constants) as
+//! `u32`s, ranks are capped at [`MAX_RANK`].
 //!
-//! **Physical types**: the GPU side knows `f32`, `i32`, `u32` only.
-//! Logical `I64` is stored as `i32` (range-checked at upload), `Bool` as
-//! `u32`. This mapping is private to this backend.
+//! Every generic kernel has the same shape: per-binding `ld_*` load
+//! functions (from [`Layout::load_fn`]), a `compute(e)` function giving
+//! output element `e` in the compute type, and a `main` that runs one
+//! thread per output *word* ([`Layout::store_block`]) — so packed
+//! layouts (four 8-bit values or two f16s per `u32`) are written whole.
+//! Correctness-first; fused/tiled kernels come via the composite kernel
+//! registry and the matvec/tiled sections below.
 
 use crate::gpu::WORKGROUP_SIZE;
+use crate::layout::Layout;
 
 /// Maximum tensor rank supported by the generated kernels.
 pub const MAX_RANK: usize = 8;
@@ -60,12 +63,35 @@ impl Imm {
     }
 }
 
-fn header() -> String {
-    format!(
+/// Common prelude: `enable f16;` when any operand is native f16, the
+/// workgroup size, and the dispatch-linearization helper.
+fn prelude(layouts: &[&Layout]) -> String {
+    let mut s = String::new();
+    if layouts.iter().any(|l| l.needs_f16()) {
+        s.push_str("enable f16;\n");
+    }
+    s.push_str(&format!(
         "const WG_SIZE: u32 = {WORKGROUP_SIZE}u;\n\
          fn linear_idx(gid: vec3<u32>, x_stride: u32) -> u32 {{\n\
              return gid.x + gid.y * x_stride;\n\
          }}\n"
+    ));
+    s
+}
+
+/// Prelude for the hand-written f32 kernels below (no f16).
+fn header() -> String {
+    prelude(&[])
+}
+
+/// The standard `main`: one thread per output word of `out`.
+fn main_fn(out: &Layout) -> String {
+    format!(
+        "@compute @workgroup_size(WG_SIZE)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
+{}
+}}",
+        out.store_block("out")
     )
 }
 
@@ -103,75 +129,97 @@ fn erf(x: f32) -> f32 {
 }
 ";
 
-/// Element-wise binary op with full N-D broadcasting.
-/// Bindings: 0=a, 1=b, 2=out. Immediates: size, x_stride, out_rank,
-/// a_rank, b_rank, out_shape, a_shape, b_shape.
-pub fn binary(t_in: &str, t_out: &str, expr: &str) -> String {
+/// Element-wise binary op with full N-D broadcasting; `expr` is over
+/// `av`/`bv` (compute types) and yields `out`'s compute type. Also used
+/// for comparisons (Bool output). Bindings: 0=a, 1=b, 2=out.
+pub fn binary(a: &Layout, b: &Layout, out: &Layout, expr: &str) -> String {
+    let ipow = match a.compute() {
+        "f32" => String::new(),
+        c => format!(
+            "fn ipow(base: {c}, e: {c}) -> {c} {{
+    var r: {c} = {c}(1);
+    var b = base;
+    var n = e;
+    if (n < {c}(0)) {{ return {c}(0); }}
+    loop {{
+        if (n == {c}(0)) {{ break; }}
+        if ((n & {c}(1)) != {c}(0)) {{ r = r * b; }}
+        b = b * b;
+        n = n >> 1u;
+    }}
+    return r;
+}}
+"
+        ),
+    };
     format!(
-        "{h}{src}
+        "{h}{src}{ipow}
 struct P {{
     size: u32, x_stride: u32,
     out_rank: u32, a_rank: u32, b_rank: u32,
     out_shape: array<u32,8>, a_shape: array<u32,8>, b_shape: array<u32,8>,
 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> a: array<{t_in}>;
-@group(0) @binding(1) var<storage, read> b: array<{t_in}>;
-@group(0) @binding(2) var<storage, read_write> out: array<{t_out}>;
-@compute @workgroup_size(WG_SIZE)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
-    let idx = linear_idx(gid, p.x_stride);
-    if (idx >= p.size) {{ return; }}
-    let av = a[src_index(idx, p.out_shape, p.out_rank, p.a_shape, p.a_rank)];
-    let bv = b[src_index(idx, p.out_shape, p.out_rank, p.b_shape, p.b_rank)];
-    out[idx] = {expr};
-}}",
-        h = header(),
+@group(0) @binding(0) var<storage, read> a: {ab};
+@group(0) @binding(1) var<storage, read> b: {bb};
+@group(0) @binding(2) var<storage, read_write> out: {ob};
+{lda}{ldb}
+fn compute(idx: u32) -> {oc} {{
+    let av = ld_a(src_index(idx, p.out_shape, p.out_rank, p.a_shape, p.a_rank));
+    let bv = ld_b(src_index(idx, p.out_shape, p.out_rank, p.b_shape, p.b_rank));
+    return {expr};
+}}
+{main}",
+        h = prelude(&[a, b, out]),
         src = SRC_INDEX,
+        ab = a.binding(),
+        bb = b.binding(),
+        ob = out.binding(),
+        lda = a.load_fn("ld_a", "a"),
+        ldb = b.load_fn("ld_b", "b"),
+        oc = out.compute(),
+        main = main_fn(out),
     )
 }
 
-/// Element-wise unary op. Bindings: 0=in, 1=out.
-pub fn unary(t: &str, expr: &str, needs_erf: bool) -> String {
+/// Element-wise unary op; `expr` over `v`. Bindings: 0=in, 1=out.
+pub fn unary(x: &Layout, out: &Layout, expr: &str, needs_erf: bool) -> String {
     format!(
         "{h}{erf}
 struct P {{ size: u32, x_stride: u32 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> x: array<{t}>;
-@group(0) @binding(1) var<storage, read_write> out: array<{t}>;
-@compute @workgroup_size(WG_SIZE)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
-    let idx = linear_idx(gid, p.x_stride);
-    if (idx >= p.size) {{ return; }}
-    let v = x[idx];
-    out[idx] = {expr};
-}}",
-        h = header(),
+@group(0) @binding(0) var<storage, read> x: {xb};
+@group(0) @binding(1) var<storage, read_write> out: {ob};
+{ldx}
+fn compute(idx: u32) -> {oc} {{
+    let v = ld_x(idx);
+    return {expr};
+}}
+{main}",
+        h = prelude(&[x, out]),
         erf = if needs_erf { ERF } else { "" },
+        xb = x.binding(),
+        ob = out.binding(),
+        ldx = x.load_fn("ld_x", "x"),
+        oc = out.compute(),
+        main = main_fn(out),
     )
 }
 
-/// Dtype conversion. Bindings: 0=in, 1=out.
-pub fn cast(t_in: &str, t_out: &str, expr: &str) -> String {
-    format!(
-        "{h}
-struct P {{ size: u32, x_stride: u32 }}
-var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> x: array<{t_in}>;
-@group(0) @binding(1) var<storage, read_write> out: array<{t_out}>;
-@compute @workgroup_size(WG_SIZE)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
-    let idx = linear_idx(gid, p.x_stride);
-    if (idx >= p.size) {{ return; }}
-    let v = x[idx];
-    out[idx] = {expr};
-}}",
-        h = header(),
-    )
+/// Dtype conversion; `expr` over `v` yields `out`'s compute type.
+/// Bindings: 0=in, 1=out.
+pub fn cast(x: &Layout, out: &Layout, expr: &str) -> String {
+    unary(x, out, expr, false)
 }
 
-/// Three-way-broadcast select. Bindings: 0=cond(u32), 1=a, 2=b, 3=out.
-pub fn select3(t: &str) -> String {
+/// Plain element copy (Scatter's first stage). Bindings: 0=in, 1=out.
+pub fn copy(l: &Layout) -> String {
+    cast(l, l, "v")
+}
+
+/// Three-way-broadcast select. Bindings: 0=cond(u32), 1=a, 2=b, 3=out
+/// (`a`, `b`, `out` share a layout).
+pub fn select3(c: &Layout, t: &Layout) -> String {
     format!(
         "{h}{src}
 struct P {{
@@ -181,27 +229,33 @@ struct P {{
     a_shape: array<u32,8>, b_shape: array<u32,8>,
 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> c: array<u32>;
-@group(0) @binding(1) var<storage, read> a: array<{t}>;
-@group(0) @binding(2) var<storage, read> b: array<{t}>;
-@group(0) @binding(3) var<storage, read_write> out: array<{t}>;
-@compute @workgroup_size(WG_SIZE)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
-    let idx = linear_idx(gid, p.x_stride);
-    if (idx >= p.size) {{ return; }}
-    let cv = c[src_index(idx, p.out_shape, p.out_rank, p.c_shape, p.c_rank)];
-    let av = a[src_index(idx, p.out_shape, p.out_rank, p.a_shape, p.a_rank)];
-    let bv = b[src_index(idx, p.out_shape, p.out_rank, p.b_shape, p.b_rank)];
-    out[idx] = select(bv, av, cv != 0u);
-}}",
-        h = header(),
+@group(0) @binding(0) var<storage, read> c: {cb};
+@group(0) @binding(1) var<storage, read> a: {tb};
+@group(0) @binding(2) var<storage, read> b: {tb};
+@group(0) @binding(3) var<storage, read_write> out: {tb};
+{ldc}{lda}{ldb}
+fn compute(idx: u32) -> {tc} {{
+    let cv = ld_c(src_index(idx, p.out_shape, p.out_rank, p.c_shape, p.c_rank));
+    let av = ld_a(src_index(idx, p.out_shape, p.out_rank, p.a_shape, p.a_rank));
+    let bv = ld_b(src_index(idx, p.out_shape, p.out_rank, p.b_shape, p.b_rank));
+    return select(bv, av, cv != 0u);
+}}
+{main}",
+        h = prelude(&[c, t]),
         src = SRC_INDEX,
+        cb = c.binding(),
+        tb = t.binding(),
+        ldc = c.load_fn("ld_c", "c"),
+        lda = t.load_fn("ld_a", "a"),
+        ldb = t.load_fn("ld_b", "b"),
+        tc = t.compute(),
+        main = main_fn(t),
     )
 }
 
 /// Batched matmul, one thread per output element. Batch dims must be equal
 /// or scalar (checked at plan time). Bindings: 0=a, 1=b, 2=out.
-pub fn matmul(t: &str) -> String {
+pub fn matmul(t: &Layout) -> String {
     format!(
         "{h}
 struct P {{
@@ -211,34 +265,38 @@ struct P {{
     trans_a: u32, trans_b: u32,
 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> a: array<{t}>;
-@group(0) @binding(1) var<storage, read> b: array<{t}>;
-@group(0) @binding(2) var<storage, read_write> out: array<{t}>;
-@compute @workgroup_size(WG_SIZE)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
-    let idx = linear_idx(gid, p.x_stride);
-    if (idx >= p.size) {{ return; }}
+@group(0) @binding(0) var<storage, read> a: {tb};
+@group(0) @binding(1) var<storage, read> b: {tb};
+@group(0) @binding(2) var<storage, read_write> out: {tb};
+{lda}{ldb}
+fn compute(idx: u32) -> {tc} {{
     let bi = idx / (p.m * p.n);
     let r = (idx / p.n) % p.m;
     let c = idx % p.n;
     let a_base = bi * p.a_batch_stride;
     let b_base = bi * p.b_batch_stride;
-    var acc: {t} = {zero};
+    var acc: {tc} = {zero};
     for (var kk = 0u; kk < p.k; kk = kk + 1u) {{
         let ae = a_base + select(r * p.k + kk, kk * p.m + r, p.trans_a == 1u);
         let be = b_base + select(kk * p.n + c, c * p.k + kk, p.trans_b == 1u);
-        acc = acc + a[ae] * b[be];
+        acc = acc + ld_a(ae) * ld_b(be);
     }}
-    out[idx] = acc;
-}}",
-        h = header(),
-        zero = if t == "f32" { "0.0" } else { "0" },
+    return acc;
+}}
+{main}",
+        h = prelude(&[t]),
+        tb = t.binding(),
+        lda = t.load_fn("ld_a", "a"),
+        ldb = t.load_fn("ld_b", "b"),
+        tc = t.compute(),
+        zero = t.zero(),
+        main = main_fn(t),
     )
 }
 
 /// Reduction over an axes bitmask, one thread per output element.
-/// Bindings: 0=in, 1=out.
-pub fn reduce(t: &str, init: &str, combine: &str, finalize: &str) -> String {
+/// `combine` is over `acc`/`v`, `finalize` over `acc`. Bindings: 0=in, 1=out.
+pub fn reduce(t: &Layout, init: &str, combine: &str, finalize: &str) -> String {
     format!(
         "{h}
 struct P {{
@@ -247,12 +305,10 @@ struct P {{
     in_shape: array<u32,8>,
 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> x: array<{t}>;
-@group(0) @binding(1) var<storage, read_write> out: array<{t}>;
-@compute @workgroup_size(WG_SIZE)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
-    let idx = linear_idx(gid, p.x_stride);
-    if (idx >= p.size) {{ return; }}
+@group(0) @binding(0) var<storage, read> x: {tb};
+@group(0) @binding(1) var<storage, read_write> out: {tb};
+{ldx}
+fn compute(idx: u32) -> {tc} {{
     // Base index from the non-reduced coordinates.
     var out_rem = idx;
     var base = 0u;
@@ -266,7 +322,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
         }}
         stride = stride * p.in_shape[d];
     }}
-    var acc: {t} = {init};
+    var acc: {tc} = {init};
     for (var r = 0u; r < p.reduce_count; r = r + 1u) {{
         var r_rem = r;
         var off = 0u;
@@ -280,17 +336,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
             }}
             s2 = s2 * p.in_shape[d];
         }}
-        let v = x[base + off];
+        let v = ld_x(base + off);
         acc = {combine};
     }}
-    out[idx] = {finalize};
-}}",
-        h = header(),
+    return {finalize};
+}}
+{main}",
+        h = prelude(&[t]),
+        tb = t.binding(),
+        ldx = t.load_fn("ld_x", "x"),
+        tc = t.compute(),
+        main = main_fn(t),
     )
 }
 
-/// ONNX Gather along an axis. Bindings: 0=data, 1=indices(i32), 2=out.
-pub fn gather(t: &str) -> String {
+/// ONNX Gather along an axis. Bindings: 0=data, 1=indices, 2=out.
+pub fn gather(t: &Layout, idx_l: &Layout) -> String {
     format!(
         "{h}
 struct P {{
@@ -299,13 +360,11 @@ struct P {{
     data_shape: array<u32,8>, indices_shape: array<u32,8>, out_shape: array<u32,8>,
 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> data: array<{t}>;
-@group(0) @binding(1) var<storage, read> indices: array<i32>;
-@group(0) @binding(2) var<storage, read_write> out: array<{t}>;
-@compute @workgroup_size(WG_SIZE)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
-    let idx = linear_idx(gid, p.x_stride);
-    if (idx >= p.size) {{ return; }}
+@group(0) @binding(0) var<storage, read> data: {tb};
+@group(0) @binding(1) var<storage, read> indices: {ib};
+@group(0) @binding(2) var<storage, read_write> out: {tb};
+{ldd}{ldi}
+fn compute(idx: u32) -> {tc} {{
     let out_rank = p.data_rank - 1u + p.indices_rank;
     // Output coordinates.
     var coords: array<u32,8>;
@@ -324,7 +383,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
         stride = stride * p.indices_shape[d];
     }}
     let dim = i32(p.data_shape[p.axis]);
-    var iv = indices[ii];
+    var iv = i32(ld_i(ii));
     if (iv < 0) {{ iv = iv + dim; }}
     iv = clamp(iv, 0, dim - 1);
     // Data linear index.
@@ -343,15 +402,42 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
         di = di + coord * stride;
         stride = stride * p.data_shape[d];
     }}
-    out[idx] = data[di];
-}}",
-        h = header(),
+    return ld_d(di);
+}}
+{main}",
+        h = prelude(&[t, idx_l]),
+        tb = t.binding(),
+        ib = idx_l.binding(),
+        ldd = t.load_fn("ld_d", "data"),
+        ldi = idx_l.load_fn("ld_i", "indices"),
+        tc = t.compute(),
+        main = main_fn(t),
     )
 }
 
-/// ScatterND writes (run after copying data to out).
-/// Bindings: 0=indices(i32), 1=updates, 2=out.
-pub fn scatter(t: &str) -> String {
+/// The flat target element of one ScatterND update (shared by both
+/// scatter kernels). Threads run over update elements.
+const SCATTER_TARGET: &str = "
+    let u = idx / p.slice_len;
+    let off = idx % p.slice_len;
+    var base = 0u;
+    for (var d = 0u; d < p.k; d = d + 1u) {
+        let dim = i32(p.data_shape[d]);
+        var iv = i32(ld_i(u * p.k + d));
+        if (iv < 0) { iv = iv + dim; }
+        iv = clamp(iv, 0, dim - 1);
+        base = base * p.data_shape[d] + u32(iv);
+    }
+    let tgt = base * p.slice_len + off;
+";
+
+/// ScatterND overwrite for one-element-per-word layouts (run after
+/// copying data to out). Bindings: 0=indices, 1=updates, 2=out.
+pub fn scatter(t: &Layout, idx_l: &Layout) -> String {
+    let store = match t.store() {
+        "f16" => "f16(ld_u(idx))".to_string(),
+        _ => "ld_u(idx)".to_string(),
+    };
     format!(
         "{h}
 struct P {{
@@ -360,31 +446,77 @@ struct P {{
     data_shape: array<u32,8>,
 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> indices: array<i32>;
-@group(0) @binding(1) var<storage, read> updates: array<{t}>;
-@group(0) @binding(2) var<storage, read_write> out: array<{t}>;
+@group(0) @binding(0) var<storage, read> indices: {ib};
+@group(0) @binding(1) var<storage, read> updates: {tb};
+@group(0) @binding(2) var<storage, read_write> out: {tb};
+{ldi}{ldu}
 @compute @workgroup_size(WG_SIZE)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let idx = linear_idx(gid, p.x_stride);
     if (idx >= p.size) {{ return; }}
-    let u = idx / p.slice_len;
-    let off = idx % p.slice_len;
-    var base = 0u;
-    for (var d = 0u; d < p.k; d = d + 1u) {{
-        let dim = i32(p.data_shape[d]);
-        var iv = indices[u * p.k + d];
-        if (iv < 0) {{ iv = iv + dim; }}
-        iv = clamp(iv, 0, dim - 1);
-        base = base * p.data_shape[d] + u32(iv);
-    }}
-    out[base * p.slice_len + off] = updates[idx];
+{target}
+    out[tgt] = {store};
 }}",
-        h = header(),
+        h = prelude(&[t, idx_l]),
+        ib = idx_l.binding(),
+        tb = t.binding(),
+        ldi = idx_l.load_fn("ld_i", "indices"),
+        ldu = t.load_fn("ld_u", "updates"),
+        target = SCATTER_TARGET,
     )
 }
 
+/// ScatterND with a reduction, or into a packed layout: a compare-and-
+/// swap loop on the 32-bit output word. `combine` is over `cur`/`upd`
+/// (compute type). Bindings: 0=indices, 1=updates, 2=out (atomic u32).
+pub fn scatter_atomic(
+    t: &Layout,
+    idx_l: &Layout,
+    combine: &str,
+) -> Result<String, onyxia_ir::Error> {
+    let extract = t.lane_extract("old", "lane")?;
+    let insert = t.lane_insert("old", "lane", "nv")?;
+    let lanes = t.lanes();
+    Ok(format!(
+        "{h}
+struct P {{
+    size: u32, x_stride: u32,
+    k: u32, slice_len: u32, data_rank: u32,
+    data_shape: array<u32,8>,
+}}
+var<immediate> p: P;
+@group(0) @binding(0) var<storage, read> indices: {ib};
+@group(0) @binding(1) var<storage, read> updates: {tb};
+@group(0) @binding(2) var<storage, read_write> out: array<atomic<u32>>;
+{ldi}{ldu}
+@compute @workgroup_size(WG_SIZE)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
+    let idx = linear_idx(gid, p.x_stride);
+    if (idx >= p.size) {{ return; }}
+{target}
+    let upd = ld_u(idx);
+    let wi = tgt / {lanes}u;
+    let lane = tgt % {lanes}u;
+    loop {{
+        let old = atomicLoad(&out[wi]);
+        let cur = {extract};
+        let nv = {combine};
+        let packed = {insert};
+        let r = atomicCompareExchangeWeak(&out[wi], old, packed);
+        if (r.exchanged) {{ break; }}
+    }}
+}}",
+        h = prelude(&[t, idx_l]),
+        ib = idx_l.binding(),
+        tb = t.binding(),
+        ldi = idx_l.load_fn("ld_i", "indices"),
+        ldu = t.load_fn("ld_u", "updates"),
+        target = SCATTER_TARGET,
+    ))
+}
+
 /// Transpose by permutation. Bindings: 0=in, 1=out.
-pub fn transpose(t: &str) -> String {
+pub fn transpose(t: &Layout) -> String {
     format!(
         "{h}
 struct P {{
@@ -392,12 +524,10 @@ struct P {{
     perm: array<u32,8>, in_shape: array<u32,8>, out_shape: array<u32,8>,
 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> x: array<{t}>;
-@group(0) @binding(1) var<storage, read_write> out: array<{t}>;
-@compute @workgroup_size(WG_SIZE)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
-    let idx = linear_idx(gid, p.x_stride);
-    if (idx >= p.size) {{ return; }}
+@group(0) @binding(0) var<storage, read> x: {tb};
+@group(0) @binding(1) var<storage, read_write> out: {tb};
+{ldx}
+fn compute(idx: u32) -> {tc} {{
     var ocoords: array<u32,8>;
     var rem = idx;
     for (var kk = 0u; kk < p.rank; kk = kk + 1u) {{
@@ -417,15 +547,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
         ii = ii + icoords[d] * stride;
         stride = stride * p.in_shape[d];
     }}
-    out[idx] = x[ii];
-}}",
-        h = header(),
+    return ld_x(ii);
+}}
+{main}",
+        h = prelude(&[t]),
+        tb = t.binding(),
+        ldx = t.load_fn("ld_x", "x"),
+        tc = t.compute(),
+        main = main_fn(t),
     )
 }
 
 /// Strided slice. `step` entries are i32 bit-packed into u32 slots.
 /// Bindings: 0=in, 1=out.
-pub fn slice(t: &str) -> String {
+pub fn slice(t: &Layout) -> String {
     format!(
         "{h}
 struct P {{
@@ -434,12 +569,10 @@ struct P {{
     in_shape: array<u32,8>, out_shape: array<u32,8>,
 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> x: array<{t}>;
-@group(0) @binding(1) var<storage, read_write> out: array<{t}>;
-@compute @workgroup_size(WG_SIZE)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
-    let idx = linear_idx(gid, p.x_stride);
-    if (idx >= p.size) {{ return; }}
+@group(0) @binding(0) var<storage, read> x: {tb};
+@group(0) @binding(1) var<storage, read_write> out: {tb};
+{ldx}
+fn compute(idx: u32) -> {tc} {{
     var rem = idx;
     var ii = 0u;
     var stride = 1u;
@@ -451,14 +584,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
         ii = ii + ic * stride;
         stride = stride * p.in_shape[d];
     }}
-    out[idx] = x[ii];
-}}",
-        h = header(),
+    return ld_x(ii);
+}}
+{main}",
+        h = prelude(&[t]),
+        tb = t.binding(),
+        ldx = t.load_fn("ld_x", "x"),
+        tc = t.compute(),
+        main = main_fn(t),
     )
 }
 
 /// Broadcast (Expand) copy. Bindings: 0=in, 1=out.
-pub fn broadcast(t: &str) -> String {
+pub fn broadcast(t: &Layout) -> String {
     format!(
         "{h}{src}
 struct P {{
@@ -467,22 +605,30 @@ struct P {{
     out_shape: array<u32,8>, in_shape: array<u32,8>,
 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> x: array<{t}>;
-@group(0) @binding(1) var<storage, read_write> out: array<{t}>;
-@compute @workgroup_size(WG_SIZE)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
-    let idx = linear_idx(gid, p.x_stride);
-    if (idx >= p.size) {{ return; }}
-    out[idx] = x[src_index(idx, p.out_shape, p.out_rank, p.in_shape, p.in_rank)];
-}}",
-        h = header(),
+@group(0) @binding(0) var<storage, read> x: {tb};
+@group(0) @binding(1) var<storage, read_write> out: {tb};
+{ldx}
+fn compute(idx: u32) -> {tc} {{
+    return ld_x(src_index(idx, p.out_shape, p.out_rank, p.in_shape, p.in_rank));
+}}
+{main}",
+        h = prelude(&[t]),
         src = SRC_INDEX,
+        tb = t.binding(),
+        ldx = t.load_fn("ld_x", "x"),
+        tc = t.compute(),
+        main = main_fn(t),
     )
 }
 
 /// Copy one concat input into its slot of the output (one dispatch per
-/// input, threads over the *input*). Bindings: 0=in, 1=out.
-pub fn concat_emplace(t: &str) -> String {
+/// input, threads over the *input*). One-element-per-word layouts only.
+/// Bindings: 0=in, 1=out.
+pub fn concat_emplace(t: &Layout) -> String {
+    let store = match t.store() {
+        "f16" => "f16(ld_x(idx))",
+        _ => "ld_x(idx)",
+    };
     format!(
         "{h}
 struct P {{
@@ -491,8 +637,9 @@ struct P {{
     in_shape: array<u32,8>, out_shape: array<u32,8>,
 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> x: array<{t}>;
-@group(0) @binding(1) var<storage, read_write> out: array<{t}>;
+@group(0) @binding(0) var<storage, read> x: {tb};
+@group(0) @binding(1) var<storage, read_write> out: {tb};
+{ldx}
 @compute @workgroup_size(WG_SIZE)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let idx = linear_idx(gid, p.x_stride);
@@ -508,36 +655,90 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
         oi = oi + coord * stride;
         stride = stride * p.out_shape[d];
     }}
-    out[oi] = x[idx];
+    out[oi] = {store};
 }}",
-        h = header(),
+        h = prelude(&[t]),
+        tb = t.binding(),
+        ldx = t.load_fn("ld_x", "x"),
     )
 }
 
+/// Concat into a packed layout: one dispatch per input, threads over the
+/// *output words*; each word is read, the lanes that fall in this input's
+/// slot are replaced, and the word is written back (queue order between
+/// the per-input dispatches makes the read-modify-write safe). `size` is
+/// the output element count. Bindings: 0=in, 1=out.
+pub fn concat_packed(t: &Layout) -> Result<String, onyxia_ir::Error> {
+    let lanes = t.lanes();
+    let extract = t.lane_extract("word", "l")?;
+    let insert = t.lane_insert("word", "l", "v")?;
+    Ok(format!(
+        "{h}
+struct P {{
+    size: u32, x_stride: u32, rank: u32,
+    axis: u32, axis_offset: u32, in_len: u32,
+    in_shape: array<u32,8>, out_shape: array<u32,8>,
+}}
+var<immediate> p: P;
+@group(0) @binding(0) var<storage, read> x: {tb};
+@group(0) @binding(1) var<storage, read_write> out: array<u32>;
+{ldx}
+@compute @workgroup_size(WG_SIZE)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
+    let w = linear_idx(gid, p.x_stride);
+    if (w >= (p.size + {lanes}u - 1u) / {lanes}u) {{ return; }}
+    var word = out[w];
+    for (var l = 0u; l < {lanes}u; l = l + 1u) {{
+        let e = w * {lanes}u + l;
+        if (e >= p.size) {{ continue; }}
+        // Output coordinates → input index if inside this input's slot.
+        var rem = e;
+        var ii = 0u;
+        var stride = 1u;
+        var inside = true;
+        for (var kk = 0u; kk < p.rank; kk = kk + 1u) {{
+            let d = p.rank - 1u - kk;
+            var coord = rem % p.out_shape[d];
+            rem = rem / p.out_shape[d];
+            if (d == p.axis) {{
+                if (coord < p.axis_offset || coord >= p.axis_offset + p.in_len) {{
+                    inside = false;
+                }}
+                coord = coord - p.axis_offset;
+            }}
+            ii = ii + coord * stride;
+            stride = stride * p.in_shape[d];
+        }}
+        if (inside) {{
+            let v = ld_x(ii);
+            let _unused = {extract};
+            word = {insert};
+        }}
+    }}
+    out[w] = word;
+}}",
+        h = prelude(&[t]),
+        tb = t.binding(),
+        ldx = t.load_fn("ld_x", "x"),
+    ))
+}
+
 /// The integer ramp. Bindings: 0=out.
-pub fn iota(t: &str) -> String {
-    let expr = match t {
-        "f32" => "f32(idx)",
-        _ => "i32(idx)",
-    };
+pub fn iota(t: &Layout) -> String {
     format!(
         "{h}
 struct P {{ size: u32, x_stride: u32 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read_write> out: array<{t}>;
-@compute @workgroup_size(WG_SIZE)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
-    let idx = linear_idx(gid, p.x_stride);
-    if (idx >= p.size) {{ return; }}
-    out[idx] = {expr};
-}}",
-        h = header(),
+@group(0) @binding(0) var<storage, read_write> out: {tb};
+fn compute(idx: u32) -> {tc} {{
+    return {tc}(idx);
+}}
+{main}",
+        h = prelude(&[t]),
+        tb = t.binding(),
+        tc = t.compute(),
+        main = main_fn(t),
     )
-}
-
-/// Plain element copy (Scatter's first stage). Bindings: 0=in, 1=out.
-pub fn copy(t: &str) -> String {
-    cast(t, t, "v")
 }
 
 // ──────────────────────── tiled matmul (m > 1) ─────────────────────────

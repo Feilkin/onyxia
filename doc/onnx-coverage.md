@@ -16,7 +16,7 @@ opset 26) and the node tests shipped in the `onnx` 1.22.0 Python package
 | Primitives in the IR | **16** (unchanged) |
 | Node tests in the suite | 1765 |
 | Passing on the reference backend | **1275** (0 failures; 490 out of scope) |
-| Passing on the wgpu backend | **1162** |
+| Passing on the wgpu backend | **1273** (native or packed f16 / i64 modes alike) |
 
 "Core" here means every operator that maps tensors to tensors with a shape
 that is a function of the input shapes. The 27 excluded operators either
@@ -95,9 +95,10 @@ honest performance decision rather than a correctness need:
 - **Convolution.** The im2col path materializes a `kernel_size ×` larger
   tensor. It is the right *specification*; a fused direct-conv kernel is a
   composite kernel, not a new primitive.
-- **Scatter with reductions on the GPU.** The primitive exists; the wgpu
-  kernel only implements overwrite (reductions need atomics, and float
-  atomics are not in core WebGPU).
+- **Scatter with reductions on the GPU.** Implemented as a compare-and-
+  swap loop on the 32-bit output word (float atomics are not in core
+  WebGPU), which also serves packed 8-bit and f16 outputs. Correct, but
+  contended updates serialize.
 
 Two families would need changes beyond primitives: **data-dependent output
 shapes** (NonZero, Unique, Compress, NonMaxSuppression — the IR's shapes are
@@ -148,16 +149,25 @@ cargo test -p onyxia-conformance                     # regression gate (expected
 
 ## wgpu backend
 
-The 113 wgpu failures are backend limitations, not lowering ones (the same
-IR passes on the reference backend):
+The wgpu backend passes 1273 of the 1275 in-scope tests. Its physical
+layouts (`onyxia-backend-wgpu/src/layout.rs`) are chosen per adapter:
 
-| count | cause |
-|---|---|
-| 65 | uint8 / int8 storage and kernels (quantization ops, 8-bit elementwise and compare tests) |
-| 19 | float16 storage and kernels |
-| 13 | `Scatter` with a reduction (needs atomics) — ScatterND/ScatterElements reductions, Col2Im |
-| 12 | `MatMul` batch-broadcast patterns the tiled kernel does not handle (expanded CausalConvWithState bodies) |
-| 4 | integer `Pow` with a runtime exponent |
+| logical dtype | with the feature | without |
+|---|---|---|
+| f16 | native `f16` storage (`SHADER_F16`), computed in f32 | two per `u32` word, `pack2x16float` / `unpack2x16float` |
+| int64 | native `i64` (`SHADER_INT64`) | narrowed to `i32`, range-checked at upload |
+| uint8 / int8 | four per `u32` word, memory order (WebGPU has no 8-bit storage) | same |
+| bool | one `u32` per element | same |
+
+Every generated kernel runs one thread per output *word*, so packed lanes
+are never written by two threads; the two fallback modes are exercised by
+`ONYXIA_NO_F16=1` / `ONYXIA_NO_INT64=1` and give the same results. Device
+bytes equal host bytes for every layout except the narrowed i64 and
+bool, so 8-bit weights cost one byte each on the device.
+
+The two remaining failures are `DynamicQuantizeLinear`, where one element
+sits on a rounding tie that the GPU's `x / scale` (not correctly rounded
+under Vulkan's relaxed float division) resolves differently from numpy.
 
 ## Per-operator results
 
