@@ -172,3 +172,37 @@ Post fix 1–3, decode should land in the 25–40 ms/tok range
 - The lm_head transpose also costs VRAM: its 671 MB intermediate lands in
   a 1 GiB buffer-pool bucket, nearly doubling resident memory
   (2.07 GiB for a 1.08 GiB model). Fix 1 removes that too.
+
+## Update 2026-09-05: the CPU side, measured
+
+`bench` now prints a host-clock split of each decode step (shapes /
+encode / GPU wait / readback). On the RTX 5090 with the 1B q4, before this
+change: 5.65 ms/tok = shapes 0.16 + **encode 2.11** + GPU wait 3.18 +
+readback 0.07 + inputs/sampling 0.12. Nothing was submitted until the
+whole step (663 dispatches) was encoded, so the 2 ms of encoding sat
+strictly in front of the GPU's work.
+
+Fix: submit every 64 dispatches (`GpuContext::submit_chunk`,
+`ONYXIA_SUBMIT_CHUNK=n`; 32 ties, 16 loses to submit overhead). The GPU
+now starts on the first chunk while the CPU encodes the rest:
+
+| model | before | after |
+|---|---|---|
+| 270m fp32 | 4.6 ms/tok | 3.3 ms/tok (307 tok/s) |
+| 270m q4 | 4.1 | 2.8 (360 tok/s) |
+| 1B fp32 | 8.2 | 6.1 (163 tok/s) |
+| 1B q4 | 5.7 | 3.8 (262 tok/s) |
+
+Where the remaining ~2 ms of encode goes (1B q4, 663 dispatches, ≈3 µs
+each), from a one-off finer instrumentation: bind-group lookup 0.9 ms,
+`run_prim` bodies (label formatting, immediates, pool acquire) 1.0 ms,
+pipeline lookup 0.03, pass encoding 0.06, node clone 0.05, frees 0.04.
+The bind-group cache misses on **every** dispatch in steady state: pooled
+intermediates change buffer identity from step to step (the KV
+present/past hand-off rotates the free lists), so each dispatch pays a
+`create_bind_group`. Next levers, in order: a stable per-step buffer
+assignment (or in-place KV buffers) so bind groups hit; fewer dispatches
+(residual Add into RMS norm, gate Mul into Gelu, dropping the split-K
+reduce where N already fills the device — 130 of the 1B's 663 dispatches
+are `matvec_reduce`); precomputed per-node dispatch plans to shrink the
+`run_prim` bodies.

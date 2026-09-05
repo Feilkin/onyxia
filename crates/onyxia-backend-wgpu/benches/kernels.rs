@@ -34,6 +34,7 @@ impl Case {
             adapter_info: ctx.adapter_info.clone(),
             use_immediates: ctx.use_immediates,
             caps: ctx.caps,
+            submit_chunk: ctx.submit_chunk,
         });
         let mut session = backend.prepare(module).expect("prepare");
         let inputs = inputs

@@ -29,4 +29,4 @@ conformance *ARGS:
 
 # GPU tests with every layout/dispatch fallback forced (web-like device)
 test-gpu-fallbacks:
-    ONYXIA_NO_F16=1 ONYXIA_NO_INT64=1 ONYXIA_NO_IMMEDIATES=1 cargo nextest run --run-ignored=all --no-fail-fast -p onyxia-backend-wgpu
+    ONYXIA_NO_F16=1 ONYXIA_NO_INT64=1 ONYXIA_NO_IMMEDIATES=1 ONYXIA_SUBMIT_CHUNK=1 cargo nextest run --run-ignored=all --no-fail-fast -p onyxia-backend-wgpu

@@ -165,6 +165,7 @@ pub fn run(session: &mut LlmSession<WgpuSession>, cfg: &BenchConfig) -> Result<(
     let prefill_timings = pollster::block_on(session.backend_mut().take_timings())?;
 
     // Measured decode.
+    let misses_before = session.backend_mut().take_cpu_timing().bind_misses;
     let mut step_s: Vec<f64> = Vec::with_capacity(cfg.decode_tokens);
     for _ in 0..cfg.decode_tokens {
         let start = Instant::now();
@@ -172,6 +173,7 @@ pub fn run(session: &mut LlmSession<WgpuSession>, cfg: &BenchConfig) -> Result<(
         step_s.push(start.elapsed().as_secs_f64());
     }
     let decode_timings = pollster::block_on(session.backend_mut().take_timings())?;
+    let cpu = session.backend_mut().take_cpu_timing();
 
     // Report.
     let stats = StepStats::of(&step_s);
@@ -204,6 +206,26 @@ pub fn run(session: &mut LlmSession<WgpuSession>, cfg: &BenchConfig) -> Result<(
         stats.stddev * 1e3,
         1.0 / stats.mean,
     );
+    {
+        let n = cfg.decode_tokens.max(1) as f64;
+        let per = |ns: u64| ms(ns) / n;
+        let accounted = per(cpu.shapes_ns + cpu.encode_ns + cpu.wait_ns + cpu.readback_ns);
+        println!(
+            "decode step breakdown (host clock, ms/tok): shapes {:.2}, encode {:.2}, \
+             gpu wait {:.2}, readback {:.2}, other (inputs, sampling) {:.2}",
+            per(cpu.shapes_ns),
+            per(cpu.encode_ns),
+            per(cpu.wait_ns),
+            per(cpu.readback_ns),
+            (stats.mean * 1e3 - accounted).max(0.0),
+        );
+        println!(
+            "  encode: {} dispatches/step, {:.0} bind-group cache misses/step (pooled buffers \
+             change identity between steps)",
+            cpu.dispatches / cfg.decode_tokens.max(1) as u64,
+            (cpu.bind_misses - misses_before) as f64 / n,
+        );
+    }
     if profiling {
         println!(
             "decode GPU busy: {:.2} ms/tok ({:.0}% of wall; the rest is CPU encode + submit + readback)",

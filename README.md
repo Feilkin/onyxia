@@ -211,14 +211,17 @@ dequantizes each weight tile into shared memory on load. On an RTX 5090,
 
 | model | resident VRAM | decode | prefill |
 |---|---|---|---|
-| 270m fp32 | 1.07 GiB | 4.6 ms/tok (218 tok/s) | 27 ms |
-| 270m q4 | 0.76 GiB | 4.1 ms/tok (244 tok/s) | 27 ms |
-| 1B fp32 | 3.81 GiB | 8.2 ms/tok (122 tok/s) | 53 ms |
-| 1B q4 | 0.82 GiB | 5.7 ms/tok (176 tok/s) | 51 ms |
+| 270m fp32 | 1.07 GiB | 3.3 ms/tok (307 tok/s) | 26 ms |
+| 270m q4 | 0.76 GiB | 2.8 ms/tok (360 tok/s) | 27 ms |
+| 1B fp32 | 3.81 GiB | 6.1 ms/tok (163 tok/s) | 46 ms |
+| 1B q4 | 0.82 GiB | 3.8 ms/tok (262 tok/s) | 50 ms |
 
-At 270m the decode step is launch-bound (about 470 kernel launches per
-token), so smaller weights barely move it; at 1B the weight reads
-dominate and q4 is 1.4× faster. Prefer fp32 for quality — the community
+A decode step is 500–700 kernel launches; the session submits them to
+the GPU in chunks of 64 so it starts executing while the CPU is still
+encoding the rest (`ONYXIA_SUBMIT_CHUNK` overrides), and `bench` prints
+the host-side split (shapes / encode / GPU wait / readback). At 270m the
+launch floor dominates, so smaller weights help a little; at 1B the
+weight reads dominate and q4 is 1.6× faster. Prefer fp32 for quality — the community
 q4 quantization noticeably degrades these small models. The fp32 models
 generate token-for-token identically to onnxruntime under greedy decoding
 (including past the 1B's 512-token sliding window). On an RTX 3060 Ti:

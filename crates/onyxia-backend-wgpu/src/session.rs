@@ -218,14 +218,34 @@ impl onyxia_ir::Backend for WgpuBackend {
             encoder: None,
             pass: None,
             use_immediates: self.ctx.use_immediates,
+            submit_chunk: self.ctx.submit_chunk,
             imm_buffers: Vec::new(),
             imm_free: Vec::new(),
             profiler: None,
+            cpu: CpuTiming::default(),
             caps: self.ctx.caps,
         })
     }
 }
 
+/// Where the CPU spends a step, in nanoseconds, accumulated across calls:
+/// `shapes` = symbol binding + shape evaluation + register setup,
+/// `encode` = the dispatch loop through `queue.submit`, `wait` = blocking
+/// on the GPU in `download` (the GPU's own execution time plus queue
+/// latency), `readback` = staging copy setup and the host copies.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CpuTiming {
+    pub shapes_ns: u64,
+    pub encode_ns: u64,
+    pub wait_ns: u64,
+    pub readback_ns: u64,
+    /// Dispatches encoded.
+    pub dispatches: u64,
+    /// Bind-group cache misses (each one is a `create_bind_group`).
+    pub bind_misses: u64,
+}
+
+/// Dispatches encoded per intermediate `queue.submit` during a run.
 /// A prepared wgpu session.
 pub struct WgpuSession {
     device: Arc<wgpu::Device>,
@@ -248,6 +268,8 @@ pub struct WgpuSession {
     /// False → params bind as a storage buffer instead of `set_immediates`
     /// (the web path; see `gpu.rs` module docs).
     use_immediates: bool,
+    /// See [`GpuContext::submit_chunk`].
+    submit_chunk: usize,
     /// Params buffers for the in-flight batch. Each dispatch gets its own
     /// (all `write_buffer`s execute before the batch), returned to
     /// `imm_free` at submit. MUST NOT come from the tensor pool: a params
@@ -258,6 +280,8 @@ pub struct WgpuSession {
     imm_free: Vec<Arc<TrackedBuffer>>,
     /// Per-dispatch GPU timing, when enabled (see [`Self::enable_profiling`]).
     profiler: Option<Profiler>,
+    /// Accumulated CPU-side phase times since the last [`Self::take_cpu_timing`].
+    cpu: CpuTiming,
     /// Shader dtype features → physical layouts.
     caps: Caps,
 }
@@ -285,6 +309,16 @@ impl WgpuSession {
     /// when the device lacks timestamp queries — core WebGPU makes them
     /// optional, so callers must treat profiling as best-effort.
     ///
+    /// Drain the accumulated CPU-side phase times (see [`CpuTiming`]).
+    /// `bind_misses` is cumulative since the session was created.
+    pub fn take_cpu_timing(&mut self) -> CpuTiming {
+        let misses = self.cpu.bind_misses;
+        let mut out = std::mem::take(&mut self.cpu);
+        out.bind_misses = misses;
+        self.cpu.bind_misses = misses;
+        out
+    }
+
     /// While enabled, every dispatch's GPU execution time is recorded;
     /// drain the measurements with [`Self::take_timings`].
     pub fn enable_profiling(&mut self) -> bool {
@@ -370,6 +404,7 @@ impl WgpuSession {
                 .get_or_create(&self.device, label, &layout, &all)
         };
         self.encode_pass(label, &pipeline, &bind_group, imm, wg);
+        self.cpu.dispatches += 1;
         self.imm_buffers.extend(imm_buf);
         Ok(())
     }
@@ -576,6 +611,7 @@ impl onyxia_ir::Session for WgpuSession {
     }
 
     async fn run(&mut self, inputs: &[(&str, GpuTensor)]) -> Result<Vec<(String, GpuTensor)>> {
+        let t0 = std::time::Instant::now();
         // 1. Bind symbols from the provided input shapes.
         let described: Vec<(&str, DataType, &[usize])> = inputs
             .iter()
@@ -614,6 +650,8 @@ impl onyxia_ir::Session for WgpuSession {
         }
 
         // 4. Dispatch.
+        let t1 = std::time::Instant::now();
+        self.cpu.shapes_ns += (t1 - t0).as_nanos() as u64;
         for step in 0..self.order.len() {
             let node_id = self.order[step];
             if let Some(p) = &mut self.profiler {
@@ -640,8 +678,18 @@ impl onyxia_ir::Session for WgpuSession {
                     }
                 }
             }
+            // Pipelining: hand the GPU the batch so far while the CPU keeps
+            // encoding. Queue order keeps every buffer hand-off correct.
+            if self.profiler.is_none()
+                && self.submit_chunk > 0
+                && (step + 1) % self.submit_chunk == 0
+            {
+                self.submit();
+            }
         }
         self.submit();
+        self.cpu.encode_ns += t1.elapsed().as_nanos() as u64;
+        self.cpu.bind_misses = self.bind_groups.misses;
 
         // 5. Collect outputs.
         self.module
@@ -657,6 +705,7 @@ impl onyxia_ir::Session for WgpuSession {
     }
 
     async fn download(&mut self, tensor: &GpuTensor) -> Result<Tensor> {
+        let t0 = std::time::Instant::now();
         self.submit();
         let size = self.layout(tensor.dtype)?.buffer_bytes(tensor.numel());
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -676,6 +725,8 @@ impl onyxia_ir::Session for WgpuSession {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
+        let t1 = std::time::Instant::now();
+        self.cpu.readback_ns += (t1 - t0).as_nanos() as u64;
         #[cfg(not(target_arch = "wasm32"))]
         self.device
             .poll(wgpu::PollType::Wait {
@@ -688,9 +739,13 @@ impl onyxia_ir::Session for WgpuSession {
         rx.await
             .map_err(|e| Error::Runtime(format!("buffer map canceled: {e}")))?
             .map_err(|e| Error::Runtime(format!("buffer map failed: {e}")))?;
+        let t2 = std::time::Instant::now();
+        self.cpu.wait_ns += (t2 - t1).as_nanos() as u64;
         let bytes = slice.get_mapped_range().to_vec();
         staging.unmap();
-        from_phys(tensor.dtype, &tensor.shape, &bytes, self.caps)
+        let out = from_phys(tensor.dtype, &tensor.shape, &bytes, self.caps);
+        self.cpu.readback_ns += t2.elapsed().as_nanos() as u64;
+        out
     }
 }
 

@@ -40,7 +40,18 @@ pub struct GpuContext {
     /// `ONYXIA_NO_F16=1` / `ONYXIA_NO_INT64=1` force the fallbacks so
     /// native test runs cover the packed / narrowed paths.
     pub caps: crate::layout::Caps,
+    /// Dispatches per intermediate `queue.submit` within a run, so the GPU
+    /// starts on the first kernels while the CPU is still encoding the
+    /// rest (a decode step is ~2 ms of encode for ~650 dispatches — fully
+    /// serialized before the GPU otherwise). 0 = one submit per run.
+    /// `ONYXIA_SUBMIT_CHUNK=n` overrides (tests use 1 to stress the
+    /// cross-submit buffer hand-offs).
+    pub submit_chunk: usize,
 }
+
+/// Default [`GpuContext::submit_chunk`]: measured on an RTX 5090 with the
+/// 1B q4 — 64 and 32 tie, 16 loses to submit overhead.
+pub const DEFAULT_SUBMIT_CHUNK: usize = 64;
 
 impl GpuContext {
     /// Initialize an adapter/device with the features the backend needs.
@@ -101,12 +112,17 @@ impl GpuContext {
             })
             .await
             .map_err(|e| Error::Runtime(format!("device request failed: {e}")))?;
+        let submit_chunk = std::env::var("ONYXIA_SUBMIT_CHUNK")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_SUBMIT_CHUNK);
         Ok(Self {
             device: Arc::new(device),
             queue: Arc::new(queue),
             adapter_info,
             use_immediates,
             caps,
+            submit_chunk,
         })
     }
 
@@ -361,6 +377,9 @@ impl Drop for TrackedBuffer {
 pub struct BindGroupCache {
     map: HashMap<String, HashMap<Vec<usize>, CachedBindGroup>>,
     len: usize,
+    /// Lookup statistics since creation (diagnostics).
+    pub hits: u64,
+    pub misses: u64,
 }
 
 struct CachedBindGroup {
@@ -384,8 +403,10 @@ impl BindGroupCache {
     ) -> Arc<wgpu::BindGroup> {
         let key: Vec<usize> = buffers.iter().map(|b| Arc::as_ptr(b) as usize).collect();
         if let Some(hit) = self.map.get(label).and_then(|m| m.get(&key)) {
+            self.hits += 1;
             return Arc::clone(&hit.bind_group);
         }
+        self.misses += 1;
         if self.len >= Self::CAP {
             self.map.clear();
             self.len = 0;
