@@ -12,6 +12,7 @@ use crate::gpu::{
     TrackedBuffer, WORKGROUP_SIZE, dispatch_size,
 };
 use crate::kernels::{self, Imm, MAX_RANK};
+use crate::layout::{Caps, Layout, Repr};
 use crate::profile::{KernelTiming, Profiler};
 use onyxia_ir::graph::{Module, NodeId, NodeKind, Origin, ValueId};
 use onyxia_ir::interp::{Tensor, bind_shapes};
@@ -35,33 +36,13 @@ impl GpuTensor {
     }
 }
 
-/// Physical WGSL scalar for a logical dtype. The wgpu backend stores I64
-/// as i32 (range-checked at upload) and Bool as u32; all supported types
-/// are 4 bytes on-device.
-fn phys(dt: DataType) -> Result<&'static str> {
-    Ok(match dt {
-        DataType::F32 => "f32",
-        DataType::I64 | DataType::I32 => "i32",
-        DataType::U32 | DataType::Bool => "u32",
-        other => {
-            return Err(Error::Unsupported(format!(
-                "dtype {other} on the wgpu backend (f16/quantized kernels are future work)"
-            )));
-        }
-    })
-}
-
-fn phys_bytes(numel: usize) -> u64 {
-    // Multiply in u64: usize is 32-bit on wasm32, and buffer sizes may
-    // legitimately exceed what a usize product can hold before the cast.
-    numel.max(1) as u64 * 4
-}
-
 /// Convert host bytes (logical layout) to device bytes (physical layout).
-fn to_phys(t: &Tensor) -> Result<Vec<u8>> {
-    match t.dtype() {
-        DataType::F32 | DataType::I32 | DataType::U32 => Ok(t.bytes().to_vec()),
-        DataType::I64 => t
+/// Every layout except the narrowed i64 and Bool stores the host bytes
+/// verbatim (packed 8-bit and f16 words are the bytes in memory order).
+fn to_phys(t: &Tensor, caps: Caps) -> Result<Vec<u8>> {
+    let l = Layout::of(t.dtype(), caps)?;
+    let mut data: Vec<u8> = match l.repr {
+        Repr::I64Narrow => t
             .bytes()
             .chunks_exact(8)
             .map(|c| {
@@ -70,36 +51,38 @@ fn to_phys(t: &Tensor) -> Result<Vec<u8>> {
                     .map(|v| v.to_le_bytes().to_vec())
                     .map_err(|_| {
                         Error::Unsupported(format!(
-                            "i64 value {v} does not fit the wgpu backend's 32-bit storage"
+                            "i64 value {v} does not fit the wgpu backend's 32-bit storage \
+                             (this adapter lacks SHADER_INT64)"
                         ))
                     })
             })
             .collect::<Result<Vec<_>>>()
-            .map(|v| v.concat()),
-        DataType::Bool => Ok(t
+            .map(|v| v.concat())?,
+        _ if t.dtype() == DataType::Bool => t
             .bytes()
             .iter()
             .flat_map(|&b| (b as u32).to_le_bytes())
-            .collect()),
-        other => Err(Error::Unsupported(format!("upload of dtype {other}"))),
-    }
+            .collect(),
+        _ => t.bytes().to_vec(),
+    };
+    data.resize(l.buffer_bytes(t.numel()) as usize, 0);
+    Ok(data)
 }
 
 /// Convert device bytes back to a host tensor of the logical dtype.
-fn from_phys(dtype: DataType, shape: &[usize], bytes: &[u8]) -> Result<Tensor> {
+fn from_phys(dtype: DataType, shape: &[usize], bytes: &[u8], caps: Caps) -> Result<Tensor> {
     let numel: usize = shape.iter().product();
-    let data = &bytes[..numel * 4];
-    let logical: Vec<u8> = match dtype {
-        DataType::F32 | DataType::I32 | DataType::U32 => data.to_vec(),
-        DataType::I64 => data
+    let l = Layout::of(dtype, caps)?;
+    let logical: Vec<u8> = match l.repr {
+        Repr::I64Narrow => bytes[..numel * 4]
             .chunks_exact(4)
             .flat_map(|c| (i32::from_le_bytes(c.try_into().unwrap()) as i64).to_le_bytes())
             .collect(),
-        DataType::Bool => data
+        _ if dtype == DataType::Bool => bytes[..numel * 4]
             .chunks_exact(4)
             .map(|c| (u32::from_le_bytes(c.try_into().unwrap()) != 0) as u8)
             .collect(),
-        other => return Err(Error::Unsupported(format!("download of dtype {other}"))),
+        _ => bytes[..dtype.storage_bytes(numel)].to_vec(),
     };
     Tensor::new(dtype, shape.to_vec(), logical)
 }
@@ -182,12 +165,12 @@ impl onyxia_ir::Backend for WgpuBackend {
             let Origin::Const(cid) = def.origin else {
                 continue;
             };
-            phys(def.ty.dtype)?; // fail early on unsupported dtypes
+            let layout = Layout::of(def.ty.dtype, self.ctx.caps)?; // fail early
             let host = onyxia_ir::interp::const_tensor(&module, cid)?;
-            let data = to_phys(&host)?;
+            let data = to_phys(&host, self.ctx.caps)?;
             let buffer = self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
                 label: def.name.as_deref(),
-                size: phys_bytes(host.numel()),
+                size: layout.buffer_bytes(host.numel()),
                 usage: wgpu::BufferUsages::STORAGE
                     | wgpu::BufferUsages::COPY_SRC
                     | wgpu::BufferUsages::COPY_DST,
@@ -238,6 +221,7 @@ impl onyxia_ir::Backend for WgpuBackend {
             imm_buffers: Vec::new(),
             imm_free: Vec::new(),
             profiler: None,
+            caps: self.ctx.caps,
         })
     }
 }
@@ -274,6 +258,8 @@ pub struct WgpuSession {
     imm_free: Vec<Arc<TrackedBuffer>>,
     /// Per-dispatch GPU timing, when enabled (see [`Self::enable_profiling`]).
     profiler: Option<Profiler>,
+    /// Shader dtype features → physical layouts.
+    caps: Caps,
 }
 
 impl WgpuSession {
@@ -479,15 +465,75 @@ impl WgpuSession {
     }
 
     pub(crate) fn alloc_out(&mut self, dtype: DataType, shape: Vec<usize>) -> GpuTensor {
-        let buffer = self
-            .pool
-            .acquire(&self.device, phys_bytes(shape.iter().product()), &self.mem);
+        let bytes = Layout::of(dtype, self.caps)
+            .map(|l| l.buffer_bytes(shape.iter().product()))
+            .unwrap_or(4);
+        let buffer = self.pool.acquire(&self.device, bytes, &self.mem);
         GpuTensor {
             buffer,
             dtype,
             shape,
         }
     }
+
+    /// The physical layout of a dtype on this session's device.
+    pub(crate) fn layout(&self, dtype: DataType) -> Result<Layout> {
+        Layout::of(dtype, self.caps)
+    }
+
+    /// Materialize `x` broadcast to `shape` (numpy rules).
+    pub(crate) fn broadcast_to(&mut self, x: &GpuTensor, shape: Vec<usize>) -> Result<GpuTensor> {
+        let t = self.layout(x.dtype)?;
+        check_rank(&shape, "broadcast")?;
+        let out = self.alloc_out(x.dtype, shape);
+        let (imm, size) = size_imm_l(&t, out.numel());
+        let imm = imm
+            .u(out.shape.len() as u32)
+            .u(x.shape.len() as u32)
+            .arr8(&out.shape)
+            .arr8(&x.shape);
+        self.dispatch(
+            &format!("broadcast_{}", t.tag()),
+            || kernels::broadcast(&t),
+            &[&x.buffer, &out.buffer],
+            &imm,
+            size,
+        )?;
+        Ok(out)
+    }
+
+    /// Convert `x` to `dtype` (a Cast dispatch; aliases when the layouts
+    /// already agree).
+    pub(crate) fn cast_to(&mut self, x: &GpuTensor, dtype: DataType) -> Result<GpuTensor> {
+        let (ls, ld) = (self.layout(x.dtype)?, self.layout(dtype)?);
+        let expr = cast_expr(&ls, &ld);
+        if expr == "v" && ls.store() == ld.store() && ls.lanes() == ld.lanes() {
+            return Ok(GpuTensor {
+                buffer: Arc::clone(&x.buffer),
+                dtype,
+                shape: x.shape.clone(),
+            });
+        }
+        let out = self.alloc_out(dtype, x.shape.clone());
+        let (imm, size) = size_imm_l(&ld, out.numel());
+        self.dispatch(
+            &format!("cast_{}_{}_{dtype}", ls.tag(), ld.tag()),
+            || kernels::cast(&ls, &ld, &expr),
+            &[&x.buffer, &out.buffer],
+            &imm,
+            size,
+        )?;
+        Ok(out)
+    }
+}
+
+/// Immediate prefix + thread count for a kernel that runs one thread per
+/// output *word* of layout `l` over `numel` elements.
+fn size_imm_l(l: &Layout, numel: usize) -> (Imm, usize) {
+    let words = l.words(numel) as usize;
+    let linear = (words as u32).div_ceil(WORKGROUP_SIZE);
+    let (_wg, x_stride) = dispatch_size(linear);
+    (Imm::new().u(numel as u32).u(x_stride), words)
 }
 
 /// Common immediate prefix: size + x_stride for the bounds check.
@@ -512,10 +558,10 @@ impl onyxia_ir::Session for WgpuSession {
     type Tensor = GpuTensor;
 
     fn upload(&mut self, tensor: &Tensor) -> Result<GpuTensor> {
-        let data = to_phys(tensor)?;
+        let data = to_phys(tensor, self.caps)?;
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("upload"),
-            size: phys_bytes(tensor.numel()),
+            size: data.len() as u64,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_SRC
                 | wgpu::BufferUsages::COPY_DST,
@@ -612,7 +658,7 @@ impl onyxia_ir::Session for WgpuSession {
 
     async fn download(&mut self, tensor: &GpuTensor) -> Result<Tensor> {
         self.submit();
-        let size = phys_bytes(tensor.numel());
+        let size = self.layout(tensor.dtype)?.buffer_bytes(tensor.numel());
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("download_staging"),
             size,
@@ -644,7 +690,7 @@ impl onyxia_ir::Session for WgpuSession {
             .map_err(|e| Error::Runtime(format!("buffer map failed: {e}")))?;
         let bytes = slice.get_mapped_range().to_vec();
         staging.unmap();
-        from_phys(tensor.dtype, &tensor.shape, &bytes)
+        from_phys(tensor.dtype, &tensor.shape, &bytes, self.caps)
     }
 }
 
@@ -678,7 +724,7 @@ impl WgpuSession {
                         c.name
                     ))
                 })?;
-                let inputs: Vec<GpuTensor> = node
+                let mut inputs: Vec<GpuTensor> = node
                     .inputs
                     .iter()
                     .map(|&v| {
@@ -687,12 +733,36 @@ impl WgpuSession {
                             .ok_or_else(|| Error::Runtime("input not materialized".into()))
                     })
                     .collect::<Result<_>>()?;
-                let outs_meta: Vec<(DataType, Vec<usize>)> = node
+                let mut outs_meta: Vec<(DataType, Vec<usize>)> = node
                     .outputs
                     .iter()
                     .map(|&o| (self.module.value(o).ty.dtype, shapes[o.index()].clone()))
                     .collect();
-                kernel.execute(self, &c.attrs, &inputs, &outs_meta)
+                // Fused kernels are written for f32; run f16 composites
+                // through them with casts at the boundary.
+                let f16 = inputs.iter().any(|t| t.dtype == DataType::F16)
+                    || outs_meta.iter().any(|(d, _)| *d == DataType::F16);
+                let mut f16_outs = Vec::new();
+                if f16 {
+                    for t in &mut inputs {
+                        if t.dtype == DataType::F16 {
+                            *t = self.cast_to(t, DataType::F32)?;
+                        }
+                    }
+                }
+                if f16 {
+                    for (i, (d, _)) in outs_meta.iter_mut().enumerate() {
+                        if *d == DataType::F16 {
+                            *d = DataType::F32;
+                            f16_outs.push(i);
+                        }
+                    }
+                }
+                let mut outs = kernel.execute(self, &c.attrs, &inputs, &outs_meta)?;
+                for i in f16_outs {
+                    outs[i] = self.cast_to(&outs[i], DataType::F16)?;
+                }
+                Ok(outs)
             }
         }
     }
@@ -845,9 +915,9 @@ impl WgpuSession {
 
             Prim::Cast { .. } => {
                 let x = input(0)?.clone();
-                let (ts, td) = (phys(x.dtype)?, phys(out_dtype)?);
-                let expr = cast_expr(ts, td, out_dtype);
-                if expr == "v" {
+                let (ls, ld) = (self.layout(x.dtype)?, self.layout(out_dtype)?);
+                let expr = cast_expr(&ls, &ld);
+                if expr == "v" && ls.store() == ld.store() && ls.lanes() == ld.lanes() {
                     // Same physical representation: alias.
                     return Ok(GpuTensor {
                         buffer: x.buffer,
@@ -856,10 +926,10 @@ impl WgpuSession {
                     });
                 }
                 let out = self.alloc_out(out_dtype, out_shape);
-                let (imm, size) = size_imm(out.numel());
+                let (imm, size) = size_imm_l(&ld, out.numel());
                 self.dispatch(
-                    &format!("cast_{ts}_{td}_{out_dtype}"),
-                    || kernels::cast(ts, td, &expr),
+                    &format!("cast_{}_{}_{out_dtype}", ls.tag(), ld.tag()),
+                    || kernels::cast(&ls, &ld, &expr),
                     &[&x.buffer, &out.buffer],
                     &imm,
                     size,
@@ -870,13 +940,13 @@ impl WgpuSession {
             // ── element-wise ─────────────────────────────────────────
             Prim::Unary(op) => {
                 let x = input(0)?.clone();
-                let t = phys(x.dtype)?;
-                let (expr, needs_erf) = unary_expr(*op, t)?;
+                let t = self.layout(x.dtype)?;
+                let (expr, needs_erf) = unary_expr(*op, &t)?;
                 let out = self.alloc_out(out_dtype, out_shape);
-                let (imm, size) = size_imm(out.numel());
+                let (imm, size) = size_imm_l(&t, out.numel());
                 self.dispatch(
-                    &format!("unary_{}_{t}", prim.name()),
-                    || kernels::unary(t, expr, needs_erf),
+                    &format!("unary_{}_{}", prim.name(), t.tag()),
+                    || kernels::unary(&t, &t, expr, needs_erf),
                     &[&x.buffer, &out.buffer],
                     &imm,
                     size,
@@ -886,10 +956,10 @@ impl WgpuSession {
 
             Prim::Binary(op) => {
                 let (a, b) = (input(0)?.clone(), input(1)?.clone());
-                let t = phys(a.dtype)?;
-                let expr = binary_expr(*op, t)?;
+                let t = self.layout(a.dtype)?;
+                let expr = binary_expr(*op, &t)?;
                 let out = self.alloc_out(out_dtype, out_shape);
-                let (imm, size) = size_imm(out.numel());
+                let (imm, size) = size_imm_l(&t, out.numel());
                 let imm = imm
                     .u(out.shape.len() as u32)
                     .u(a.shape.len() as u32)
@@ -898,8 +968,8 @@ impl WgpuSession {
                     .arr8(&a.shape)
                     .arr8(&b.shape);
                 self.dispatch(
-                    &format!("binary_{}_{t}", prim.name()),
-                    || kernels::binary(t, t, expr),
+                    &format!("binary_{}_{}", prim.name(), t.tag()),
+                    || kernels::binary(&t, &t, &t, expr),
                     &[&a.buffer, &b.buffer, &out.buffer],
                     &imm,
                     size,
@@ -909,10 +979,11 @@ impl WgpuSession {
 
             Prim::Compare(op) => {
                 let (a, b) = (input(0)?.clone(), input(1)?.clone());
-                let t = phys(a.dtype)?;
-                let expr = compare_expr(*op);
+                let t = self.layout(a.dtype)?;
+                let ob = self.layout(DataType::Bool)?;
+                let expr = compare_expr(*op, &t);
                 let out = self.alloc_out(out_dtype, out_shape);
-                let (imm, size) = size_imm(out.numel());
+                let (imm, size) = size_imm_l(&ob, out.numel());
                 let imm = imm
                     .u(out.shape.len() as u32)
                     .u(a.shape.len() as u32)
@@ -921,8 +992,8 @@ impl WgpuSession {
                     .arr8(&a.shape)
                     .arr8(&b.shape);
                 self.dispatch(
-                    &format!("compare_{}_{t}", prim.name()),
-                    || kernels::binary(t, "u32", expr),
+                    &format!("compare_{}_{}", prim.name(), t.tag()),
+                    || kernels::binary(&t, &t, &ob, expr),
                     &[&a.buffer, &b.buffer, &out.buffer],
                     &imm,
                     size,
@@ -932,9 +1003,10 @@ impl WgpuSession {
 
             Prim::Select => {
                 let (c, a, b) = (input(0)?.clone(), input(1)?.clone(), input(2)?.clone());
-                let t = phys(a.dtype)?;
+                let t = self.layout(a.dtype)?;
+                let cl = self.layout(c.dtype)?;
                 let out = self.alloc_out(out_dtype, out_shape);
-                let (imm, size) = size_imm(out.numel());
+                let (imm, size) = size_imm_l(&t, out.numel());
                 let imm = imm
                     .u(out.shape.len() as u32)
                     .u(c.shape.len() as u32)
@@ -945,8 +1017,8 @@ impl WgpuSession {
                     .arr8(&a.shape)
                     .arr8(&b.shape);
                 self.dispatch(
-                    &format!("select_{t}"),
-                    || kernels::select3(t),
+                    &format!("select_{}", t.tag()),
+                    || kernels::select3(&cl, &t),
                     &[&c.buffer, &a.buffer, &b.buffer, &out.buffer],
                     &imm,
                     size,
@@ -957,7 +1029,7 @@ impl WgpuSession {
             // ── linear algebra ───────────────────────────────────────
             Prim::MatMul { trans_a, trans_b } => {
                 let (a, b) = (input(0)?.clone(), input(1)?.clone());
-                let t = phys(a.dtype)?;
+                let t = self.layout(a.dtype)?;
                 let (ar, br) = (a.shape.len(), b.shape.len());
                 let (m, k) = {
                     let (r, c) = (a.shape[ar - 2], a.shape[ar - 1]);
@@ -969,27 +1041,34 @@ impl WgpuSession {
                     b.shape[br - 1]
                 };
                 let batch: usize = out_shape[..out_shape.len() - 2].iter().product();
-                let stride_of = |batch_numel: usize, mat: usize, what: &str| -> Result<u32> {
-                    if batch_numel == batch {
-                        Ok(mat as u32)
-                    } else if batch_numel == 1 {
-                        Ok(0)
-                    } else {
-                        Err(Error::Unsupported(format!(
-                            "matmul {what} batch broadcast pattern \
-                             ({batch_numel} vs {batch})"
-                        )))
+                // Batch dims either match the output, are absent/scalar,
+                // or get materialized by a broadcast copy first.
+                let out_batch = out_shape[..out_shape.len() - 2].to_vec();
+                let expand = |this: &mut Self, x: &GpuTensor| -> Result<GpuTensor> {
+                    let r = x.shape.len();
+                    let bn: usize = x.shape[..r - 2].iter().product();
+                    if bn == batch || bn == 1 {
+                        return Ok(x.clone());
                     }
+                    let mut full = out_batch.clone();
+                    full.extend_from_slice(&x.shape[r - 2..]);
+                    this.broadcast_to(x, full)
                 };
-                let a_bs = stride_of(a.shape[..ar - 2].iter().product(), m * k, "lhs")?;
-                let b_bs = stride_of(b.shape[..br - 2].iter().product(), k * n, "rhs")?;
+                let a = expand(self, &a)?;
+                let b = expand(self, &b)?;
+                let stride_of = |batch_numel: usize, mat: usize| -> u32 {
+                    if batch_numel == batch { mat as u32 } else { 0 }
+                };
+                let a_bs = stride_of(a.shape[..ar - 2].iter().product(), m * k);
+                let b_bs = stride_of(b.shape[..br - 2].iter().product(), k * n);
 
-                // Fast paths (f32): unbatched matrix × vector for decode-
-                // step projections (`trans_a` is irrelevant at m == 1 —
-                // `[K,1]` and `[1,K]` share a memory layout), tiled matmul
-                // for everything else. Grid dims cap at 65535 workgroups;
-                // anything larger falls through to the generic kernel.
-                if t == "f32" && k > 0 && n > 0 {
+                // Fast paths (plain f32): unbatched matrix × vector for
+                // decode-step projections (`trans_a` is irrelevant at
+                // m == 1 — `[K,1]` and `[1,K]` share a memory layout),
+                // tiled matmul for everything else. Grid dims cap at
+                // 65535 workgroups; anything larger falls through to the
+                // generic kernel.
+                if t.is_plain_f32() && k > 0 && n > 0 {
                     if batch == 1 && m == 1 && n.div_ceil(64) <= 65535 {
                         let out = self.alloc_out(out_dtype, out_shape);
                         return self.matvec(&a, &b, out, n, k, *trans_b);
@@ -1019,7 +1098,7 @@ impl WgpuSession {
                 }
 
                 let out = self.alloc_out(out_dtype, out_shape);
-                let (imm, size) = size_imm(out.numel());
+                let (imm, size) = size_imm_l(&t, out.numel());
                 let imm = imm
                     .u(m as u32)
                     .u(n as u32)
@@ -1029,8 +1108,8 @@ impl WgpuSession {
                     .u(*trans_a as u32)
                     .u(*trans_b as u32);
                 self.dispatch(
-                    &format!("matmul_{t}"),
-                    || kernels::matmul(t),
+                    &format!("matmul_{}", t.tag()),
+                    || kernels::matmul(&t),
                     &[&a.buffer, &b.buffer, &out.buffer],
                     &imm,
                     size,
@@ -1040,8 +1119,8 @@ impl WgpuSession {
 
             Prim::Reduce { op, axes, .. } => {
                 let x = input(0)?.clone();
-                let t = phys(x.dtype)?;
-                let (init, combine, finalize) = reduce_exprs(*op, t);
+                let t = self.layout(x.dtype)?;
+                let (init, combine, finalize) = reduce_exprs(*op, &t);
                 let mut mask = 0u32;
                 let mut count = 1usize;
                 for &a in axes {
@@ -1049,15 +1128,15 @@ impl WgpuSession {
                     count *= x.shape[a];
                 }
                 let out = self.alloc_out(out_dtype, out_shape);
-                let (imm, size) = size_imm(out.numel());
+                let (imm, size) = size_imm_l(&t, out.numel());
                 let imm = imm
                     .u(x.shape.len() as u32)
                     .u(mask)
                     .u(count as u32)
                     .arr8(&x.shape);
                 self.dispatch(
-                    &format!("reduce_{}_{t}", prim.name()),
-                    || kernels::reduce(t, init, combine, finalize),
+                    &format!("reduce_{}_{}", prim.name(), t.tag()),
+                    || kernels::reduce(&t, init, combine, finalize),
                     &[&x.buffer, &out.buffer],
                     &imm,
                     size,
@@ -1068,17 +1147,17 @@ impl WgpuSession {
             // ── data movement ────────────────────────────────────────
             Prim::Transpose { perm } => {
                 let x = input(0)?.clone();
-                let t = phys(x.dtype)?;
+                let t = self.layout(x.dtype)?;
                 let out = self.alloc_out(out_dtype, out_shape);
-                let (imm, size) = size_imm(out.numel());
+                let (imm, size) = size_imm_l(&t, out.numel());
                 let imm = imm
                     .u(x.shape.len() as u32)
                     .arr8(perm)
                     .arr8(&x.shape)
                     .arr8(&out.shape);
                 self.dispatch(
-                    &format!("transpose_{t}"),
-                    || kernels::transpose(t),
+                    &format!("transpose_{}", t.tag()),
+                    || kernels::transpose(&t),
                     &[&x.buffer, &out.buffer],
                     &imm,
                     size,
@@ -1088,17 +1167,17 @@ impl WgpuSession {
 
             Prim::Broadcast { .. } => {
                 let x = input(0)?.clone();
-                let t = phys(x.dtype)?;
+                let t = self.layout(x.dtype)?;
                 let out = self.alloc_out(out_dtype, out_shape);
-                let (imm, size) = size_imm(out.numel());
+                let (imm, size) = size_imm_l(&t, out.numel());
                 let imm = imm
                     .u(out.shape.len() as u32)
                     .u(x.shape.len() as u32)
                     .arr8(&out.shape)
                     .arr8(&x.shape);
                 self.dispatch(
-                    &format!("broadcast_{t}"),
-                    || kernels::broadcast(t),
+                    &format!("broadcast_{}", t.tag()),
+                    || kernels::broadcast(&t),
                     &[&x.buffer, &out.buffer],
                     &imm,
                     size,
@@ -1108,24 +1187,43 @@ impl WgpuSession {
 
             Prim::Concat { axis } => {
                 let out = self.alloc_out(out_dtype, out_shape.clone());
+                let t = self.layout(out_dtype)?;
                 let mut offset = 0usize;
                 for i in 0..node.inputs.len() {
                     let x = input(i)?.clone();
-                    let t = phys(x.dtype)?;
-                    let (imm, size) = size_imm(x.numel());
-                    let imm = imm
-                        .u(x.shape.len() as u32)
-                        .u(*axis as u32)
-                        .u(offset as u32)
-                        .arr8(&x.shape)
-                        .arr8(&out_shape);
-                    self.dispatch(
-                        &format!("concat_{t}"),
-                        || kernels::concat_emplace(t),
-                        &[&x.buffer, &out.buffer],
-                        &imm,
-                        size,
-                    )?;
+                    if t.lanes() == 1 {
+                        let (imm, size) = size_imm(x.numel());
+                        let imm = imm
+                            .u(x.shape.len() as u32)
+                            .u(*axis as u32)
+                            .u(offset as u32)
+                            .arr8(&x.shape)
+                            .arr8(&out_shape);
+                        self.dispatch(
+                            &format!("concat_{}", t.tag()),
+                            || kernels::concat_emplace(&t),
+                            &[&x.buffer, &out.buffer],
+                            &imm,
+                            size,
+                        )?;
+                    } else {
+                        let (imm, size) = size_imm_l(&t, out.numel());
+                        let imm = imm
+                            .u(x.shape.len() as u32)
+                            .u(*axis as u32)
+                            .u(offset as u32)
+                            .u(x.shape[*axis] as u32)
+                            .arr8(&x.shape)
+                            .arr8(&out_shape);
+                        let wgsl = kernels::concat_packed(&t)?;
+                        self.dispatch(
+                            &format!("concat_packed_{}", t.tag()),
+                            || wgsl,
+                            &[&x.buffer, &out.buffer],
+                            &imm,
+                            size,
+                        )?;
+                    }
                     offset += x.shape[*axis];
                 }
                 Ok(out)
@@ -1133,7 +1231,7 @@ impl WgpuSession {
 
             Prim::Slice { specs } => {
                 let x = input(0)?.clone();
-                let t = phys(x.dtype)?;
+                let t = self.layout(x.dtype)?;
                 // Per-axis start/step; unlisted axes are identity. Starts
                 // may be symbolic (e.g. slicing an iota at `past_len`) —
                 // they resolve under the current bindings.
@@ -1145,7 +1243,7 @@ impl WgpuSession {
                     steps[spec.axis] = spec.step;
                 }
                 let out = self.alloc_out(out_dtype, out_shape);
-                let (imm, size) = size_imm(out.numel());
+                let (imm, size) = size_imm_l(&t, out.numel());
                 let imm = imm
                     .u(rank as u32)
                     .arr8(&starts.iter().map(|&s| s as usize).collect::<Vec<_>>())
@@ -1153,8 +1251,8 @@ impl WgpuSession {
                     .arr8(&x.shape)
                     .arr8(&out.shape);
                 self.dispatch(
-                    &format!("slice_{t}"),
-                    || kernels::slice(t),
+                    &format!("slice_{}", t.tag()),
+                    || kernels::slice(&t),
                     &[&x.buffer, &out.buffer],
                     &imm,
                     size,
@@ -1164,9 +1262,10 @@ impl WgpuSession {
 
             Prim::Gather { axis } => {
                 let (data, indices) = (input(0)?.clone(), input(1)?.clone());
-                let t = phys(data.dtype)?;
+                let t = self.layout(data.dtype)?;
+                let il = self.layout(indices.dtype)?;
                 let out = self.alloc_out(out_dtype, out_shape);
-                let (imm, size) = size_imm(out.numel());
+                let (imm, size) = size_imm_l(&t, out.numel());
                 let imm = imm
                     .u(*axis as u32)
                     .u(data.shape.len() as u32)
@@ -1175,8 +1274,8 @@ impl WgpuSession {
                     .arr8(&indices.shape)
                     .arr8(&out.shape);
                 self.dispatch(
-                    &format!("gather_{t}"),
-                    || kernels::gather(t),
+                    &format!("gather_{}_{}", t.tag(), il.tag()),
+                    || kernels::gather(&t, &il),
                     &[&data.buffer, &indices.buffer, &out.buffer],
                     &imm,
                     size,
@@ -1184,21 +1283,23 @@ impl WgpuSession {
                 Ok(out)
             }
 
-            Prim::Scatter => {
+            Prim::Scatter { reduction } => {
+                use onyxia_ir::ScatterReduce;
                 let (data, indices, updates) =
                     (input(0)?.clone(), input(1)?.clone(), input(2)?.clone());
-                let t = phys(data.dtype)?;
+                let t = self.layout(data.dtype)?;
+                let il = self.layout(indices.dtype)?;
                 let out = self.alloc_out(out_dtype, out_shape);
                 // Stage 1: copy data into out.
-                let (imm, size) = size_imm(data.numel());
+                let (imm, size) = size_imm_l(&t, data.numel());
                 self.dispatch(
-                    &format!("copy_{t}"),
-                    || kernels::copy(t),
+                    &format!("copy_{}", t.tag()),
+                    || kernels::copy(&t),
                     &[&data.buffer, &out.buffer],
                     &imm,
                     size,
                 )?;
-                // Stage 2: scatter updates.
+                // Stage 2: scatter updates (threads over update elements).
                 let ir = indices.shape.len();
                 let k = indices.shape[ir - 1];
                 let slice_len: usize = data.shape[k..].iter().product();
@@ -1208,23 +1309,41 @@ impl WgpuSession {
                     .u(slice_len as u32)
                     .u(data.shape.len() as u32)
                     .arr8(&data.shape);
-                self.dispatch(
-                    &format!("scatter_{t}"),
-                    || kernels::scatter(t),
-                    &[&indices.buffer, &updates.buffer, &out.buffer],
-                    &imm,
-                    size,
-                )?;
+                if *reduction == ScatterReduce::None && t.lanes() == 1 {
+                    self.dispatch(
+                        &format!("scatter_{}_{}", t.tag(), il.tag()),
+                        || kernels::scatter(&t, &il),
+                        &[&indices.buffer, &updates.buffer, &out.buffer],
+                        &imm,
+                        size,
+                    )?;
+                } else {
+                    let combine = match reduction {
+                        ScatterReduce::None => "upd",
+                        ScatterReduce::Add => "cur + upd",
+                        ScatterReduce::Mul => "cur * upd",
+                        ScatterReduce::Max => "max(cur, upd)",
+                        ScatterReduce::Min => "min(cur, upd)",
+                    };
+                    let wgsl = kernels::scatter_atomic(&t, &il, combine)?;
+                    self.dispatch(
+                        &format!("scatter_{reduction:?}_{}_{}", t.tag(), il.tag()),
+                        || wgsl,
+                        &[&indices.buffer, &updates.buffer, &out.buffer],
+                        &imm,
+                        size,
+                    )?;
+                }
                 Ok(out)
             }
 
             Prim::Iota { dtype, .. } => {
-                let t = phys(*dtype)?;
+                let t = self.layout(*dtype)?;
                 let out = self.alloc_out(out_dtype, out_shape);
-                let (imm, size) = size_imm(out.numel());
+                let (imm, size) = size_imm_l(&t, out.numel());
                 self.dispatch(
-                    &format!("iota_{t}"),
-                    || kernels::iota(t),
+                    &format!("iota_{}", t.tag()),
+                    || kernels::iota(&t),
                     &[&out.buffer],
                     &imm,
                     size,
@@ -1251,9 +1370,14 @@ impl WgpuSession {
 }
 
 // ─────────────────── expression tables ─────────────────────────────────
+//
+// Expressions are over the layout's *compute* type: f32, i32, u32, or
+// (with SHADER_INT64) i64. Packed 8-bit values compute as u32/i32 and are
+// truncated on store, which matches the interpreter's wrapping semantics.
 
-fn unary_expr(op: UnaryOp, t: &str) -> Result<(&'static str, bool)> {
+fn unary_expr(op: UnaryOp, l: &Layout) -> Result<(&'static str, bool)> {
     use UnaryOp::*;
+    let c = l.compute();
     Ok(match op {
         Neg => ("-v", false),
         Abs => ("abs(v)", false),
@@ -1267,89 +1391,140 @@ fn unary_expr(op: UnaryOp, t: &str) -> Result<(&'static str, bool)> {
         Erf => ("erf(v)", true),
         Floor => ("floor(v)", false),
         Ceil => ("ceil(v)", false),
+        Round => ("round(v)", false), // WGSL round: ties to even
+        Sign => match c {
+            "u32" => ("select(0u, 1u, v != 0u)", false),
+            _ => ("sign(v)", false),
+        },
+        Tan => ("tan(v)", false),
+        Asin => ("asin(v)", false),
+        Acos => ("acos(v)", false),
+        Atan => ("atan(v)", false),
+        Sinh => ("sinh(v)", false),
+        Cosh => ("cosh(v)", false),
+        Asinh => ("asinh(v)", false),
+        Acosh => ("acosh(v)", false),
+        Atanh => ("atanh(v)", false),
         Not => {
-            if t != "u32" {
+            if l.logical != DataType::Bool {
                 return Err(Error::DType("Not on non-bool".into()));
             }
             ("select(1u, 0u, v != 0u)", false)
         }
+        BitNot => ("~v", false),
     })
 }
 
-fn binary_expr(op: BinaryOp, t: &str) -> Result<&'static str> {
+fn binary_expr(op: BinaryOp, l: &Layout) -> Result<&'static str> {
     use BinaryOp::*;
-    Ok(match (op, t) {
+    let c = l.compute();
+    Ok(match (op, c) {
         (Add, _) => "av + bv",
         (Sub, _) => "av - bv",
         (Mul, _) => "av * bv",
         (Div, _) => "av / bv",
         (Pow, "f32") => "pow(av, bv)",
-        (Pow, _) => {
-            return Err(Error::Unsupported("integer pow on the wgpu backend".into()));
-        }
+        (Pow, _) => "ipow(av, bv)",
         (Max, _) => "max(av, bv)",
         (Min, _) => "min(av, bv)",
         (And, _) => "u32((av != 0u) && (bv != 0u))",
         (Or, _) => "u32((av != 0u) || (bv != 0u))",
         (Xor, _) => "u32((av != 0u) != (bv != 0u))",
+        (BitAnd, _) => "av & bv",
+        (BitOr, _) => "av | bv",
+        (BitXor, _) => "av ^ bv",
+        (Shl, "u32") => "select(av << bv, 0u, bv >= 32u)",
+        (Shl, "i64") => "select(av << u32(bv), i64(0), bv >= i64(64))",
+        (Shl, _) => "select(av << u32(bv), 0, bv >= 32)",
+        (Shr, "u32") => "select(av >> bv, 0u, bv >= 32u)",
+        (Shr, "i64") => {
+            "select(av >> u32(bv), select(i64(0), i64(-1), av < i64(0)), bv >= i64(64))"
+        }
+        (Shr, _) => "select(av >> u32(bv), select(0, -1, av < 0), bv >= 32)",
     })
 }
 
-fn compare_expr(op: CmpOp) -> &'static str {
+fn compare_expr(op: CmpOp, l: &Layout) -> &'static str {
     use CmpOp::*;
-    match op {
-        Eq => "u32(av == bv)",
-        Ne => "u32(av != bv)",
-        Lt => "u32(av < bv)",
-        Le => "u32(av <= bv)",
-        Gt => "u32(av > bv)",
-        Ge => "u32(av >= bv)",
+    // Shader compilers may assume no NaNs; test the bit pattern so Eq/Ne
+    // keep IEEE semantics (`NaN != NaN`) for floats.
+    match (op, l.compute()) {
+        (Eq, "f32") => {
+            "u32((av == bv) && !(((bitcast<u32>(av) & 0x7fffffffu) > 0x7f800000u) || ((bitcast<u32>(bv) & 0x7fffffffu) > 0x7f800000u)))"
+        }
+        (Ne, "f32") => {
+            "u32((av != bv) || ((bitcast<u32>(av) & 0x7fffffffu) > 0x7f800000u) || ((bitcast<u32>(bv) & 0x7fffffffu) > 0x7f800000u))"
+        }
+        (Eq, _) => "u32(av == bv)",
+        (Ne, _) => "u32(av != bv)",
+        (Lt, _) => "u32(av < bv)",
+        (Le, _) => "u32(av <= bv)",
+        (Gt, _) => "u32(av > bv)",
+        (Ge, _) => "u32(av >= bv)",
     }
 }
 
-fn reduce_exprs(op: ReduceOp, t: &str) -> (&'static str, &'static str, &'static str) {
+fn reduce_exprs(op: ReduceOp, l: &Layout) -> (&'static str, &'static str, &'static str) {
     use ReduceOp::*;
-    let is_f = t == "f32";
+    let c = l.compute();
+    let (zero, one) = match c {
+        "f32" => ("0.0", "1.0"),
+        "u32" => ("0u", "1u"),
+        "i64" => ("i64(0)", "i64(1)"),
+        _ => ("0", "1"),
+    };
     match op {
-        Sum => (if is_f { "0.0" } else { "0" }, "acc + v", "acc"),
+        Sum => (zero, "acc + v", "acc"),
         Mean => (
-            if is_f { "0.0" } else { "0" },
+            zero,
             "acc + v",
-            if is_f {
-                "acc / f32(p.reduce_count)"
-            } else {
-                "acc / i32(p.reduce_count)"
+            match c {
+                "f32" => "acc / f32(p.reduce_count)",
+                "u32" => "acc / p.reduce_count",
+                "i64" => "acc / i64(p.reduce_count)",
+                _ => "acc / i32(p.reduce_count)",
             },
         ),
-        Prod => (if is_f { "1.0" } else { "1" }, "acc * v", "acc"),
+        Prod => (one, "acc * v", "acc"),
         Max => (
-            if is_f { "-3.402823e38" } else { "-2147483647" },
+            match c {
+                "f32" => "bitcast<f32>(0xff800000u)", // -inf
+                "u32" => "0u",
+                "i64" => "(i64(-1) << 63u)",
+                _ => "(-2147483647 - 1)",
+            },
             "max(acc, v)",
             "acc",
         ),
         Min => (
-            if is_f { "3.402823e38" } else { "2147483647" },
+            match c {
+                "f32" => "bitcast<f32>(0x7f800000u)", // +inf
+                "u32" => "4294967295u",
+                "i64" => "~(i64(-1) << 63u)",
+                _ => "2147483647",
+            },
             "min(acc, v)",
             "acc",
         ),
     }
 }
 
-/// Conversion expression for Cast, in physical types. `"v"` means the
-/// physical bits are identical (alias, no dispatch).
-fn cast_expr(src: &str, dst: &str, dst_logical: DataType) -> String {
-    let to_bool = dst_logical == DataType::Bool;
-    match (src, dst) {
-        (s, d) if s == d && !to_bool => "v".to_string(),
-        ("f32", "i32") => "i32(v)".to_string(),
-        ("i32", "f32") => "f32(v)".to_string(),
-        ("u32", "f32") => "f32(v)".to_string(),
-        ("f32", "u32") if to_bool => "select(0u, 1u, v != 0.0)".to_string(),
-        ("i32", "u32") if to_bool => "select(0u, 1u, v != 0)".to_string(),
-        ("u32", "u32") if to_bool => "select(0u, 1u, v != 0u)".to_string(),
-        ("u32", "i32") => "i32(v)".to_string(),
-        ("f32", "u32") => "u32(v)".to_string(),
-        ("i32", "u32") => "u32(v)".to_string(),
-        (s, d) => format!("{d}({s}(v))"), // fallback; naga validates
+/// Conversion expression for Cast between compute types. `"v"` means the
+/// value is unchanged (the layouts may still differ — e.g. packed u8 to
+/// plain u32 — in which case a copy kernel runs).
+fn cast_expr(src: &Layout, dst: &Layout) -> String {
+    let (s, d) = (src.compute(), dst.compute());
+    if dst.logical == DataType::Bool && src.logical != DataType::Bool {
+        let zero = match s {
+            "f32" => "0.0",
+            "u32" => "0u",
+            "i64" => "i64(0)",
+            _ => "0",
+        };
+        return format!("select(0u, 1u, v != {zero})");
     }
+    if s == d {
+        return "v".to_string();
+    }
+    format!("{d}(v)")
 }

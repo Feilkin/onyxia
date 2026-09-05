@@ -16,6 +16,7 @@
 pub mod fused;
 pub mod gpu;
 pub mod kernels;
+pub mod layout;
 pub mod profile;
 pub mod session;
 

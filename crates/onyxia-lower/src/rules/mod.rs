@@ -10,12 +10,33 @@
 //!   attention/quantization ops); their portable decompositions live in
 //!   [`onyxia_ir::decomp`].
 
-use crate::{LowerCtx, LoweringRegistry, attrs, convert_proto_dtype, signed_const_of};
+mod attention;
+mod conv;
+mod elementwise;
+mod helpers;
+mod loss;
+mod norm;
+mod quant;
+mod rnn;
+mod signal;
+mod structure;
+
+use crate::{LowerCtx, LoweringRegistry, attrs, convert_proto_dtype, signed_const_of, signed_dim};
 use onyxia_ir::graph::Origin;
-use onyxia_ir::prim::{BinaryOp, CmpOp, Prim, ReduceOp, SliceSpec, UnaryOp};
+use onyxia_ir::prim::{BinaryOp, CmpOp, Prim, ReduceOp, ScatterReduce, SliceSpec, UnaryOp};
 use onyxia_ir::{AttrValue, DataType, DimExpr, Error, Result, TensorType, ValueId};
 
 pub(crate) fn register_all(r: &mut LoweringRegistry) {
+    elementwise::register(r);
+    structure::register(r);
+    norm::register(r);
+    conv::register(r);
+    attention::register(r);
+    signal::register(r);
+    loss::register(r);
+    quant::register(r);
+    rnn::register(r);
+
     // Element-wise binary (+ variadic Max/Min).
     r.register("", "Add", |c| binary(c, BinaryOp::Add));
     r.register("", "Sub", |c| binary(c, BinaryOp::Sub));
@@ -97,21 +118,47 @@ pub(crate) fn register_all(r: &mut LoweringRegistry) {
 
 fn binary(ctx: &mut LowerCtx, op: BinaryOp) -> Result<()> {
     let prim = Prim::Binary(op);
-    if matches!(
-        op,
-        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div
-    ) && ctx.try_content(&prim)?
-    {
+    if ctx.try_content(&prim)? {
         return Ok(());
     }
-    let (a, b) = (ctx.value(0)?, ctx.value(1)?);
+    let (mut a, mut b) = (ctx.value(0)?, ctx.value(1)?);
+    if matches!(op, BinaryOp::And | BinaryOp::Or | BinaryOp::Xor) {
+        // Shape-domain booleans materialize as i64 0/1; restore Bool.
+        if ctx.ty(a).dtype != DataType::Bool {
+            a = ctx.emit(Prim::Cast { to: DataType::Bool }, &[a])?;
+        }
+        if ctx.ty(b).dtype != DataType::Bool {
+            b = ctx.emit(Prim::Cast { to: DataType::Bool }, &[b])?;
+        }
+    }
     let out = ctx.emit(prim, &[a, b])?;
     ctx.set_value(0, out);
     Ok(())
 }
 
 /// Pow allows a different exponent dtype in ONNX; align it to the base.
+/// A small constant integer exponent expands to multiplications: exact,
+/// dtype-agnostic, and defined for negative bases (shader `pow` is not).
 fn pow(ctx: &mut LowerCtx) -> Result<()> {
+    if let Some(e) = helpers::const_floats(ctx, 1)
+        .filter(|v| v.len() == 1)
+        .map(|v| v[0])
+    {
+        if e.fract() == 0.0 && (1.0..=8.0).contains(&e.abs()) {
+            let a = ctx.value(0)?;
+            let n = e.abs() as u32;
+            let mut acc = a;
+            for _ in 1..n {
+                acc = ctx.emit(Prim::Binary(BinaryOp::Mul), &[acc, a])?;
+            }
+            if e < 0.0 {
+                let one = typed_scalar(ctx, ctx.ty(a).dtype, 1.0)?;
+                acc = ctx.emit(Prim::Binary(BinaryOp::Div), &[one, acc])?;
+            }
+            ctx.set_value(0, acc);
+            return Ok(());
+        }
+    }
     let (a, mut b) = (ctx.value(0)?, ctx.value(1)?);
     let base_dt = ctx.ty(a).dtype;
     if ctx.ty(b).dtype != base_dt {
@@ -124,6 +171,9 @@ fn pow(ctx: &mut LowerCtx) -> Result<()> {
 
 /// ONNX Max/Min are variadic; fold left.
 fn variadic(ctx: &mut LowerCtx, op: BinaryOp) -> Result<()> {
+    if ctx.num_inputs() == 2 && ctx.try_content(&Prim::Binary(op))? {
+        return Ok(());
+    }
     let mut acc = ctx.value(0)?;
     for i in 1..ctx.num_inputs() {
         let rhs = ctx.value(i)?;
@@ -134,6 +184,9 @@ fn variadic(ctx: &mut LowerCtx, op: BinaryOp) -> Result<()> {
 }
 
 fn compare(ctx: &mut LowerCtx, op: CmpOp) -> Result<()> {
+    if ctx.try_content(&Prim::Compare(op))? {
+        return Ok(());
+    }
     let (a, b) = (ctx.value(0)?, ctx.value(1)?);
     let out = ctx.emit(Prim::Compare(op), &[a, b])?;
     ctx.set_value(0, out);
@@ -141,7 +194,14 @@ fn compare(ctx: &mut LowerCtx, op: CmpOp) -> Result<()> {
 }
 
 fn unary(ctx: &mut LowerCtx, op: UnaryOp) -> Result<()> {
-    let x = ctx.value(0)?;
+    if matches!(op, UnaryOp::Neg | UnaryOp::Not) && ctx.try_content(&Prim::Unary(op))? {
+        return Ok(());
+    }
+    let mut x = ctx.value(0)?;
+    // Shape-domain booleans materialize as i64 0/1; restore Bool.
+    if op == UnaryOp::Not && ctx.ty(x).dtype == DataType::I64 && ctx.content(0).is_some() {
+        x = ctx.emit(Prim::Cast { to: DataType::Bool }, &[x])?;
+    }
     let out = ctx.emit(Prim::Unary(op), &[x])?;
     ctx.set_value(0, out);
     Ok(())
@@ -153,6 +213,22 @@ fn cast(ctx: &mut LowerCtx) -> Result<()> {
     if ctx.try_content(&prim)? {
         return Ok(());
     }
+    // A small constant (or shape-domain content) cast to another dtype
+    // is folded here so downstream rules that need constants (Range,
+    // Pad, Resize, …) still see one.
+    if let Some(vals) = helpers::const_floats(ctx, 0) {
+        if vals.len() <= 64 {
+            let dims: Vec<u64> = match ctx.peek(0)? {
+                crate::Lowered::Content(c) => c.shape.iter().map(|&d| d as u64).collect(),
+                crate::Lowered::Value(v) => ctx.ty(*v).shape.as_static().unwrap_or_default(),
+            };
+            if dims.iter().product::<u64>() as usize == vals.len() {
+                let out = helpers::const_typed(ctx, to, &vals, &dims)?;
+                ctx.set_value(0, out);
+                return Ok(());
+            }
+        }
+    }
     let x = ctx.value(0)?;
     let out = ctx.emit(prim, &[x])?;
     ctx.set_value(0, out);
@@ -160,7 +236,13 @@ fn cast(ctx: &mut LowerCtx) -> Result<()> {
 }
 
 fn where_(ctx: &mut LowerCtx) -> Result<()> {
-    let (c, a, b) = (ctx.value(0)?, ctx.value(1)?, ctx.value(2)?);
+    if ctx.try_content(&Prim::Select)? {
+        return Ok(());
+    }
+    let (mut c, a, b) = (ctx.value(0)?, ctx.value(1)?, ctx.value(2)?);
+    if ctx.ty(c).dtype != DataType::Bool {
+        c = ctx.emit(Prim::Cast { to: DataType::Bool }, &[c])?;
+    }
     let out = ctx.emit(Prim::Select, &[c, a, b])?;
     ctx.set_value(0, out);
     Ok(())
@@ -283,13 +365,18 @@ fn transpose(ctx: &mut LowerCtx) -> Result<()> {
 }
 
 fn expand(ctx: &mut LowerCtx) -> Result<()> {
-    let x = ctx.value(0)?;
     let target = ctx.content(1).ok_or_else(|| {
         Error::Unsupported(format!(
             "node '{}': Expand shape is not resolvable at compile time",
             ctx.node_name()
         ))
     })?;
+    if ctx.try_content(&Prim::Broadcast {
+        shape: target.elems.clone(),
+    })? {
+        return Ok(());
+    }
+    let x = ctx.value(0)?;
     let out = ctx.emit(
         Prim::Broadcast {
             shape: target.elems,
@@ -301,12 +388,18 @@ fn expand(ctx: &mut LowerCtx) -> Result<()> {
 }
 
 /// Axes for Unsqueeze/Squeeze/Reduce: input takes precedence (opset 13+),
-/// attribute otherwise.
-fn axes_of(ctx: &LowerCtx, input_idx: usize) -> Option<Vec<i64>> {
+/// attribute otherwise. A present but non-constant axes input is an error
+/// (`Err`), distinct from no axes at all (`Ok(None)`).
+fn axes_of(ctx: &LowerCtx, input_idx: usize) -> Result<Option<Vec<i64>>> {
     if ctx.has_input(input_idx) {
-        ctx.const_ints(input_idx)
+        ctx.const_ints(input_idx).map(Some).ok_or_else(|| {
+            Error::Unsupported(format!(
+                "node '{}': axes input must be constant",
+                ctx.node_name()
+            ))
+        })
     } else {
-        ctx.attr_is("axes")
+        Ok(ctx.attr_is("axes"))
     }
 }
 
@@ -320,8 +413,8 @@ fn unsqueeze(ctx: &mut LowerCtx) -> Result<()> {
             .collect(),
         None => ctx.ty(ctx_value_peek(ctx, 0)?).shape.dims().to_vec(),
     };
-    let axes = axes_of(ctx, 1)
-        .ok_or_else(|| Error::Unsupported("Unsqueeze axes must be constant".into()))?;
+    let axes = axes_of(ctx, 1)?
+        .ok_or_else(|| Error::Unsupported("Unsqueeze axes must be given".into()))?;
     let out_rank = in_dims.len() + axes.len();
     let mut norm: Vec<usize> = axes
         .iter()
@@ -353,7 +446,7 @@ fn squeeze(ctx: &mut LowerCtx) -> Result<()> {
         None => ctx.ty(ctx_value_peek(ctx, 0)?).shape.dims().to_vec(),
     };
     let rank = x_dims.len();
-    let drop: Vec<usize> = match axes_of(ctx, 1) {
+    let drop: Vec<usize> = match axes_of(ctx, 1)? {
         Some(axes) => axes
             .iter()
             .map(|&a| ctx.norm_axis(a, rank))
@@ -468,12 +561,34 @@ fn slice(ctx: &mut LowerCtx) -> Result<()> {
     let mut specs = Vec::with_capacity(n);
     for i in 0..n {
         let dim = &data_dims[axes[i]];
+        let step = steps[i];
         let norm = |bound: &DimExpr, is_end: bool| -> DimExpr {
             match signed_const_of(bound) {
                 // Huge sentinel (INT64_MAX or INT32_MAX): "to the end".
-                Some(v) if is_end && v >= i32::MAX as i64 => dim.clone(),
-                // Negative: from the end.
-                Some(v) if v < 0 => dim.clone() - DimExpr::constant(v.unsigned_abs()),
+                Some(v) if is_end && step > 0 && v >= i32::MAX as i64 => dim.clone(),
+                // Negative step: start clamps to [0, d-1], end to [-1, d-1]
+                // (ONNX semantics; -1 means "past the beginning").
+                Some(v) if step < 0 => match dim.as_const() {
+                    Some(d) => {
+                        let d = d as i64;
+                        let v = if v < -(i32::MAX as i64) {
+                            -1
+                        } else if v < 0 {
+                            (v + d).max(-1)
+                        } else {
+                            v.min(d - 1)
+                        };
+                        let v = if is_end { v.max(-1) } else { v.max(0) };
+                        signed_dim(v)
+                    }
+                    None if v < 0 => dim.clone() - DimExpr::constant(v.unsigned_abs()),
+                    None => DimExpr::constant(v as u64),
+                },
+                // Negative: from the end (clamped at 0 for constant dims).
+                Some(v) if v < 0 => match dim.as_const() {
+                    Some(d) => DimExpr::constant((v + d as i64).max(0) as u64),
+                    None => dim.clone() - DimExpr::constant(v.unsigned_abs()),
+                },
                 // Clamp constants against constant dims.
                 Some(v) => match dim.as_const() {
                     Some(d) => DimExpr::constant((v as u64).min(d)),
@@ -521,14 +636,24 @@ fn gather(ctx: &mut LowerCtx) -> Result<()> {
     Ok(())
 }
 
-fn scatter_nd(ctx: &mut LowerCtx) -> Result<()> {
-    if let Some(mode) = ctx.attr_s("reduction") {
-        if mode != "none" {
-            return Err(Error::Unsupported(format!("ScatterND reduction='{mode}'")));
+/// ONNX `reduction` attribute → [`ScatterReduce`].
+pub(crate) fn scatter_reduction(ctx: &LowerCtx) -> Result<ScatterReduce> {
+    Ok(match ctx.attr_s("reduction").unwrap_or("none") {
+        "none" => ScatterReduce::None,
+        "add" => ScatterReduce::Add,
+        "mul" => ScatterReduce::Mul,
+        "max" => ScatterReduce::Max,
+        "min" => ScatterReduce::Min,
+        other => {
+            return Err(Error::Unsupported(format!("scatter reduction='{other}'")));
         }
-    }
+    })
+}
+
+fn scatter_nd(ctx: &mut LowerCtx) -> Result<()> {
+    let reduction = scatter_reduction(ctx)?;
     let (data, indices, updates) = (ctx.value(0)?, ctx.value(1)?, ctx.value(2)?);
-    let out = ctx.emit(Prim::Scatter, &[data, indices, updates])?;
+    let out = ctx.emit(Prim::Scatter { reduction }, &[data, indices, updates])?;
     ctx.set_value(0, out);
     Ok(())
 }
@@ -565,7 +690,21 @@ fn clamp_shape_bound(v: i64, rank: usize) -> usize {
 
 /// Range lowers to `Iota` plus element-wise arithmetic. Start and delta
 /// must be constant; the limit may be symbolic when delta is ±1-exact.
+/// Float ranges (constant bounds) go through [`range_const`].
 fn range(ctx: &mut LowerCtx) -> Result<()> {
+    let dt = match ctx.peek(0)? {
+        crate::Lowered::Value(v) => ctx.ty(*v).dtype,
+        crate::Lowered::Content(_) => DataType::I64,
+    };
+    if dt != DataType::I64 || ctx.content(0).is_none() {
+        if let (Some(s), Some(l), Some(d)) = (
+            const_scalar_f64(ctx, 0),
+            const_scalar_f64(ctx, 1),
+            const_scalar_f64(ctx, 2),
+        ) {
+            return range_const(ctx, dt, s, l, d);
+        }
+    }
     let get_scalar = |i: usize| -> Result<DimExpr> {
         ctx.content(i)
             .and_then(|c| c.elems.into_iter().next())
@@ -583,6 +722,18 @@ fn range(ctx: &mut LowerCtx) -> Result<()> {
         .ok_or_else(|| Error::Unsupported("Range with symbolic start".into()))?;
     let delta = signed_const_of(&delta_e)
         .ok_or_else(|| Error::Unsupported("Range with symbolic delta".into()))?;
+    // Fully constant i64 ranges stay in the shape domain (axes lists,
+    // index vectors) instead of becoming Iota nodes.
+    if let Some(limit) = signed_const_of(&limit_e) {
+        if delta != 0 {
+            let len = ((limit - start) as f64 / delta as f64).ceil().max(0.0) as i64;
+            if len <= 64 {
+                let elems: Vec<DimExpr> = (0..len).map(|i| signed_dim(start + i * delta)).collect();
+                ctx.set_content(0, onyxia_ir::graph::SymbolicContent::vector(elems));
+                return Ok(());
+            }
+        }
+    }
     if delta <= 0 {
         return Err(Error::Unsupported(format!("Range with delta {delta}")));
     }
@@ -605,6 +756,134 @@ fn range(ctx: &mut LowerCtx) -> Result<()> {
     Ok(())
 }
 
+/// Range with fully constant bounds, any numeric dtype:
+/// `start + iota * delta`, length `max(ceil((limit-start)/delta), 0)`.
+fn range_const(ctx: &mut LowerCtx, dt: DataType, start: f64, limit: f64, delta: f64) -> Result<()> {
+    if delta == 0.0 {
+        return Err(Error::Unsupported("Range with delta 0".into()));
+    }
+    let len = ((limit - start) / delta).ceil().max(0.0) as u64;
+    let iota = ctx.builder().iota(DimExpr::constant(len), DataType::I64)?;
+    let mut out = if dt == DataType::I64 {
+        iota
+    } else {
+        ctx.emit(Prim::Cast { to: dt }, &[iota])?
+    };
+    if delta != 1.0 {
+        let d = typed_scalar(ctx, dt, delta)?;
+        out = ctx.emit(Prim::Binary(BinaryOp::Mul), &[out, d])?;
+    }
+    if start != 0.0 {
+        let s = typed_scalar(ctx, dt, start)?;
+        out = ctx.emit(Prim::Binary(BinaryOp::Add), &[out, s])?;
+    }
+    ctx.set_value(0, out);
+    Ok(())
+}
+
+/// A rank-0 constant of `dt`.
+pub(crate) fn typed_scalar(ctx: &mut LowerCtx, dt: DataType, v: f64) -> Result<ValueId> {
+    let bytes: Vec<u8> = match dt {
+        DataType::F32 => (v as f32).to_le_bytes().to_vec(),
+        DataType::F16 => half_bytes(v),
+        DataType::I64 => (v as i64).to_le_bytes().to_vec(),
+        DataType::I32 => (v as i32).to_le_bytes().to_vec(),
+        DataType::U32 => (v as u32).to_le_bytes().to_vec(),
+        DataType::U8 => vec![v as u8],
+        DataType::I8 => vec![v as i8 as u8],
+        DataType::Bool => vec![(v != 0.0) as u8],
+        other => {
+            return Err(Error::Unsupported(format!(
+                "scalar constant of dtype {other}"
+            )));
+        }
+    };
+    ctx.builder().constant(TensorType::of(dt, &[]), bytes)
+}
+
+fn half_bytes(v: f64) -> Vec<u8> {
+    // IEEE binary16 round-to-nearest-even from f64 (via f32).
+    let f = v as f32;
+    let bits = f.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exp = ((bits >> 23) & 0xff) as i32;
+    let mant = bits & 0x7f_ffff;
+    let h: u16 = if exp == 0xff {
+        sign | 0x7c00 | if mant != 0 { 0x200 } else { 0 }
+    } else {
+        let e = exp - 127 + 15;
+        if e >= 0x1f {
+            sign | 0x7c00
+        } else if e <= 0 {
+            if e < -10 {
+                sign
+            } else {
+                let m = (mant | 0x80_0000) >> (1 - e);
+                let round = (m >> 13) + ((m >> 12) & 1 & ((m >> 13) & 1 | (m & 0xfff != 0) as u32));
+                sign | round as u16
+            }
+        } else {
+            let m = mant >> 13;
+            let rem = mant & 0x1fff;
+            let mut h = sign | ((e as u16) << 10) | m as u16;
+            if rem > 0x1000 || (rem == 0x1000 && (m & 1) == 1) {
+                h += 1;
+            }
+            h
+        }
+    };
+    h.to_le_bytes().to_vec()
+}
+
+/// Read input `i` as a constant scalar (any numeric dtype), if it is one.
+pub(crate) fn const_scalar_f64(ctx: &LowerCtx, i: usize) -> Option<f64> {
+    if let Some(c) = ctx.content(i) {
+        return c.elems.first().and_then(signed_const_of).map(|v| v as f64);
+    }
+    let v = match ctx.peek(i).ok()? {
+        crate::Lowered::Value(v) => *v,
+        crate::Lowered::Content(_) => return None,
+    };
+    let vals = const_values_f64(ctx, v)?;
+    if vals.len() == 1 { Some(vals[0]) } else { None }
+}
+
+/// Read a constant value's elements as f64, if it is a pool constant.
+pub(crate) fn const_values_f64(ctx: &LowerCtx, v: ValueId) -> Option<Vec<f64>> {
+    let module = ctx.builder_ref().module();
+    let def = module.value(v);
+    let Origin::Const(cid) = def.origin else {
+        return None;
+    };
+    let bytes = module.consts.bytes(cid);
+    Some(match def.ty.dtype {
+        DataType::F32 => bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()) as f64)
+            .collect(),
+        DataType::F16 => bytes
+            .chunks_exact(2)
+            .map(|c| half::f16::from_le_bytes(c.try_into().unwrap()).to_f64())
+            .collect(),
+        DataType::I64 => bytes
+            .chunks_exact(8)
+            .map(|c| i64::from_le_bytes(c.try_into().unwrap()) as f64)
+            .collect(),
+        DataType::I32 => bytes
+            .chunks_exact(4)
+            .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as f64)
+            .collect(),
+        DataType::U32 => bytes
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes(c.try_into().unwrap()) as f64)
+            .collect(),
+        DataType::U8 => bytes.iter().map(|&b| b as f64).collect(),
+        DataType::I8 => bytes.iter().map(|&b| b as i8 as f64).collect(),
+        DataType::Bool => bytes.iter().map(|&b| (b != 0) as u8 as f64).collect(),
+        _ => return None,
+    })
+}
+
 /// ConstantOfShape = Broadcast(scalar, shape).
 fn constant_of_shape(ctx: &mut LowerCtx) -> Result<()> {
     let target = ctx.content(0).ok_or_else(|| {
@@ -624,6 +903,27 @@ fn constant_of_shape(ctx: &mut LowerCtx) -> Result<()> {
             t.data.clone(),
         ),
     };
+    // Small constant i64 fills (rank ≤ 1) stay in the shape domain: the
+    // ONNX function bodies build shape vectors this way.
+    if ty.dtype == DataType::I64 && target.elems.len() <= 1 {
+        let n = target
+            .elems
+            .first()
+            .and_then(signed_const_of)
+            .unwrap_or(1)
+            .max(0) as usize;
+        if n <= 64 {
+            let v = i64::from_le_bytes(bytes[..8].try_into().unwrap());
+            let elems = vec![signed_dim(v); n];
+            let content = if target.elems.is_empty() {
+                onyxia_ir::graph::SymbolicContent::scalar(elems[0].clone())
+            } else {
+                onyxia_ir::graph::SymbolicContent::vector(elems)
+            };
+            ctx.set_content(0, content);
+            return Ok(());
+        }
+    }
     let scalar = ctx.builder().constant(ty, bytes)?;
     let out = ctx.emit(
         Prim::Broadcast {
@@ -645,7 +945,7 @@ fn reduce(ctx: &mut LowerCtx, op: ReduceOp) -> Result<()> {
     // Content path first (e.g. ReduceProd over a shape vector = numel).
     let keepdims = ctx.attr_i("keepdims").unwrap_or(1) != 0;
     if ctx.content(0).is_some() {
-        let axes = axes_of(ctx, 1).unwrap_or_else(|| vec![0]);
+        let axes = axes_of(ctx, 1)?.unwrap_or_else(|| vec![0]);
         if axes == [0] {
             let prim = Prim::Reduce {
                 op,
@@ -660,7 +960,7 @@ fn reduce(ctx: &mut LowerCtx, op: ReduceOp) -> Result<()> {
 
     let x = ctx.value(0)?;
     let rank = ctx.ty(x).shape.rank();
-    let axes_raw = axes_of(ctx, 1);
+    let axes_raw = axes_of(ctx, 1)?;
     let noop_empty = ctx.attr_i("noop_with_empty_axes").unwrap_or(0) != 0;
     let axes: Vec<usize> = match axes_raw {
         Some(a) if !a.is_empty() => {
@@ -689,14 +989,17 @@ fn softmax(ctx: &mut LowerCtx) -> Result<()> {
     let x = ctx.value(0)?;
     let rank = ctx.ty(x).shape.rank();
     let axis = ctx.norm_axis(ctx.attr_i("axis").unwrap_or(-1), rank)?;
-    let ty = ctx.ty(x).clone();
+    // Fused kernels reduce over the last axis; move it there and back.
+    let (xt, inv) = helpers::axis_to_last(ctx, x, axis)?;
+    let ty = ctx.ty(xt).clone();
     let outs = ctx.builder().composite(
         "Softmax",
-        attrs(vec![("axis", AttrValue::Int(axis as i64))]),
-        &[x],
+        attrs(vec![("axis", AttrValue::Int(rank as i64 - 1))]),
+        &[xt],
         vec![ty],
     )?;
-    ctx.set_value(0, outs[0]);
+    let y = helpers::transpose(ctx, outs[0], &inv)?;
+    ctx.set_value(0, y);
     Ok(())
 }
 

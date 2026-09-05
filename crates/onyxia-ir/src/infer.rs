@@ -14,7 +14,7 @@
 //! when either side involves symbols that prevent a proof (late-bound dims).
 
 use crate::dim::{DimExpr, SymbolicShape};
-use crate::prim::{BinaryOp, Prim, UnaryOp};
+use crate::prim::{BinaryOp, Prim, ReduceOp, UnaryOp};
 use crate::types::{DataType, TensorType};
 use crate::{Error, Result};
 
@@ -37,6 +37,11 @@ pub fn infer_prim(prim: &Prim, inputs: &[&TensorType]) -> Result<Vec<TensorType>
             require_same_dtype(a.dtype, b.dtype, prim.name())?;
             match op {
                 BinaryOp::And | BinaryOp::Or | BinaryOp::Xor => require_bool(a.dtype, prim.name())?,
+                BinaryOp::BitAnd
+                | BinaryOp::BitOr
+                | BinaryOp::BitXor
+                | BinaryOp::Shl
+                | BinaryOp::Shr => require_int(a.dtype, prim.name())?,
                 _ => require_numeric(a.dtype, prim.name())?,
             }
             TensorType::new(a.dtype, broadcast_shapes(&a.shape, &b.shape)?)
@@ -87,9 +92,12 @@ pub fn infer_prim(prim: &Prim, inputs: &[&TensorType]) -> Result<Vec<TensorType>
             TensorType::new(a.dtype, SymbolicShape(dims))
         }
 
-        Prim::Reduce { axes, keepdims, .. } => {
+        Prim::Reduce { op, axes, keepdims } => {
             let x = inputs[0];
-            require_numeric(x.dtype, "reduce")?;
+            // Max/Min over Bool are Or/And-reductions.
+            if !(x.dtype == DataType::Bool && matches!(op, ReduceOp::Max | ReduceOp::Min)) {
+                require_numeric(x.dtype, "reduce")?;
+            }
             check_axes(axes, x.shape.rank(), "reduce")?;
             let mut dims = Vec::new();
             for (i, d) in x.shape.dims().iter().enumerate() {
@@ -220,7 +228,7 @@ pub fn infer_prim(prim: &Prim, inputs: &[&TensorType]) -> Result<Vec<TensorType>
             TensorType::new(data.dtype, SymbolicShape(dims))
         }
 
-        Prim::Scatter => {
+        Prim::Scatter { .. } => {
             let (data, indices, updates) = (inputs[0], inputs[1], inputs[2]);
             require_same_dtype(data.dtype, updates.dtype, "scatter")?;
             if indices.dtype != DataType::I64 {
@@ -376,13 +384,13 @@ fn slice_out_dim(spec: &crate::prim::SliceSpec) -> Result<DimExpr> {
         return Ok(spec.start.clone() - spec.end.clone());
     }
     // |step| != 1 requires constant bounds: ceil-division is not polynomial.
-    let (Some(start), Some(end)) = (spec.start.as_const(), spec.end.as_const()) else {
+    let (Some(start), Some(end)) = (spec.start.as_signed_const(), spec.end.as_signed_const())
+    else {
         return Err(Error::Shape(format!(
             "slice with step {} requires constant bounds, got [{}, {})",
             spec.step, spec.start, spec.end
         )));
     };
-    let (start, end) = (start as i64, end as i64);
     // ceil(num / d) for d > 0; num may be negative (caught below).
     let ceil_div = |num: i64, d: i64| (num + d - 1).div_euclid(d);
     let len = if spec.step > 0 {
@@ -420,10 +428,12 @@ fn check_arity(prim: &Prim, got: usize) -> Result<()> {
 fn check_unary_dtype(op: UnaryOp, dt: DataType) -> Result<()> {
     use UnaryOp::*;
     let ok = match op {
-        Sqrt | Rsqrt | Exp | Log | Sin | Cos | Tanh | Erf | Floor | Ceil => dt.is_float(),
+        Sqrt | Rsqrt | Exp | Log | Sin | Cos | Tanh | Erf | Floor | Ceil | Round | Tan | Asin
+        | Acos | Atan | Sinh | Cosh | Asinh | Acosh | Atanh => dt.is_float(),
         Neg => dt.is_float() || matches!(dt, DataType::I64 | DataType::I32 | DataType::I8),
-        Abs => dt.is_float() || (dt.is_int() && !dt.is_packed()),
+        Abs | Sign => dt.is_float() || (dt.is_int() && !dt.is_packed()),
         Not => dt == DataType::Bool,
+        BitNot => dt.is_int() && !dt.is_packed(),
     };
     if ok {
         Ok(())
@@ -440,6 +450,13 @@ fn require_same_dtype(a: DataType, b: DataType, what: &str) -> Result<()> {
             "{what}: dtype mismatch {a} vs {b} (no implicit promotion; \
              lowering must insert casts)"
         )));
+    }
+    Ok(())
+}
+
+fn require_int(dt: DataType, what: &str) -> Result<()> {
+    if !dt.is_int() || dt.is_packed() {
+        return Err(Error::DType(format!("{what}: dtype {dt} not supported")));
     }
     Ok(())
 }
@@ -751,11 +768,25 @@ mod tests {
         let data = t(DataType::F32, &[4, 5]);
         let idx = t(DataType::I64, &[3, 1]);
         let upd = t(DataType::F32, &[3, 5]);
-        let out = infer_prim(&Prim::Scatter, &[&data, &idx, &upd]).unwrap();
+        let out = infer_prim(
+            &Prim::Scatter {
+                reduction: crate::prim::ScatterReduce::None,
+            },
+            &[&data, &idx, &upd],
+        )
+        .unwrap();
         assert_eq!(out[0].shape, SymbolicShape::fixed(&[4, 5]));
         // Wrong updates shape.
         let bad = t(DataType::F32, &[3, 4]);
-        assert!(infer_prim(&Prim::Scatter, &[&data, &idx, &bad]).is_err());
+        assert!(
+            infer_prim(
+                &Prim::Scatter {
+                    reduction: crate::prim::ScatterReduce::None
+                },
+                &[&data, &idx, &bad]
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -20,7 +20,8 @@ onyxia-ir                 Module: ~16 primitives (closed set), composites
      │                    CPU reference interpreter = the spec. No GPU deps.
      ▼  Backend::prepare(Module) → Session
 onyxia-backend-wgpu       generated WGSL primitive kernels + fused composite
-(-cubecl, -ref)           kernels, memory planning, device-resident tensors
+(-cubecl, -ref)           kernels; interprets the IR per run with pipeline /
+                          bind-group / buffer caches; device-resident tensors
      │
      ▼
 onyxia-cli, demos/        generation loop, KV-cache plumbing, tokenizer —
@@ -151,13 +152,27 @@ cd demos/gemma-chat && trunk serve --release                        # web
 
 ```bash
 cargo build
-cargo nextest run                 # CPU tests (IR, lowering, interpreter)
+cargo nextest run                 # CPU tests (IR, lowering, interpreter, node tests)
 just test-all                     # + GPU tests (kernel-vs-interpreter differentials)
+just fetch-onnx-tests             # onnx package (Apache-2.0) → its node test data
+just conformance                  # ONNX operator conformance matrix (reference backend)
 ```
 
 The reference interpreter is the spec: every GPU kernel differential-tests
 against it, and every fused composite kernel differential-tests against its
 own decomposition on-device.
+
+## Operator coverage
+
+Lowering rules exist for 163 of the 172 tensor operators in the ONNX opset
+26 default domain (everything except sequences/optionals, strings, control
+flow, random sampling, and image decoding), all expressed over the same 16
+primitives. On the official onnx node tests, the reference backend passes
+every test that is in scope (1275 of 1765; the rest are unsupported dtypes
+such as float64/int16/float8, or ops outside the tensor model) and the wgpu
+backend passes 1273, with 8-bit and f16 tensors stored packed (or as native
+f16 / i64 where the adapter has the shader features). Per-operator results, the primitive-count analysis, and
+the remaining gaps are in [doc/onnx-coverage.md](doc/onnx-coverage.md).
 
 ## Profiling
 

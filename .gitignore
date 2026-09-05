@@ -11,3 +11,9 @@
 # RustConf talk-prep notes, kept locally but untracked
 /doc/cubecl-experience.md
 /doc/rustconf-2026-session.md
+# RustConf talk script, kept local like the other talk-prep notes
+/doc/rustconf-2026-talk.md
+/doc/ecosystem-notes-2026-08.md
+
+# Claude Code local permission settings
+/.claude/settings.local.json

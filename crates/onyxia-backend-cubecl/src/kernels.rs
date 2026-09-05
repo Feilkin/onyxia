@@ -490,6 +490,71 @@ pub fn reduce_f32(x: &Array<f32>, out: &mut Array<f32>, p: &Array<u32>, #[compti
     }
 }
 
+/// `i32` twin of [`reduce_f32`] for logical I64/I32 tensors (stored as `i32`
+/// on device). Mean truncates toward zero, like the interpreter's `i64` path.
+#[cube(launch_unchecked)]
+pub fn reduce_i32(x: &Array<i32>, out: &mut Array<i32>, p: &Array<u32>, #[comptime] op: u32) {
+    let idx = ABSOLUTE_POS;
+    if idx < p[0] as usize {
+        let in_rank = p[1] as usize;
+        let mask = p[2];
+        let count = p[3] as usize;
+        // Base linear index from the non-reduced coordinates.
+        let mut out_rem = idx;
+        let mut base = 0usize;
+        let mut stride = 1usize;
+        for kk in 0..in_rank {
+            let d = in_rank - 1 - kk;
+            let dim = p[4 + d] as usize;
+            if (mask & (1u32 << (d as u32))) == 0 {
+                let coord = out_rem % dim;
+                out_rem = out_rem / dim;
+                base += coord * stride;
+            }
+            stride *= dim;
+        }
+        let init = comptime![if op == RED_MAX {
+            i32::MIN as i64
+        } else if op == RED_MIN {
+            i32::MAX as i64
+        } else if op == RED_PROD {
+            1i64
+        } else {
+            0i64
+        }];
+        let mut acc = i32::new(init);
+        for r in 0..count {
+            let mut r_rem = r;
+            let mut off = 0usize;
+            let mut s2 = 1usize;
+            for kk in 0..in_rank {
+                let d = in_rank - 1 - kk;
+                let dim = p[4 + d] as usize;
+                if (mask & (1u32 << (d as u32))) != 0 {
+                    let coord = r_rem % dim;
+                    r_rem = r_rem / dim;
+                    off += coord * s2;
+                }
+                s2 *= dim;
+            }
+            let v = x[base + off];
+            if comptime![op == RED_MAX] {
+                acc = acc.max(v);
+            } else if comptime![op == RED_MIN] {
+                acc = acc.min(v);
+            } else if comptime![op == RED_PROD] {
+                acc *= v;
+            } else {
+                acc += v;
+            }
+        }
+        if comptime![op == RED_MEAN] {
+            acc /= i32::cast_from(count);
+        }
+        out[idx] = acc;
+    }
+}
+
 /// Transpose by permutation, one thread per output element.
 /// p = [size, rank, perm8@2, in8@10, out8@18]
 #[cube(launch_unchecked)]
@@ -642,5 +707,140 @@ pub fn iota_i32(out: &mut Array<i32>, p: &Array<u32>) {
     let idx = ABSOLUTE_POS;
     if idx < p[0] as usize {
         out[idx] = i32::cast_from(idx);
+    }
+}
+
+// ─────────────────── matrix-vector fast path (m = 1) ───────────────────
+//
+// Ports of the wgpu backend's split-K matvec kernels (`kernels.rs` there
+// has the design notes): the one-thread-per-output matmul launches only
+// N threads at M=1, leaving a discrete GPU idle. These split K across
+// threads and, when N alone can't fill the device, across `ks` cube
+// slices whose partials [`matvec_reduce`] folds. Layout drives the
+// threading so weight reads stay coalesced. Only the vec4 variants are
+// ported; sizes that aren't 4-aligned fall back to [`matmul_f32`].
+
+/// 4-wide float vector — `vec4<f32>` on wgpu.
+pub type F32x4 = Vector<f32, Const<4>>;
+
+/// Horizontal sum of a 4-vector.
+#[cube]
+fn hsum4(v: F32x4) -> f32 {
+    v[0] + v[1] + v[2] + v[3]
+}
+
+/// M=1 matmul over `[K,N]` weights with vec4 column loads (`N % 4 == 0`).
+/// 256 units = 16 vec4 columns × 16 K-lanes; grid `x` = ceil(N/64)
+/// column tiles, `y` = K slices. `b`/`dst` are viewed as vec4 arrays.
+/// p = [n4, k, ks, chunk]; `dst` is `[ks, n4]` partials.
+#[cube(launch_unchecked)]
+pub fn matvec_kn_v4(a: &Array<f32>, b: &Array<F32x4>, dst: &mut Array<F32x4>, p: &Array<u32>) {
+    let mut scratch = SharedMemory::<F32x4>::new(256usize);
+    let lid = UNIT_POS_X as usize;
+    let tx = lid % 16;
+    let ty = lid / 16;
+    let n4 = p[0] as usize;
+    let k = p[1] as usize;
+    let chunk = p[3] as usize;
+    let col = CUBE_POS_X as usize * 16 + tx;
+    let k0 = CUBE_POS_Y as usize * chunk;
+    let mut k1 = k0 + chunk;
+    if k1 > k {
+        k1 = k;
+    }
+    let mut acc = F32x4::new(0.0f32);
+    if col < n4 {
+        let mut kk = k0 + ty;
+        while kk < k1 {
+            acc += F32x4::new(a[kk]) * b[kk * n4 + col];
+            kk += 16;
+        }
+    }
+    scratch[lid] = acc;
+    sync_cube();
+    let mut s = 8usize;
+    while s > 0 {
+        if ty < s {
+            scratch[lid] = scratch[lid] + scratch[lid + s * 16];
+        }
+        sync_cube();
+        s /= 2;
+    }
+    if ty == 0 && col < n4 {
+        dst[CUBE_POS_Y as usize * n4 + col] = scratch[tx];
+    }
+}
+
+/// M=1 matmul over `[N,K]` weights (`trans_b`) with vec4 K loads
+/// (`K % 4 == 0`). Each cube covers 4 rows × 64 lanes; cubes are
+/// linearized over `ceil(N/4) × ks` (grid rounding can overshoot, so
+/// dead units compute on row 0 and skip the write — no early return
+/// around the barriers). `a`/`b` are viewed as vec4 arrays.
+/// p = [n, k4, ks, chunk4, x_cubes]; `dst` is `[ks, n]` partials.
+// `usize::div_ceil` has no `#[cube]` expansion; the manual form is intended.
+#[allow(clippy::manual_div_ceil)]
+#[cube(launch_unchecked)]
+pub fn matvec_transb_v4(a: &Array<F32x4>, b: &Array<F32x4>, dst: &mut Array<f32>, p: &Array<u32>) {
+    let mut scratch = SharedMemory::<f32>::new(256usize);
+    let lid = UNIT_POS_X as usize;
+    let lane = lid % 64;
+    let row_i = lid / 64;
+    let n = p[0] as usize;
+    let k4 = p[1] as usize;
+    let ks = p[2] as usize;
+    let chunk4 = p[3] as usize;
+    let x_cubes = p[4] as usize;
+    let cube_lin = CUBE_POS_Y as usize * x_cubes + CUBE_POS_X as usize;
+    let groups = (n + 3) / 4;
+    let live_cube = cube_lin < groups * ks;
+    let mut g = 0usize;
+    let mut slice = 0usize;
+    if live_cube {
+        g = cube_lin / ks;
+        slice = cube_lin % ks;
+    }
+    let row = g * 4 + row_i;
+    let live = live_cube && row < n;
+    let k0 = slice * chunk4;
+    let mut k1 = k0 + chunk4;
+    if k1 > k4 {
+        k1 = k4;
+    }
+    let mut acc = F32x4::new(0.0f32);
+    if live {
+        let mut i = k0 + lane;
+        while i < k1 {
+            acc += a[i] * b[row * k4 + i];
+            i += 64;
+        }
+    }
+    scratch[lid] = hsum4(acc);
+    sync_cube();
+    let mut s = 32usize;
+    while s > 0 {
+        if lane < s {
+            scratch[lid] = scratch[lid] + scratch[lid + s];
+        }
+        sync_cube();
+        s /= 2;
+    }
+    if lane == 0 && live {
+        dst[slice * n + row] = scratch[lid];
+    }
+}
+
+/// Fold `[ks, N]` matvec partials into the `[N]` output, one unit per
+/// output element. p = [size, ks].
+#[cube(launch_unchecked)]
+pub fn matvec_reduce(partials: &Array<f32>, out: &mut Array<f32>, p: &Array<u32>) {
+    let idx = ABSOLUTE_POS;
+    if idx < p[0] as usize {
+        let ks = p[1] as usize;
+        let size = p[0] as usize;
+        let mut acc = 0.0f32;
+        for j in 0..ks {
+            acc += partials[j * size + idx];
+        }
+        out[idx] = acc;
     }
 }

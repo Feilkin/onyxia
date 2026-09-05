@@ -65,10 +65,20 @@ const MAX_SEQ_LEN: usize = 2048;
 enum InferenceEvent {
     /// A load-stage update shown while the model is loading. `stage` indexes
     /// into [`theme::STAGE_LABELS`] so the segmented progress bar can fill.
-    Progress { stage: usize, label: String },
-    Ready { gpu_name: String, vram_bytes: u64 },
+    Progress {
+        stage: usize,
+        label: String,
+    },
+    Ready {
+        gpu_name: String,
+        vram_bytes: u64,
+    },
     Token(String),
-    Done { tokens_per_sec: f64, ttft_ms: f64, vram_bytes: u64 },
+    Done {
+        tokens_per_sec: f64,
+        ttft_ms: f64,
+        vram_bytes: u64,
+    },
     Error(String),
 }
 
@@ -131,7 +141,8 @@ impl ChatApp {
         // Install the custom fonts and night-theme visuals up front.
         let theme = Theme::Night;
         theme::install_fonts(&cc.egui_ctx);
-        cc.egui_ctx.set_visuals(theme::visuals(&theme.palette(), theme));
+        cc.egui_ctx
+            .set_visuals(theme::visuals(&theme.palette(), theme));
 
         // Drive the async inference loop. On native it runs on a dedicated
         // thread (blocking executor); on web it runs as a spawned task on the
@@ -239,8 +250,7 @@ has loaded.";
             Some("night_streaming") => {
                 self.status = AppStatus::Generating;
                 self.history = vec![user(CANNED_Q)];
-                self.current_response =
-                    CANNED_A.split(' ').take(18).collect::<Vec<_>>().join(" ");
+                self.current_response = CANNED_A.split(' ').take(18).collect::<Vec<_>>().join(" ");
                 self.last_tokens_per_sec = None;
             }
             _ => {}
@@ -254,7 +264,9 @@ has loaded.";
         }
         self.history.push(("user".to_string(), msg.clone()));
         self.status = AppStatus::Generating;
-        let _ = self.request_tx.unbounded_send(InferenceRequest::Generate(msg));
+        let _ = self
+            .request_tx
+            .unbounded_send(InferenceRequest::Generate(msg));
     }
 
     fn new_conversation(&mut self) {
@@ -284,7 +296,10 @@ impl eframe::App for ChatApp {
                     self.loading_stage = stage;
                     self.loading_message = label;
                 }
-                InferenceEvent::Ready { gpu_name, vram_bytes } => {
+                InferenceEvent::Ready {
+                    gpu_name,
+                    vram_bytes,
+                } => {
                     self.gpu_name = gpu_name;
                     self.vram_bytes = vram_bytes;
                     self.status = AppStatus::Ready;
@@ -292,7 +307,11 @@ impl eframe::App for ChatApp {
                 InferenceEvent::Token(text) => {
                     self.current_response.push_str(&text);
                 }
-                InferenceEvent::Done { tokens_per_sec, ttft_ms, vram_bytes } => {
+                InferenceEvent::Done {
+                    tokens_per_sec,
+                    ttft_ms,
+                    vram_bytes,
+                } => {
                     self.history.push((
                         "assistant".to_string(),
                         std::mem::take(&mut self.current_response),
@@ -333,17 +352,29 @@ impl eframe::App for ChatApp {
 
         // ── header ──────────────────────────────────────────────────────────
         egui::Panel::top("header")
-            .frame(egui::Frame::new().fill(pal.bg).inner_margin(Margin::symmetric(28, 16)))
+            .frame(
+                egui::Frame::new()
+                    .fill(pal.bg)
+                    .inner_margin(Margin::symmetric(28, 16)),
+            )
             .show_inside(ui, |ui| self.header(ui, &ctx, &pal));
 
         // ── composer ────────────────────────────────────────────────────────
         egui::Panel::bottom("composer")
-            .frame(egui::Frame::new().fill(pal.bg).inner_margin(Margin::symmetric(28, 16)))
+            .frame(
+                egui::Frame::new()
+                    .fill(pal.bg)
+                    .inner_margin(Margin::symmetric(28, 16)),
+            )
             .show_inside(ui, |ui| self.composer(ui, &pal));
 
         // ── main region: loading panel or chat ──────────────────────────────
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(pal.bg).inner_margin(Margin::symmetric(40, 0)))
+            .frame(
+                egui::Frame::new()
+                    .fill(pal.bg)
+                    .inner_margin(Margin::symmetric(40, 0)),
+            )
             .show_inside(ui, |ui| match &self.status {
                 AppStatus::Loading => self.loading_panel(ui, &pal),
                 AppStatus::Error(e) => {
@@ -365,7 +396,12 @@ impl eframe::App for ChatApp {
                 }
             });
             if let Some(image) = captured {
-                screenshot::save(&shots.dir, shots.index, screenshot::SHOTS[shots.index], &image);
+                screenshot::save(
+                    &shots.dir,
+                    shots.index,
+                    screenshot::SHOTS[shots.index],
+                    &image,
+                );
                 shots.index += 1;
                 shots.requested = false;
             }
@@ -421,9 +457,13 @@ impl ChatApp {
                         {
                             self.set_theme(ctx, Theme::Day);
                         }
-                        if icon_button(ui, 34.0, self.theme == Theme::Night, pal, |p, r, fg, carve| {
-                            theme::icon_moon(p, r.shrink(8.0), fg, carve)
-                        })
+                        if icon_button(
+                            ui,
+                            34.0,
+                            self.theme == Theme::Night,
+                            pal,
+                            |p, r, fg, carve| theme::icon_moon(p, r.shrink(8.0), fg, carve),
+                        )
                         .clicked()
                         {
                             self.set_theme(ctx, Theme::Night);
@@ -522,7 +562,8 @@ impl ChatApp {
             let label = theme::STAGE_LABELS[self.loading_stage.min(theme::STAGE_LABELS.len() - 1)];
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                let title = |t: &str, c| RichText::new(t).family(family(SG_BOLD)).size(52.0).color(c);
+                let title =
+                    |t: &str, c| RichText::new(t).family(family(SG_BOLD)).size(52.0).color(c);
                 ui.label(title(label, pal.text));
                 ui.label(title("…", pal.accent));
             });
@@ -535,10 +576,13 @@ impl ChatApp {
             let pct = (done as f32 / theme::STAGE_LABELS.len() as f32 * 100.0).round() as i32;
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(format!("{done} / {} stages complete", theme::STAGE_LABELS.len()))
-                        .family(mono())
-                        .size(15.0)
-                        .color(pal.muted),
+                    RichText::new(format!(
+                        "{done} / {} stages complete",
+                        theme::STAGE_LABELS.len()
+                    ))
+                    .family(mono())
+                    .size(15.0)
+                    .color(pal.muted),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.label(
@@ -630,7 +674,8 @@ fn icon_button(
         egui::Color32::TRANSPARENT
     };
     if fill != egui::Color32::TRANSPARENT {
-        ui.painter().rect_filled(rect.shrink(1.0), CornerRadius::same(9), fill);
+        ui.painter()
+            .rect_filled(rect.shrink(1.0), CornerRadius::same(9), fill);
     }
     let fg = if active { pal.user_text } else { pal.muted };
     let carve = if active { pal.accent } else { pal.bg };
@@ -725,7 +770,8 @@ fn segbar(ui: &mut egui::Ui, pal: &theme::Palette, stage: usize) {
             let t = (time * 0.8).fract();
             let hw = seg_w * 0.5;
             let cx = seg.left() - hw + (seg_w + hw * 2.0) * t;
-            let hl = Rect::from_center_size(egui::pos2(cx, seg.center().y), vec2(hw, h)).intersect(seg);
+            let hl =
+                Rect::from_center_size(egui::pos2(cx, seg.center().y), vec2(hw, h)).intersect(seg);
             if hl.width() > 0.5 {
                 p.rect_filled(hl, CornerRadius::same(7), pal.accent);
             }
@@ -785,9 +831,9 @@ fn user_bubble(ui: &mut egui::Ui, pal: &theme::Palette, text: &str) {
         let maxw = ui.available_width() * 0.74;
         // Measure the wrapped text, size the bubble to it, paint gradient + text.
         let font = FontId::new(21.0, family(SG_MEDIUM));
-        let galley =
-            ui.painter()
-                .layout(text.to_string(), font, pal.user_text, maxw - pad.x * 2.0);
+        let galley = ui
+            .painter()
+            .layout(text.to_string(), font, pal.user_text, maxw - pad.x * 2.0);
         let (rect, _) = ui.allocate_exact_size(galley.rect.size() + pad * 2.0, Sense::hover());
         theme::fill_grad_rrect(
             ui.painter(),
@@ -821,7 +867,12 @@ fn bot_bubble(
         let mut frame = egui::Frame::new()
             .fill(pal.bot_bg)
             .stroke(Stroke::new(1.0, pal.border))
-            .corner_radius(CornerRadius { nw: 20, ne: 20, se: 20, sw: 5 })
+            .corner_radius(CornerRadius {
+                nw: 20,
+                ne: 20,
+                se: 20,
+                sw: 5,
+            })
             .inner_margin(Margin::symmetric(26, 18));
         if pal.bot_shadow {
             frame = frame.shadow(egui::epaint::Shadow {
@@ -838,7 +889,9 @@ fn bot_bubble(
             // Body text is regular (400) weight (headings/user text are heavier).
             let wrap_w = ui.available_width();
             let font = FontId::new(21.0, egui::FontFamily::Proportional);
-            let galley = ui.painter().layout(text.to_string(), font, pal.text, wrap_w);
+            let galley = ui
+                .painter()
+                .layout(text.to_string(), font, pal.text, wrap_w);
             let (rect, _) = ui.allocate_exact_size(galley.rect.size(), Sense::hover());
             ui.painter().galley(rect.min, galley.clone(), pal.text);
             if streaming {
@@ -851,7 +904,8 @@ fn bot_bubble(
                     let top = rect.min.y + rr.top() + rr.height() * 0.12;
                     let caret =
                         Rect::from_min_size(egui::pos2(x, top), vec2(3.0, rr.height() * 0.9));
-                    ui.painter().rect_filled(caret, CornerRadius::same(1), pal.accent2);
+                    ui.painter()
+                        .rect_filled(caret, CornerRadius::same(1), pal.accent2);
                 }
                 ui.ctx().request_repaint();
             }
@@ -911,13 +965,18 @@ async fn run_inference(
     let (mut session, tokenizer, gpu_name) = match load(source, &progress).await {
         Ok(t) => t,
         Err(e) => {
-            send(InferenceEvent::Error(format!("Failed to load model: {e:#}")));
+            send(InferenceEvent::Error(format!(
+                "Failed to load model: {e:#}"
+            )));
             return;
         }
     };
 
     let vram_bytes = session.vram_bytes();
-    send(InferenceEvent::Ready { gpu_name, vram_bytes });
+    send(InferenceEvent::Ready {
+        gpu_name,
+        vram_bytes,
+    });
 
     let sampling = SamplingConfig {
         temperature: 0.7,
@@ -1032,9 +1091,7 @@ async fn run_inference(
                 let tokens_per_sec = response_tokens.len() as f64 / decode_time.max(1e-9);
 
                 // Store the assistant turn in the conversation history.
-                let response_text = tokenizer
-                    .decode(&response_tokens, true)
-                    .unwrap_or_default();
+                let response_text = tokenizer.decode(&response_tokens, true).unwrap_or_default();
                 conversation.push(ChatMessage {
                     role: "model".to_string(),
                     content: response_text,
@@ -1087,8 +1144,8 @@ async fn build_session(
     progress(7, "Uploading weights to GPU");
     yield_to_browser().await;
     let backend = onyxia_backend_wgpu::WgpuBackend::new(ctx);
-    let session = LlmSession::new(&backend, module, MAX_SEQ_LEN)
-        .context("Failed to prepare session")?;
+    let session =
+        LlmSession::new(&backend, module, MAX_SEQ_LEN).context("Failed to prepare session")?;
     Ok((session, tokenizer, gpu_name))
 }
 
@@ -1105,9 +1162,8 @@ async fn load(
 
     progress(4, "Fetching tokenizer");
     let tokenizer_file = model_dir.join("tokenizer.json");
-    let mut tokenizer = Tokenizer::from_file(&tokenizer_file).with_context(|| {
-        format!("Failed to load tokenizer from {}", tokenizer_file.display())
-    })?;
+    let mut tokenizer = Tokenizer::from_file(&tokenizer_file)
+        .with_context(|| format!("Failed to load tokenizer from {}", tokenizer_file.display()))?;
     let template_file = model_dir.join("chat_template.jinja");
     if template_file.exists() {
         tokenizer = tokenizer
@@ -1139,8 +1195,7 @@ async fn load(
     progress(4, "Fetching tokenizer");
     yield_to_browser().await;
     let tok_bytes = fetch_bytes(&format!("{base_url}/tokenizer.json")).await?;
-    let mut tokenizer =
-        Tokenizer::from_bytes(&tok_bytes).context("Failed to load tokenizer")?;
+    let mut tokenizer = Tokenizer::from_bytes(&tok_bytes).context("Failed to load tokenizer")?;
     if let Ok(template) = fetch_string(&format!("{base_url}/chat_template.jinja")).await {
         tokenizer = tokenizer.with_chat_template(template);
     }

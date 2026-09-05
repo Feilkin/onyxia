@@ -110,6 +110,23 @@ impl LowerCtx<'_> {
         self.node.inputs.get(i).is_some_and(|n| !n.is_empty())
     }
 
+    /// Number of declared outputs (including absent optionals).
+    pub fn num_outputs(&self) -> usize {
+        self.node.outputs.len()
+    }
+
+    /// Whether output `i` is present (declared and non-empty).
+    pub fn has_output(&self, i: usize) -> bool {
+        self.node.outputs.get(i).is_some_and(|n| !n.is_empty())
+    }
+
+    /// Set output `i` if it is present; absent optionals are dropped.
+    pub fn set_value_opt(&mut self, i: usize, v: ValueId) {
+        if self.has_output(i) {
+            self.set_value(i, v);
+        }
+    }
+
     fn lowered(&self, i: usize) -> Result<&Lowered> {
         let name = &self.node.inputs[i];
         self.values.get(name).ok_or_else(|| {
@@ -186,6 +203,11 @@ impl LowerCtx<'_> {
         self.builder
     }
 
+    /// Read-only builder access.
+    pub fn builder_ref(&self) -> &GraphBuilder {
+        self.builder
+    }
+
     /// Emit a primitive over runtime values.
     pub fn emit(&mut self, prim: Prim, inputs: &[ValueId]) -> Result<ValueId> {
         self.builder.prim(prim, inputs)
@@ -243,6 +265,24 @@ impl LowerCtx<'_> {
     pub fn attr_is(&self, name: &str) -> Option<Vec<i64>> {
         match self.node.attributes.get(name) {
             Some(onyxia_onnx::AttributeValue::Ints(v)) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    /// Optional f32-list attribute (as f64s).
+    pub fn node_attr_floats(&self, name: &str) -> Option<Vec<f64>> {
+        match self.node.attributes.get(name) {
+            Some(onyxia_onnx::AttributeValue::Floats(v)) => {
+                Some(v.iter().map(|&x| x as f64).collect())
+            }
+            _ => None,
+        }
+    }
+
+    /// Optional string-list attribute.
+    pub fn node_attr_strings(&self, name: &str) -> Option<Vec<String>> {
+        match self.node.attributes.get(name) {
+            Some(onyxia_onnx::AttributeValue::Strings(v)) => Some(v.clone()),
             _ => None,
         }
     }
@@ -360,6 +400,7 @@ pub(crate) fn convert_dtype(dt: onyxia_onnx::DataType) -> DataType {
         D::I32 => DataType::I32,
         D::I64 => DataType::I64,
         D::U8 => DataType::U8,
+        D::I8 => DataType::I8,
         D::U32 => DataType::U32,
         D::Bool => DataType::Bool,
         // onyxia-onnx's quantized markers; storage is byte-identical.

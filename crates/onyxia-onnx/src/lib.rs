@@ -40,7 +40,8 @@ pub use graph::{
     TensorInfo, TensorKind, TensorShape,
 };
 pub use onnx::ModelProto;
-pub use parser::parse_model;
+pub use onnx::TensorProto;
+pub use parser::{parse_model, parse_tensor_proto};
 
 /// Simplification level for DOT graph generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

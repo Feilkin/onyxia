@@ -142,6 +142,85 @@ fn reduce_mean_and_max() {
     );
 }
 
+/// M=1 matmuls take the split-K matvec fast path (`matvec_kn_v4`,
+/// `matvec_transb_v4` + `matvec_reduce`). Cases: K-sliced (`ks > 1`),
+/// unsliced wide N, a ragged last chunk, and a non-4-aligned N that must
+/// fall back to the generic kernel.
+#[test]
+#[ignore = "requires GPU"]
+fn matvec_fast_path_both_layouts() {
+    let mut b = GraphBuilder::new();
+    let mm = |b: &mut GraphBuilder, x, w, trans_b| {
+        b.prim(
+            onyxia_ir::Prim::MatMul {
+                trans_a: false,
+                trans_b,
+            },
+            &[x, w],
+        )
+        .unwrap()
+    };
+    // [K,N], ks > 1 (N=256 → 4 column tiles; K=2048).
+    let x0 = b.input("x0", TensorType::of(DataType::F32, &[1, 2048]));
+    let w0 = b.input("w0", TensorType::of(DataType::F32, &[2048, 256]));
+    let y0 = mm(&mut b, x0, w0, false);
+    // [N,K] (trans_b), ks > 1 with a ragged chunk (N=40 → 10 row groups; K=1000).
+    let x1 = b.input("x1", TensorType::of(DataType::F32, &[1, 1000]));
+    let w1 = b.input("w1", TensorType::of(DataType::F32, &[40, 1000]));
+    let y1 = mm(&mut b, x1, w1, true);
+    // [K,N], ks == 1 (N=40000 → 625 tiles ≥ 512), small K.
+    let x2 = b.input("x2", TensorType::of(DataType::F32, &[1, 12]));
+    let w2 = b.input("w2", TensorType::of(DataType::F32, &[12, 40000]));
+    let y2 = mm(&mut b, x2, w2, false);
+    // N = 6: not 4-aligned → generic kernel.
+    let x3 = b.input("x3", TensorType::of(DataType::F32, &[1, 64]));
+    let w3 = b.input("w3", TensorType::of(DataType::F32, &[64, 6]));
+    let y3 = mm(&mut b, x3, w3, false);
+    b.output("y0", y0);
+    b.output("y1", y1);
+    b.output("y2", y2);
+    b.output("y3", y3);
+    let m = b.finish().unwrap();
+    let t = |n: usize, shape: &[usize], seed: usize| {
+        Tensor::from_f32(
+            &f32s(n, |i| (((i * 7 + seed) % 23) as f32 - 11.0) * 0.05),
+            shape,
+        )
+        .unwrap()
+    };
+    diff_test(
+        m,
+        vec![
+            ("x0", t(2048, &[1, 2048], 1)),
+            ("w0", t(2048 * 256, &[2048, 256], 2)),
+            ("x1", t(1000, &[1, 1000], 3)),
+            ("w1", t(40 * 1000, &[40, 1000], 4)),
+            ("x2", t(12, &[1, 12], 5)),
+            ("w2", t(12 * 40000, &[12, 40000], 6)),
+            ("x3", t(64, &[1, 64], 7)),
+            ("w3", t(64 * 6, &[64, 6], 8)),
+        ],
+    );
+}
+
+/// Integer reduce (`reduce_i32`): the `seqlens_k = ReduceSum(attention_mask)`
+/// subgraph every GQA export carries. Mean truncates toward zero.
+#[test]
+#[ignore = "requires GPU"]
+fn reduce_i64_sum_mean_min() {
+    let mut b = GraphBuilder::new();
+    let x = b.input("x", TensorType::of(DataType::I64, &[2, 3, 4]));
+    let sum = b.reduce(ReduceOp::Sum, x, &[2], true).unwrap();
+    let mean = b.reduce(ReduceOp::Mean, x, &[1], false).unwrap();
+    let min = b.reduce(ReduceOp::Min, x, &[0, 2], false).unwrap();
+    b.output("sum", sum);
+    b.output("mean", mean);
+    b.output("min", min);
+    let m = b.finish().unwrap();
+    let vals: Vec<i64> = (0..24).map(|i| ((i * 7) % 13) as i64 - 6).collect();
+    diff_test(m, vec![("x", Tensor::from_i64(&vals, &[2, 3, 4]).unwrap())]);
+}
+
 /// Softmax + RMS-norm run as composites on the wgpu backend; here they MUST
 /// legalize through their decompositions — this backend's core claim.
 #[test]

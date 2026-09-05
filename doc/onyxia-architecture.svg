@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">
+  <circle cx="500" cy="500" r="470" fill="#FFFFFF" stroke="#1C1C1C" stroke-width="4"/>
+
+  <path d="M 187 500 A 313 313 0 0 1 813 500 L 657 500 A 157 157 0 0 0 343 500 Z"
+        fill="#FF9B7C" stroke="#1C1C1C" stroke-width="4"/>
+  <path d="M 187 500 A 313 313 0 0 0 813 500 L 657 500 A 157 157 0 0 1 343 500 Z"
+        fill="#FFD305" stroke="#1C1C1C" stroke-width="4"/>
+
+  <circle cx="500" cy="500" r="157" fill="#FF694F" stroke="#1C1C1C" stroke-width="4"/>
+
+  <text x="500" y="122" text-anchor="middle" font-family="Manrope" font-size="42" font-weight="700" fill="#1C1C1C">Applications</text>
+  <text x="500" y="884" text-anchor="middle" font-family="Manrope" font-size="26" font-weight="400" fill="#1C1C1C">onyxia-cli &#183; gemma-chat</text>
+
+  <text x="500" y="248" text-anchor="middle" font-family="Manrope" font-size="38" font-weight="700" fill="#1C1C1C">Backends</text>
+  <text x="500" y="292" text-anchor="middle" font-family="Manrope" font-size="26" font-weight="400" fill="#1C1C1C">wgpu &#183; cubecl &#183; ref</text>
+
+  <text x="500" y="700" text-anchor="middle" font-family="Manrope" font-size="26" font-weight="400" fill="#1C1C1C">onyxia-onnx &#183; onyxia-lower</text>
+  <text x="500" y="745" text-anchor="middle" font-family="Manrope" font-size="30" font-weight="700" fill="#1C1C1C">Parsing and lowering</text>
+
+  <text x="500" y="514" text-anchor="middle" font-family="Manrope" font-size="40" font-weight="700" fill="#1C1C1C">onyxia-ir</text>
+</svg>

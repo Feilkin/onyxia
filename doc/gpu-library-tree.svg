@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 880" width="1600" height="880">
+  <g font-family="Manrope" fill="#1C1C1C">
+    <text x="485" y="60" text-anchor="middle" font-size="36" font-weight="700">wgpu</text>
+    <text x="905" y="60" text-anchor="middle" font-size="36" font-weight="700">CubeCL</text>
+    <text x="1325" y="60" text-anchor="middle" font-size="36" font-weight="700">rust-gpu</text>
+
+    <text x="250" y="152" text-anchor="end" font-size="22" fill="#4B4B4B">you write</text>
+    <text x="250" y="322" text-anchor="end" font-size="22" fill="#4B4B4B">compiled by</text>
+    <text x="250" y="492" text-anchor="end" font-size="22" fill="#4B4B4B">run by</text>
+    <text x="250" y="672" text-anchor="end" font-size="22" fill="#4B4B4B">on</text>
+
+    <rect x="290" y="100" width="390" height="100" rx="12" fill="#FFFFFF" stroke="#1C1C1C" stroke-width="3"/>
+    <text x="485" y="145" text-anchor="middle" font-size="24">WGSL, assembled</text>
+    <text x="485" y="176" text-anchor="middle" font-size="24">as strings</text>
+
+    <rect x="710" y="100" width="390" height="100" rx="12" fill="#FFFFFF" stroke="#1C1C1C" stroke-width="3"/>
+    <text x="905" y="145" text-anchor="middle" font-size="24">Rust functions</text>
+    <text x="905" y="176" text-anchor="middle" font-size="24">marked #[cube]</text>
+
+    <rect x="1130" y="100" width="390" height="100" rx="12" fill="#FFFFFF" stroke="#1C1C1C" stroke-width="3"/>
+    <text x="1325" y="162" text-anchor="middle" font-size="24">plain Rust</text>
+
+    <rect x="290" y="270" width="390" height="100" rx="12" fill="#FFFFFF" stroke="#1C1C1C" stroke-width="3"/>
+    <text x="485" y="332" text-anchor="middle" font-size="24">naga, at run time</text>
+
+    <rect x="710" y="270" width="390" height="100" rx="12" fill="#FFFFFF" stroke="#1C1C1C" stroke-width="3"/>
+    <text x="905" y="332" text-anchor="middle" font-size="24">CubeCL, at run time</text>
+
+    <rect x="1130" y="270" width="390" height="100" rx="12" fill="#FFFFFF" stroke="#1C1C1C" stroke-width="3"/>
+    <text x="1325" y="315" text-anchor="middle" font-size="24">rustc, ahead of time,</text>
+    <text x="1325" y="346" text-anchor="middle" font-size="24">to SPIR-V or WGSL</text>
+
+    <rect x="290" y="440" width="390" height="100" rx="12" fill="#FFFFFF" stroke="#1C1C1C" stroke-width="3"/>
+    <text x="485" y="502" text-anchor="middle" font-size="24">wgpu</text>
+
+    <rect x="710" y="440" width="390" height="100" rx="12" fill="#FFFFFF" stroke="#1C1C1C" stroke-width="3"/>
+    <text x="905" y="485" text-anchor="middle" font-size="24">wgpu, or CUDA /</text>
+    <text x="905" y="516" text-anchor="middle" font-size="24">HIP / Metal directly</text>
+
+    <rect x="1130" y="440" width="390" height="100" rx="12" fill="#FFFFFF" stroke="#1C1C1C" stroke-width="3"/>
+    <text x="1325" y="485" text-anchor="middle" font-size="24">a host API you</text>
+    <text x="1325" y="516" text-anchor="middle" font-size="24">supply yourself</text>
+
+    <rect x="290" y="620" width="1230" height="90" rx="12" fill="#FF694F" stroke="#1C1C1C" stroke-width="3"/>
+    <text x="905" y="676" text-anchor="middle" font-size="30" font-weight="700">Vulkan &#183; Metal &#183; DX12 &#183; WebGPU in the browser</text>
+
+    <text x="485" y="770" text-anchor="middle" font-size="21" fill="#4B4B4B">wgpu 29. Mature.</text>
+    <text x="485" y="800" text-anchor="middle" font-size="21" fill="#4B4B4B">Firefox and Deno ship it.</text>
+    <text x="905" y="770" text-anchor="middle" font-size="21" fill="#4B4B4B">0.10, still no 1.0.</text>
+    <text x="905" y="800" text-anchor="middle" font-size="21" fill="#4B4B4B">Docs lag the release.</text>
+    <text x="1325" y="770" text-anchor="middle" font-size="21" fill="#4B4B4B">0.10-alpha, April 2026.</text>
+    <text x="1325" y="800" text-anchor="middle" font-size="21" fill="#4B4B4B">Not production ready.</text>
+  </g>
+
+  <g stroke="#1C1C1C" stroke-width="3" fill="none">
+    <path d="M 485 200 L 485 270"/><path d="M 905 200 L 905 270"/><path d="M 1325 200 L 1325 270"/>
+    <path d="M 485 370 L 485 440"/><path d="M 905 370 L 905 440"/><path d="M 1325 370 L 1325 440"/>
+    <path d="M 485 540 L 485 620"/><path d="M 905 540 L 905 620"/>
+    <path d="M 1325 540 L 1325 620" stroke-dasharray="10 10"/>
+  </g>
+</svg>

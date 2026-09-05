@@ -211,7 +211,7 @@ impl CompositeKernel for GeluKernel {
         let imm = Imm::new().u(size as u32).u(x_stride);
         session.dispatch(
             label,
-            || kernels::unary("f32", expr, !tanh_form),
+            || kernels::unary(&crate::layout::F32, &crate::layout::F32, expr, !tanh_form),
             &[&x.buffer, &out.buffer],
             &imm,
             size,
@@ -288,9 +288,11 @@ impl CompositeKernel for RotaryKernel {
             .u(d as u32)
             .u(half_r as u32)
             .u(cache_w as u32);
+        // position_ids are i64: read whichever storage the device uses.
+        let pos_store = session.layout(pos.dtype)?.store();
         session.dispatch(
-            "fused_rotary_f32",
-            rotary_wgsl,
+            &format!("fused_rotary_f32_{pos_store}"),
+            || rotary_wgsl(pos_store),
             &[
                 &x.buffer,
                 &pos.buffer,
@@ -771,15 +773,15 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
     )
 }
 
-fn rotary_wgsl() -> String {
-    "
+fn rotary_wgsl(pos_store: &str) -> String {
+    let body = "
 struct P {
     size: u32, x_stride: u32,
     hidden: u32, d: u32, half_r: u32, cache_w: u32,
 }
 var<immediate> p: P;
 @group(0) @binding(0) var<storage, read> x: array<f32>;
-@group(0) @binding(1) var<storage, read> pos_ids: array<i32>;
+@group(0) @binding(1) var<storage, read> pos_ids: array<POS_T>;
 @group(0) @binding(2) var<storage, read> cos_cache: array<f32>;
 @group(0) @binding(3) var<storage, read> sin_cache: array<f32>;
 @group(0) @binding(4) var<storage, read_write> out: array<f32>;
@@ -807,8 +809,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         out[idx] = x[idx] * c + x[idx - p.half_r] * s;
     }
 }
-"
-    .to_string()
+";
+    body.replace("POS_T", pos_store)
 }
 
 fn softmax_row_wgsl() -> String {

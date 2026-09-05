@@ -176,7 +176,7 @@ fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color32 {
 fn night() -> Palette {
     Palette {
         bg: rgb(0x0e, 0x0a, 0x2e),
-        border: rgba(154, 96, 255, 51),      // rgba(154,96,255,.20)
+        border: rgba(154, 96, 255, 51),       // rgba(154,96,255,.20)
         border_soft: rgba(255, 255, 255, 18), // rgba(255,255,255,.07)
         seg_dim: rgba(255, 255, 255, 20),     // rgba(255,255,255,.08)
         text: rgb(0xff, 0xfd, 0xeb),
@@ -207,9 +207,9 @@ fn night() -> Palette {
 fn day() -> Palette {
     Palette {
         bg: rgb(0xff, 0xfd, 0xeb),
-        border: rgba(48, 40, 109, 33),       // rgba(48,40,109,.13)
-        border_soft: rgba(48, 40, 109, 26),  // rgba(48,40,109,.1)
-        seg_dim: rgba(48, 40, 109, 31),      // rgba(48,40,109,.12)
+        border: rgba(48, 40, 109, 33),      // rgba(48,40,109,.13)
+        border_soft: rgba(48, 40, 109, 26), // rgba(48,40,109,.1)
+        seg_dim: rgba(48, 40, 109, 31),     // rgba(48,40,109,.12)
         text: rgb(0x0e, 0x0a, 0x2e),
         muted: rgb(0x92, 0x4f, 0xdc),
         accent: rgb(0x92, 0x4f, 0xdc),
@@ -315,7 +315,13 @@ pub fn fill_grad_rrect(
         }
     };
     arc(rect.left() + nw, rect.top() + nw, nw, PI, PI + FRAC_PI_2);
-    arc(rect.right() - ne, rect.top() + ne, ne, PI + FRAC_PI_2, 2.0 * PI);
+    arc(
+        rect.right() - ne,
+        rect.top() + ne,
+        ne,
+        PI + FRAC_PI_2,
+        2.0 * PI,
+    );
     arc(rect.right() - se, rect.bottom() - se, se, 0.0, FRAC_PI_2);
     arc(rect.left() + sw, rect.bottom() - sw, sw, FRAC_PI_2, PI);
 

@@ -54,7 +54,11 @@ pub fn validate_model(model_path: &Path, verbose: bool) -> Result<()> {
         prims,
         composite_total
     );
-    println!("  - {} values, {} constants", module.values.len(), module.consts.len());
+    println!(
+        "  - {} values, {} constants",
+        module.values.len(),
+        module.consts.len()
+    );
     if !module.symbols.is_empty() {
         let names: Vec<&str> = module.symbols.names().collect();
         println!("  - dim symbols: {}", names.join(", "));

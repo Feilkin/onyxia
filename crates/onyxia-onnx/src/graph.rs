@@ -306,6 +306,7 @@ pub enum DataType {
     I32,
     I64,
     U8,
+    I8,
     U32,
     Bool,
     /// Quantized 4-bit (custom type for MatMulNBits).
@@ -325,7 +326,7 @@ impl DataType {
             DataType::F32 | DataType::I32 | DataType::U32 | DataType::Bool => 4,
             DataType::F16 => 2,
             DataType::I64 => 8,
-            DataType::U8 => 1,
+            DataType::U8 | DataType::I8 => 1,
             DataType::Q4 => 1, // Packed
             DataType::Q8 => 1,
         }

@@ -45,7 +45,7 @@ pub use graph::{
     Composite, ConstId, ConstPool, Module, Node, NodeId, NodeKind, Origin, SourceInfo, ValueDef,
     ValueId,
 };
-pub use prim::{BinaryOp, CmpOp, Prim, ReduceOp, SliceSpec, UnaryOp};
+pub use prim::{BinaryOp, CmpOp, Prim, ReduceOp, ScatterReduce, SliceSpec, UnaryOp};
 pub use types::{DataType, TensorType};
 
 /// Result type using the crate's error type.

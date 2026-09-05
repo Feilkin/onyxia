@@ -3960,6 +3960,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "onyxia-conformance"
+version = "0.1.0"
+dependencies = [
+ "onyxia-backend-cubecl",
+ "onyxia-backend-ref",
+ "onyxia-backend-wgpu",
+ "onyxia-ir",
+ "onyxia-lower",
+ "onyxia-onnx",
+ "pollster",
+ "prost",
+]
+
+[[package]]
 name = "onyxia-ir"
 version = "0.1.0"
 dependencies = [
@@ -3972,6 +3986,7 @@ dependencies = [
 name = "onyxia-lower"
 version = "0.1.0"
 dependencies = [
+ "half",
  "onyxia-ir",
  "onyxia-onnx",
 ]

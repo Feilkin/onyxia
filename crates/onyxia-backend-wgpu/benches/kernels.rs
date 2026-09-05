@@ -63,7 +63,11 @@ fn f32s(n: usize) -> Vec<f32> {
 fn matmul_case(ctx: &GpuContext, m: usize, k: usize, n: usize, trans_b: bool) -> Case {
     let mut b = GraphBuilder::new();
     let a = b.input("a", TensorType::of(DataType::F32, &[m as u64, k as u64]));
-    let w_dims = if trans_b { [n as u64, k as u64] } else { [k as u64, n as u64] };
+    let w_dims = if trans_b {
+        [n as u64, k as u64]
+    } else {
+        [k as u64, n as u64]
+    };
     let w = b.const_f32(&f32s(k * n), &w_dims).unwrap();
     let out = b
         .prim(

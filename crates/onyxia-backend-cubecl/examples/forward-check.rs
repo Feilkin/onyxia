@@ -106,10 +106,7 @@ fn run_prefill<S: Session>(
     })
 }
 
-fn find<'o, T>(
-    outs: &'o [(String, T)],
-    name: &str,
-) -> Result<&'o T, Box<dyn std::error::Error>> {
+fn find<'o, T>(outs: &'o [(String, T)], name: &str) -> Result<&'o T, Box<dyn std::error::Error>> {
     outs.iter()
         .find(|(n, _)| n == name)
         .map(|(_, t)| t)
