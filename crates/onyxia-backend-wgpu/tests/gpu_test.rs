@@ -1560,3 +1560,111 @@ fn matmul_f16_fast_paths() {
         }
     }
 }
+
+/// f16 `MatMulNBits` (activations and scales f16, as the q4f16 exports):
+/// the f16 matvec (M = 1), the dequantizing f16 rb tile (M = 40) and
+/// the dequantize-to-f16 + cooperative-matrix path (M = 160), against
+/// the reference interpreter with f16-sized tolerance.
+#[test]
+#[ignore = "requires GPU"]
+fn fused_matmul_nbits_f16_matches_reference() {
+    use half::f16;
+    let f16_bytes = |vals: &[f32]| -> Vec<u8> {
+        vals.iter()
+            .flat_map(|v| f16::from_f32(*v).to_le_bytes())
+            .collect()
+    };
+    for (m, n, k, bs, with_zp) in [
+        (1usize, 64usize, 128usize, 32usize, true),
+        (40, 64, 128, 32, false),
+        (160, 64, 128, 32, true),
+        (200, 96, 256, 32, false),
+    ] {
+        let nb = k.div_ceil(bs);
+        let mut b = GraphBuilder::new();
+        let a = b.input("a", TensorType::of(DataType::F16, &[m as u64, k as u64]));
+        let packed: Vec<u8> = (0..n * nb * bs / 2)
+            .map(|i| ((i * 7 + 3) % 16) as u8 | ((((i * 11 + 5) % 16) as u8) << 4))
+            .collect();
+        let w = b
+            .constant(
+                TensorType::of(DataType::U4, &[n as u64, nb as u64, bs as u64]),
+                packed,
+            )
+            .unwrap();
+        let scales = b
+            .constant(
+                TensorType::of(DataType::F16, &[(n * nb) as u64]),
+                f16_bytes(&f32s(n * nb, |i| {
+                    0.01 + (i as f32 * 0.37).sin().abs() * 0.05
+                })),
+            )
+            .unwrap();
+        let mut inputs = vec![a, w, scales];
+        if with_zp {
+            let zpb: Vec<u8> = (0..(n * nb).div_ceil(2))
+                .map(|i| ((i * 5 + 1) % 16) as u8 | ((((i * 3 + 9) % 16) as u8) << 4))
+                .collect();
+            let zp = b
+                .constant(TensorType::of(DataType::U4, &[n as u64, nb as u64]), zpb)
+                .unwrap();
+            inputs.push(zp);
+        }
+        let y = b
+            .composite(
+                "com.microsoft.MatMulNBits",
+                Attrs::new()
+                    .with("K", AttrValue::Int(k as i64))
+                    .with("N", AttrValue::Int(n as i64))
+                    .with("bits", AttrValue::Int(4))
+                    .with("block_size", AttrValue::Int(bs as i64)),
+                &inputs,
+                vec![TensorType::of(DataType::F16, &[m as u64, n as u64])],
+            )
+            .unwrap()[0];
+        let out = b
+            .prim(onyxia_ir::Prim::Cast { to: DataType::F32 }, &[y])
+            .unwrap();
+        b.output("y", out);
+        let module = b.finish().unwrap();
+
+        let act = Tensor::new(
+            DataType::F16,
+            vec![m, k],
+            f16_bytes(&f32s(m * k, |i| (i as f32 * 0.13).cos())),
+        )
+        .unwrap();
+        let inlined = onyxia_ir::inline_composites(
+            module.clone(),
+            &onyxia_ir::standard_decompositions(),
+            &|_| false,
+        )
+        .unwrap();
+        let expected = onyxia_ir::interp::eval(&inlined, &[("a", act.clone())])
+            .unwrap()
+            .remove(0)
+            .1
+            .to_f32()
+            .unwrap();
+        let fused: Vec<f32> = pollster::block_on(async {
+            let backend = WgpuBackend::new(GpuContext::new().await.unwrap());
+            let mut session = backend.prepare(module).unwrap();
+            let dev = session.upload(&act).unwrap();
+            let outs = session.run(&[("a", dev)]).await.unwrap();
+            session
+                .download(&outs[0].1)
+                .await
+                .unwrap()
+                .to_f32()
+                .unwrap()
+        });
+        assert_eq!(fused.len(), m * n);
+        for i in 0..m * n {
+            let (f, e) = (fused[i], expected[i]);
+            assert!(
+                (f - e).abs() <= 2e-2 + 1e-2 * e.abs(),
+                "case {m}x{n}x{k} bs={bs} zp={with_zp}: fused[{i}]={f} vs ref {e}"
+            );
+        }
+    }
+}

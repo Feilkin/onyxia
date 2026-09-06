@@ -206,6 +206,24 @@ impl CompositeKernel for MatMulNBitsKernel {
             return Ok(vec![out]);
         }
 
+        // Long f16 prefill: dequantize the weights to an f16 scratch and
+        // run the tensor-core matmul. The extra f16 weight traffic (write
+        // + read, ~2× the packed bytes) is paid once per matmul, so it
+        // only wins once M is large enough for the MMAs to matter.
+        if m >= COOP_NBITS_MIN_M
+            && elem == kernels::MatElem::F16
+            && session.coop_matmul()
+            && k == nb * bs
+            && k % 16 == 0
+            && n % 16 == 0
+            && n.div_ceil(64) <= 65535
+            && m.div_ceil(128) <= 65535
+        {
+            let w = session.dequantize(b, scales, zp, bs, DataType::F16, vec![n, nb, bs])?;
+            session.matmul_coop_f16(a, &w, &out, m, n, k, true)?;
+            return Ok(vec![out]);
+        }
+
         // Prefill: register-blocked tiled matmul with the weight tile
         // dequantized into shared memory on load; split-K when the tile
         // grid can't fill the device.
@@ -1083,6 +1101,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
         out_binding_v = out_binding + 1,
     )
 }
+
+/// Rows from which an f16 MatMulNBits prefill dequantizes to f16 and
+/// takes the tensor-core matmul (measured crossover on the 1B q4f16).
+const COOP_NBITS_MIN_M: usize = 128;
 
 /// Workgroups the split decode kernel aims for, the cache length from
 /// which splitting is worth its combine pass, and the smallest key

@@ -1029,8 +1029,13 @@ impl WgpuSession {
     /// `a` into a scratch with junk tail rows (each output row depends on
     /// its own input row only; the tail is never stored). Split-K as the
     /// rb tile, partials folded by `matvec_reduce`.
+    /// Whether f16 matmuls may use the cooperative-matrix kernel.
+    pub(crate) fn coop_matmul(&self) -> bool {
+        self.coop && !std::env::var("ONYXIA_NO_COOPMAT").is_ok_and(|v| v != "0")
+    }
+
     #[allow(clippy::too_many_arguments)]
-    fn matmul_coop_f16(
+    pub(crate) fn matmul_coop_f16(
         &mut self,
         a: &GpuTensor,
         b: &GpuTensor,
@@ -1501,8 +1506,7 @@ impl WgpuSession {
                     // from the storage buffers, so K and N must be
                     // 16-aligned (rows 32-byte aligned); M is padded.
                     if elem == MatElem::F16
-                        && self.coop
-                        && !std::env::var("ONYXIA_NO_COOPMAT").is_ok_and(|v| v != "0")
+                        && self.coop_matmul()
                         && batch == 1
                         && m >= 16
                         && !*trans_a
