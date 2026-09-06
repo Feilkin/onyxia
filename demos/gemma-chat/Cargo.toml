@@ -5,6 +5,13 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
 
+# The library holds the whole app; the binary is a thin CLI wrapper. On
+# Android the library is built as a `cdylib` exposing `android_main`.
+[lib]
+name = "gemma_chat"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
 [[bin]]
 name = "gemma-chat"
 path = "src/main.rs"
@@ -33,11 +40,26 @@ web-time = "1"
 futures = "0.3"
 log = "0.4"
 
-# Native-only: full tokenizers + a blocking executor to drive the async runtime.
+# Native-only: a blocking executor to drive the async runtime.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokenizers = "0.22.2"
 pollster = "0.4"
 env_logger = "0.11"
+
+# Desktop: full tokenizers (oniguruma regex, C build).
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
+tokenizers = "0.22.2"
+
+# Android: eframe on a NativeActivity (`cargo apk`, no Java/Gradle project),
+# pure-Rust tokenizers (fancy-regex instead of oniguruma), logcat logging.
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { version = "0.34", default-features = false, features = [
+    "default_fonts",
+    "wgpu",
+    "android-native-activity",
+] }
+android-activity = { version = "0.6", features = ["native-activity"] }
+android_logger = "0.15"
+tokenizers = { version = "0.22.2", default-features = false, features = ["fancy-regex"] }
 
 # Web: tokenizers wasm build, spawn_local, fetch, panic hook, logging.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -53,3 +75,28 @@ web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlC
 # rand/tokenizers pull getrandom, which needs an explicit backend on wasm
 # (also requires --cfg getrandom_backend="wasm_js"; see .cargo/config.toml).
 getrandom = { version = "0.4", features = ["wasm_js"] }
+
+# `cargo apk build -p gemma-chat --release` (see `just android-apk`). Vulkan
+# 1.1 needs Android 9+, and we only ship the 64-bit ARM library.
+[package.metadata.android]
+package = "games.bilberry.onyxia.gemma"
+apk_name = "gemma-chat"
+build_targets = ["aarch64-linux-android"]
+strip = "strip"
+
+[package.metadata.android.sdk]
+min_sdk_version = 29
+target_sdk_version = 34
+
+[[package.metadata.android.uses_feature]]
+name = "android.hardware.vulkan.level"
+required = true
+version = 1
+
+[package.metadata.android.application]
+label = "Onyxia Chat"
+theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
+
+[package.metadata.android.application.activity]
+config_changes = "orientation|keyboardHidden|screenSize"
+orientation = "portrait"
