@@ -421,9 +421,26 @@ What is left at 1024 tokens is the matmul: 93 of the 125 ms on the 1B,
 cooperative-matrix tile (`ONYXIA_MATMUL_TILE=coop`) is 2.4× *slower*
 here (255 vs 107 ms on the fp32 1B) — its staging, not the MMA, is the
 bottleneck — so a real tensor-core matmul is the next kernel. Decode at
-long context is the other gap: the one-query kernel has only `heads ×
+long context was the other gap: the one-query kernel has only `heads ×
 batch` workgroups to scan the cache (4 on the 270m), 4.7 ms of the
-7.7 ms step at 1100 tokens.
+7.7 ms step at 1100 tokens. Commit 2906eba splits the keys of a 256+
+token cache across workgroups (target 128, chunks of 64+), each writing
+an `(m, l, acc)` partial that a combine dispatch folds — the
+"flash-decoding" scheme. Decode at ~1100 tokens of context, tok/s:
+
+| model | before | split-K decode | ORT CUDA EP |
+|---|---|---|---|
+| 270m fp16 | 129 | **317** | 247 |
+| 270m q4f16 | 143 | **398** | 258 |
+| 1B fp16 | 87 | **207** | 151 |
+| 1B q4f16 | 98 | **275** | 168 |
+
+That is back to the short-context decode rate (the 64-token table above:
+336 / 415 / 216 / 291) and ahead of ORT's plain `run()` on the same
+file at this context length — its decode step grew 1.8 ms from 100 to
+1100 tokens, Onyxia's now 0.2 ms. Prefill at 1024 tokens stays at 44 /
+43 / 126 / 111 ms vs ORT's 6 / 7 / 16 / 18: the matmul tile is the whole
+of that gap now.
 
 ## Onyxia's CubeCL backend on the same GPU (270m, 2026-08-23)
 
