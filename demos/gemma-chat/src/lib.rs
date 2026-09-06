@@ -468,24 +468,31 @@ impl eframe::App for ChatApp {
         let side = if narrow { 16 } else { 28 };
 
         // ── header ──────────────────────────────────────────────────────────
+        // The insets are reserved as blank space inside the panels rather
+        // than as frame margins: `Margin` is 8-bit, and the soft keyboard's
+        // inset (hundreds of points) would overflow it.
         egui::Panel::top("header")
-            .frame(egui::Frame::new().fill(pal.bg).inner_margin(Margin {
-                left: side,
-                right: side,
-                top: 16 + inset_top.round() as i8,
-                bottom: 16,
-            }))
-            .show_inside(ui, |ui| self.header(ui, &ctx, &pal, narrow));
+            .frame(
+                egui::Frame::new()
+                    .fill(pal.bg)
+                    .inner_margin(Margin::symmetric(side, 16)),
+            )
+            .show_inside(ui, |ui| {
+                ui.add_space(inset_top);
+                self.header(ui, &ctx, &pal, narrow)
+            });
 
         // ── composer ────────────────────────────────────────────────────────
         egui::Panel::bottom("composer")
-            .frame(egui::Frame::new().fill(pal.bg).inner_margin(Margin {
-                left: side,
-                right: side,
-                top: 16,
-                bottom: 16 + inset_bottom.round() as i8,
-            }))
-            .show_inside(ui, |ui| self.composer(ui, &pal));
+            .frame(
+                egui::Frame::new()
+                    .fill(pal.bg)
+                    .inner_margin(Margin::symmetric(side, 16)),
+            )
+            .show_inside(ui, |ui| {
+                self.composer(ui, &pal);
+                ui.add_space(inset_bottom);
+            });
 
         // ── main region: loading panel or chat ──────────────────────────────
         egui::CentralPanel::default()
