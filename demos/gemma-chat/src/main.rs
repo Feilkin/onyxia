@@ -19,11 +19,24 @@ fn main() -> eframe::Result {
         .map(PathBuf::from);
     // Screenshots and `--demo` both drive the UI without a real model.
     let demo = shots_dir.is_some() || args.iter().any(|a| a == "--demo");
-    let model_dir = args
-        .iter()
-        .find(|a| !a.starts_with("--"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("models/gemma-3-270m-it-ONNX"));
+    // Every non-flag argument is a model directory; the first loads, the
+    // rest are offered by the header picker.
+    let mut skip_next = false;
+    let mut model_dirs: Vec<PathBuf> = Vec::new();
+    for a in &args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if a == "--shots" {
+            skip_next = true;
+        } else if !a.starts_with("--") {
+            model_dirs.push(PathBuf::from(a));
+        }
+    }
+    if model_dirs.is_empty() {
+        model_dirs.push(PathBuf::from("models/gemma-3-270m-it-ONNX"));
+    }
 
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
@@ -31,7 +44,7 @@ fn main() -> eframe::Result {
             .with_inner_size([1040.0, 720.0]),
         ..Default::default()
     };
-    gemma_chat::run_native(model_dir, demo, shots_dir, options)
+    gemma_chat::run_native(model_dirs, demo, shots_dir, options)
 }
 
 #[cfg(target_arch = "wasm32")]

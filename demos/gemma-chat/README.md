@@ -17,7 +17,9 @@ against onnxruntime, fp32 stays coherent while q4 collapses into garbage.
 cargo run --release -p gemma-chat -- ../../models/gemma-3-270m-it-ONNX
 ```
 
-(the model dir defaults to `models/gemma-3-270m-it-ONNX` relative to the cwd).
+(the model dir defaults to `models/gemma-3-270m-it-ONNX` relative to the cwd;
+pass several directories and the header gets a picker to switch between
+them).
 
 To preview the interface without a model, `cargo run -p gemma-chat -- --demo`
 drives the UI with scripted load stages and a canned streamed answer.
@@ -84,10 +86,13 @@ just android-run           # launches the activity and tails logcat
 Models live in the app's external files directory,
 `/sdcard/Android/data/games.bilberry.onyxia.gemma/files/<model dir>`, which
 `adb push` can write without any storage permission (the app has to have
-created `files/` first — the recipe starts it once). The app loads the first
-directory present out of `gemma-3-1b-it-ONNX-GQA`, `gemma-3-270m-it-ONNX`,
-preferring `model.onnx` over `model_q4.onnx` inside it; to demo the other
-model, move the directory aside with `adb shell mv`. The Rust side logs
+created `files/` first — the recipe starts it once). Every directory there
+with an `onnx/` subdir is offered by the model picker in the header
+(`gemma-3-1b-it-ONNX-GQA` and `gemma-3-270m-it-ONNX` first, then the rest
+alphabetically); the first one loads at start. Inside a directory
+`model.onnx` is preferred over `model_q4.onnx`. Switching models tears down
+the old session (its GPU memory is released once it finishes) and loads
+the new one. The Rust side logs
 under the `gemma-chat` logcat tag. The soft keyboard opens when the prompt
 field gets focus; the header, composer and system-bar/keyboard insets come
 from the activity's content rect.

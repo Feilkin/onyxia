@@ -8,7 +8,7 @@
 //! Usage:
 //!
 //! ```text
-//! gemma-chat <model-dir>
+//! gemma-chat <model-dir> [<model-dir>...]
 //! ```
 //!
 //! On Android the same UI runs as a `NativeActivity` (see [`android_main`]);
@@ -139,8 +139,12 @@ struct ChatApp {
     /// Index into [`theme::STAGE_LABELS`] for the segmented progress bar.
     loading_stage: usize,
     gpu_name: String,
-    /// Model name shown in the header (`Gemma 3 270M`), from the model dir.
-    model_name: String,
+    /// Model directories (or URLs) the picker can switch between.
+    models: Vec<ModelSource>,
+    /// Index into `models` of the loaded (or loading) model.
+    active: usize,
+    /// `--demo`: scripted stages instead of a real model.
+    demo: bool,
     /// Weight precision shown in the header (`fp32` / `q4`).
     precision: String,
     last_tokens_per_sec: Option<f64>,
@@ -167,13 +171,11 @@ struct ChatApp {
 }
 
 impl ChatApp {
-    fn new(cc: &eframe::CreationContext, source: ModelSource, demo: bool) -> Self {
-        let model_name = model_name(&source);
-        let (request_tx, request_rx) = async_mpsc::unbounded::<InferenceRequest>();
-        let (event_tx, event_rx) = mpsc::channel::<InferenceEvent>();
-        let egui_ctx = cc.egui_ctx.clone();
+    fn new(cc: &eframe::CreationContext, models: Vec<ModelSource>, demo: bool) -> Self {
+        assert!(!models.is_empty(), "at least one model source");
         let stop_flag = Arc::new(AtomicBool::new(false));
-        let task_stop_flag = Arc::clone(&stop_flag);
+        let (request_tx, event_rx) =
+            spawn_inference(models[0].clone(), demo, cc.egui_ctx.clone(), &stop_flag);
 
         if let Some(rs) = &cc.wgpu_render_state {
             let l = rs.adapter.limits();
@@ -193,36 +195,6 @@ impl ChatApp {
         cc.egui_ctx
             .set_visuals(theme::visuals(&theme.palette(), theme));
 
-        // Drive the async inference loop. On native it runs on a dedicated
-        // thread (blocking executor); on web it runs as a spawned task on the
-        // single browser thread, yielding to the UI at each `.await`.
-        //
-        // The runtime's futures are `?Send` (they hold wgpu/tracing state across
-        // awaits), so the native future is built *inside* the thread closure —
-        // only the (Send) arguments cross the thread boundary, not the future.
-        #[cfg(not(target_arch = "wasm32"))]
-        std::thread::spawn(move || {
-            pollster::block_on(async move {
-                if demo {
-                    // Scripted stages + canned answer, no model required.
-                    demo::run(request_rx, event_tx, egui_ctx, task_stop_flag).await;
-                } else {
-                    run_inference(source, request_rx, event_tx, egui_ctx, task_stop_flag).await;
-                }
-            });
-        });
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = demo; // demo mode is native-only
-            wasm_bindgen_futures::spawn_local(run_inference(
-                source,
-                request_rx,
-                event_tx,
-                egui_ctx,
-                task_stop_flag,
-            ));
-        }
-
         Self {
             input: String::new(),
             history: Vec::new(),
@@ -231,7 +203,9 @@ impl ChatApp {
             loading_message: theme::STAGE_LABELS[1].to_string(),
             loading_stage: 1,
             gpu_name: String::new(),
-            model_name,
+            models,
+            active: 0,
+            demo,
             precision: "fp32".to_string(),
             last_tokens_per_sec: None,
             last_ttft_ms: None,
@@ -264,14 +238,82 @@ impl ChatApp {
         (0.0, 0.0)
     }
 
-    /// Model line shown in the header, e.g. `Gemma 3 270M · fp32 · <gpu>`.
-    fn model_info(&self) -> String {
+    /// Precision and device part of the header line, e.g. `fp32 · <gpu>`.
+    fn device_info(&self) -> String {
         let device = if self.gpu_name.is_empty() {
             "WebGPU".to_string()
         } else {
             self.gpu_name.clone()
         };
-        format!("{} · {} · {device}", self.model_name, self.precision)
+        format!("{} · {device}", self.precision)
+    }
+
+    /// Model line shown in the header, e.g. `Gemma 3 270M · fp32 · <gpu>`.
+    fn model_info(&self) -> String {
+        format!(
+            "{} · {}",
+            model_name(&self.models[self.active]),
+            self.device_info()
+        )
+    }
+
+    /// Tear down the current inference loop and start one on `models[idx]`.
+    /// Dropping the request sender ends the old loop (and frees its GPU
+    /// memory) once it finishes what it is doing; the stop flag cuts a
+    /// running generation short.
+    fn switch_model(&mut self, egui_ctx: &egui::Context, idx: usize) {
+        if idx == self.active || idx >= self.models.len() {
+            return;
+        }
+        self.stop_flag.store(true, Ordering::Relaxed);
+        self.stop_flag = Arc::new(AtomicBool::new(false));
+        let (request_tx, event_rx) = spawn_inference(
+            self.models[idx].clone(),
+            self.demo,
+            egui_ctx.clone(),
+            &self.stop_flag,
+        );
+        self.request_tx = request_tx;
+        self.event_rx = event_rx;
+        self.active = idx;
+        self.history.clear();
+        self.current_response.clear();
+        self.input.clear();
+        self.status = AppStatus::Loading;
+        self.loading_stage = 1;
+        self.loading_message = theme::STAGE_LABELS[1].to_string();
+        self.gpu_name.clear();
+        self.precision = "fp32".to_string();
+        self.last_tokens_per_sec = None;
+        self.last_ttft_ms = None;
+        self.vram_bytes = 0;
+        egui_ctx.request_repaint();
+    }
+
+    /// The header's model line: a picker when several models are available,
+    /// a plain label otherwise; then `· fp32 · <gpu>`.
+    fn model_line(&mut self, ui: &mut egui::Ui, pal: &theme::Palette, size: f32) {
+        let text = |t: String| RichText::new(t).family(mono()).size(size).color(pal.muted);
+        if self.models.len() > 1 {
+            let mut choice = self.active;
+            let busy = matches!(self.status, AppStatus::Loading);
+            ui.add_enabled_ui(!busy, |ui| {
+                egui::ComboBox::from_id_salt("model-picker")
+                    .selected_text(text(model_name(&self.models[self.active])))
+                    .show_ui(ui, |ui| {
+                        for (i, m) in self.models.iter().enumerate() {
+                            ui.selectable_value(&mut choice, i, text(model_name(m)));
+                        }
+                    });
+            });
+            if choice != self.active {
+                let ctx = ui.ctx().clone();
+                self.switch_model(&ctx, choice);
+            }
+            ui.add(egui::Label::new(text(format!("· {}", self.device_info()))).truncate());
+        } else {
+            ui.add(egui::Label::new(text(self.model_info())).truncate());
+        }
     }
 
     fn set_theme(&mut self, ctx: &egui::Context, theme: Theme) {
@@ -554,15 +596,7 @@ impl ChatApp {
                 }
                 if !narrow {
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(self.model_info())
-                                    .family(mono())
-                                    .size(15.0)
-                                    .color(pal.muted),
-                            )
-                            .truncate(),
-                        );
+                        self.model_line(ui, pal, 15.0)
                     });
                 }
             });
@@ -570,15 +604,7 @@ impl ChatApp {
         // Phone-width: the model line gets its own row under the wordmark.
         if narrow {
             ui.add_space(6.0);
-            ui.add(
-                egui::Label::new(
-                    RichText::new(self.model_info())
-                        .family(mono())
-                        .size(13.0)
-                        .color(pal.muted),
-                )
-                .truncate(),
-            );
+            ui.horizontal(|ui| self.model_line(ui, pal, 13.0));
         }
     }
 
@@ -667,10 +693,16 @@ impl ChatApp {
             ui.add_space(14.0);
 
             let label = theme::STAGE_LABELS[self.loading_stage.min(theme::STAGE_LABELS.len() - 1)];
+            // The longest stage label has to fit one line: 52pt needs ~600pt.
+            let size = if ui.available_width() < 600.0 {
+                28.0
+            } else {
+                52.0
+            };
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 let title =
-                    |t: &str, c| RichText::new(t).family(family(SG_BOLD)).size(52.0).color(c);
+                    |t: &str, c| RichText::new(t).family(family(SG_BOLD)).size(size).color(c);
                 ui.label(title(label, pal.text));
                 ui.label(title("…", pal.accent));
             });
@@ -1050,6 +1082,51 @@ fn bot_bubble(
 
 // ── inference thread ────────────────────────────────────────────────────────
 
+/// Start the async inference loop for `source`, returning the channels the
+/// UI talks to it over. On native it runs on a dedicated thread (blocking
+/// executor); on web it runs as a spawned task on the single browser
+/// thread, yielding to the UI at each `.await`.
+///
+/// The runtime's futures are `?Send` (they hold wgpu/tracing state across
+/// awaits), so the native future is built *inside* the thread closure —
+/// only the (Send) arguments cross the thread boundary, not the future.
+fn spawn_inference(
+    source: ModelSource,
+    demo: bool,
+    egui_ctx: egui::Context,
+    stop_flag: &Arc<AtomicBool>,
+) -> (
+    async_mpsc::UnboundedSender<InferenceRequest>,
+    mpsc::Receiver<InferenceEvent>,
+) {
+    let (request_tx, request_rx) = async_mpsc::unbounded::<InferenceRequest>();
+    let (event_tx, event_rx) = mpsc::channel::<InferenceEvent>();
+    let task_stop_flag = Arc::clone(stop_flag);
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::spawn(move || {
+        pollster::block_on(async move {
+            if demo {
+                // Scripted stages + canned answer, no model required.
+                demo::run(request_rx, event_tx, egui_ctx, task_stop_flag).await;
+            } else {
+                run_inference(source, request_rx, event_tx, egui_ctx, task_stop_flag).await;
+            }
+        });
+    });
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = demo; // demo mode is native-only
+        wasm_bindgen_futures::spawn_local(run_inference(
+            source,
+            request_rx,
+            event_tx,
+            egui_ctx,
+            task_stop_flag,
+        ));
+    }
+    (request_tx, event_rx)
+}
+
 async fn run_inference(
     source: ModelSource,
     mut request_rx: async_mpsc::UnboundedReceiver<InferenceRequest>,
@@ -1350,12 +1427,13 @@ async fn fetch_string(url: &str) -> Result<String> {
 
 // ── entry points ─────────────────────────────────────────────────────────────
 
-/// Desktop: open the chat window on `model_dir`. `demo` drives the UI with
+/// Desktop: open the chat window on `model_dirs` (the first is loaded, the
+/// rest are offered by the header picker). `demo` drives the UI with
 /// scripted stages and a canned answer (no model needed); `shots_dir` writes
 /// a fixed set of state screenshots and exits.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_native(
-    model_dir: PathBuf,
+    model_dirs: Vec<PathBuf>,
     demo: bool,
     shots_dir: Option<PathBuf>,
     options: eframe::NativeOptions,
@@ -1364,7 +1442,7 @@ pub fn run_native(
         "gemma-chat",
         options,
         Box::new(move |cc| {
-            let mut app = ChatApp::new(cc, model_dir, demo);
+            let mut app = ChatApp::new(cc, model_dirs, demo);
             if let Some(dir) = shots_dir {
                 app.shots = Some(screenshot::Shots::new(dir));
             }
@@ -1389,15 +1467,28 @@ fn android_main(app: android_activity::AndroidApp) {
         .external_data_path()
         .or_else(|| app.internal_data_path())
         .unwrap_or_else(|| PathBuf::from("/sdcard"));
-    // First model directory present, in preference order. To demo the other
-    // one, move it aside with `adb shell mv` (or delete it).
-    const CANDIDATES: [&str; 2] = ["gemma-3-1b-it-ONNX-GQA", "gemma-3-270m-it-ONNX"];
-    let model_dir = CANDIDATES
+    // Every model directory under the files dir (anything with an `onnx/`
+    // subdir), known ones first in preference order; the first one loads
+    // and the header picker switches between them.
+    const PREFERRED: [&str; 2] = ["gemma-3-1b-it-ONNX-GQA", "gemma-3-270m-it-ONNX"];
+    let mut model_dirs: Vec<PathBuf> = PREFERRED
         .iter()
         .map(|d| base.join(d))
-        .find(|d| d.join("onnx").is_dir())
-        .unwrap_or_else(|| base.join(CANDIDATES[1]));
-    log::info!("model dir: {}", model_dir.display());
+        .filter(|d| d.join("onnx").is_dir())
+        .collect();
+    if let Ok(entries) = std::fs::read_dir(&base) {
+        let mut extra: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.join("onnx").is_dir() && !model_dirs.contains(p))
+            .collect();
+        extra.sort();
+        model_dirs.extend(extra);
+    }
+    if model_dirs.is_empty() {
+        model_dirs.push(base.join(PREFERRED[1])); // fails with a clear path in the UI
+    }
+    log::info!("model dirs: {model_dirs:?}");
     let options = eframe::NativeOptions {
         android_app: Some(app.clone()),
         ..Default::default()
@@ -1406,7 +1497,7 @@ fn android_main(app: android_activity::AndroidApp) {
         "gemma-chat",
         options,
         Box::new(move |cc| {
-            let mut chat = ChatApp::new(cc, model_dir, false);
+            let mut chat = ChatApp::new(cc, model_dirs, false);
             chat.android_app = Some(app);
             Ok(Box::new(chat))
         }),
@@ -1439,7 +1530,7 @@ pub fn run_web() {
             .start(
                 canvas,
                 eframe::WebOptions::default(),
-                Box::new(|cc| Ok(Box::new(ChatApp::new(cc, ".".to_string(), false)))),
+                Box::new(|cc| Ok(Box::new(ChatApp::new(cc, vec![".".to_string()], false)))),
             )
             .await
             .expect("failed to start eframe");
