@@ -227,7 +227,7 @@ impl CompositeKernel for MatMulNBitsKernel {
             let imm = imm.u(ks as u32);
             session.dispatch(
                 "matvec_reduce_f32",
-                kernels::matvec_reduce,
+                || kernels::matvec_reduce(kernels::MatElem::F32),
                 &[&scratch, &out.buffer],
                 &imm,
                 n_out,
@@ -307,7 +307,7 @@ fn matvec_nbits(
         let imm = imm.u(ks as u32);
         session.dispatch(
             "matvec_reduce_f32",
-            kernels::matvec_reduce,
+            || kernels::matvec_reduce(kernels::MatElem::F32),
             &[&scratch, &out.buffer],
             &imm,
             size,

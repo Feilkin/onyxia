@@ -11,7 +11,7 @@ use crate::gpu::{
     BindGroupCache, BufferPool, GpuContext, IMMEDIATE_SIZE, MemCounter, PipelineCache,
     TrackedBuffer, WORKGROUP_SIZE, dispatch_size,
 };
-use crate::kernels::{self, Imm, MAX_RANK};
+use crate::kernels::{self, Imm, MAX_RANK, MatElem};
 use crate::layout::{Caps, Layout, Repr};
 use crate::profile::{KernelTiming, Profiler};
 use onyxia_ir::graph::{Module, NodeId, NodeKind, Origin, ValueId};
@@ -893,8 +893,10 @@ impl WgpuSession {
         }
     }
 
-    /// Plain-f32 tiled matmul into `out`. `mnkb` = `[m, n, k, batch]`,
-    /// `strides` = per-batch element strides of `a`/`b` (0 = broadcast).
+    /// Tiled matmul into `out` over `elem` operands (`f32`, or native
+    /// `f16` — vec4-staged rb tile only, the caller checks alignment).
+    /// `mnkb` = `[m, n, k, batch]`, `strides` = per-batch element strides
+    /// of `a`/`b` (0 = broadcast).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn matmul_tiled(
         &mut self,
@@ -905,6 +907,7 @@ impl WgpuSession {
         strides: [u32; 2],
         trans_a: bool,
         trans_b: bool,
+        elem: MatElem,
     ) -> Result<()> {
         let [m, n, k, batch] = mnkb;
         let grid = self.tiled_grid(m, n, batch).ok_or_else(|| {
@@ -972,9 +975,14 @@ impl WgpuSession {
         // either [K,N] with N % 4 == 0 or [N,K] (the prefill projections
         // and the lm_head; per-batch strides are then 4-aligned too).
         let v4 = !coop && !trans_a && k % 4 == 0 && (trans_b || n % 4 == 0);
+        debug_assert!(elem == MatElem::F32 || v4, "f16 tiles are vec4-staged only");
+        // Split-K partials are f32 whatever the operands are.
+        let out_elem = if ks > 1 { MatElem::F32 } else { elem };
         let label = if v4 {
             format!(
-                "matmul_tiled_rb_v4_f32_n{}",
+                "matmul_tiled_rb_v4_{}_{}_n{}",
+                elem.tag(),
+                out_elem.tag(),
                 if trans_b { "t" } else { "n" }
             )
         } else {
@@ -986,7 +994,7 @@ impl WgpuSession {
                 if coop {
                     kernels::matmul_coop(trans_a, trans_b)
                 } else if v4 {
-                    kernels::matmul_tiled_rb_v4(trans_b)
+                    kernels::matmul_tiled_rb_v4_elem(trans_b, elem, out_elem)
                 } else {
                     kernels::matmul_tiled_rb(trans_a, trans_b)
                 }
@@ -999,8 +1007,8 @@ impl WgpuSession {
             let (imm, n_out) = size_imm(size);
             let imm = imm.u(ks as u32);
             self.dispatch(
-                "matvec_reduce_f32",
-                kernels::matvec_reduce,
+                &format!("matvec_reduce_{}", elem.tag()),
+                || kernels::matvec_reduce(elem),
                 &[&scratch, &out.buffer],
                 &imm,
                 n_out,
@@ -1073,6 +1081,7 @@ impl WgpuSession {
     /// a pooled scratch buffer and a second dispatch folds them into the
     /// output; within a batch the queue orders the two dispatches, so the
     /// scratch can return to the pool as soon as both are encoded.
+    #[allow(clippy::too_many_arguments)]
     fn matvec(
         &mut self,
         a: &GpuTensor,
@@ -1081,6 +1090,7 @@ impl WgpuSession {
         n: usize,
         k: usize,
         trans_b: bool,
+        elem: MatElem,
     ) -> Result<GpuTensor> {
         /// Workgroups needed to fill a discrete GPU.
         const TARGET_WG: usize = 512;
@@ -1112,6 +1122,10 @@ impl WgpuSession {
         });
         let dst: &Arc<TrackedBuffer> = scratch.as_ref().unwrap_or(&out.buffer);
         let buffers = [&a.buffer, &b.buffer, dst];
+        // Split-K partials are f32; the kernel writes `out`'s element
+        // type only when it writes the output directly.
+        let out_elem = if ks > 1 { MatElem::F32 } else { elem };
+        debug_assert!(elem == MatElem::F32 || vec4, "f16 matvec is vec4-only");
 
         if trans_b {
             let total = (base_wg * ks) as u32;
@@ -1126,8 +1140,8 @@ impl WgpuSession {
                     .u(k4.div_ceil(ks) as u32)
                     .u(x_wgs);
                 self.dispatch_grid(
-                    "matvec_transb_v4_f32",
-                    kernels::matvec_transb_v4,
+                    &format!("matvec_transb_v4_{}_{}", elem.tag(), out_elem.tag()),
+                    || kernels::matvec_transb_v4(elem, out_elem),
                     &buffers,
                     &imm,
                     grid,
@@ -1156,8 +1170,8 @@ impl WgpuSession {
                 .u(k.div_ceil(ks) as u32);
             if vec4 {
                 self.dispatch_grid(
-                    "matvec_kn_v4_f32",
-                    kernels::matvec_kn_v4,
+                    &format!("matvec_kn_v4_{}_{}", elem.tag(), out_elem.tag()),
+                    || kernels::matvec_kn_v4(elem, out_elem),
                     &buffers,
                     &imm,
                     grid,
@@ -1171,8 +1185,8 @@ impl WgpuSession {
             let (imm, size) = size_imm(n);
             let imm = imm.u(ks as u32);
             self.dispatch(
-                "matvec_reduce_f32",
-                kernels::matvec_reduce,
+                &format!("matvec_reduce_{}", elem.tag()),
+                || kernels::matvec_reduce(elem),
                 &[&scratch, &out.buffer],
                 &imm,
                 size,
@@ -1369,12 +1383,28 @@ impl WgpuSession {
                 // tiled matmul for everything else. Grid dims cap at
                 // 65535 workgroups; anything larger falls through to the
                 // generic kernel.
-                if t.is_plain_f32() && k > 0 && n > 0 {
-                    if batch == 1 && m == 1 && n.div_ceil(64) <= 65535 {
+                // Native f16 takes the same fast paths through the
+                // vec4-staged variants (f16 storage, f32 accumulate);
+                // unaligned f16 shapes and the classic/coop tiles stay on
+                // the generic kernel.
+                let elem = match t.repr {
+                    Repr::Plain if t.logical == DataType::F32 => Some(MatElem::F32),
+                    Repr::F16Native => Some(MatElem::F16),
+                    _ => None,
+                };
+                if let Some(elem) = elem.filter(|_| k > 0 && n > 0) {
+                    let f16_ok =
+                        elem == MatElem::F32 || (if *trans_b { k % 4 == 0 } else { n % 4 == 0 });
+                    if batch == 1 && m == 1 && n.div_ceil(64) <= 65535 && f16_ok {
                         let out = self.alloc_out(out_dtype, out_shape);
-                        return self.matvec(&a, &b, out, n, k, *trans_b);
+                        return self.matvec(&a, &b, out, n, k, *trans_b, elem);
                     }
-                    if self.tiled_grid(m, n, batch).is_some() {
+                    let rb_ok = elem == MatElem::F32
+                        || (self.matmul_tile == crate::gpu::MatmulTile::Rb
+                            && !*trans_a
+                            && k % 4 == 0
+                            && (*trans_b || n % 4 == 0));
+                    if rb_ok && self.tiled_grid(m, n, batch).is_some() {
                         let out = self.alloc_out(out_dtype, out_shape);
                         self.matmul_tiled(
                             &a,
@@ -1384,6 +1414,7 @@ impl WgpuSession {
                             [a_bs, b_bs],
                             *trans_a,
                             *trans_b,
+                            elem,
                         )?;
                         return Ok(out);
                     }

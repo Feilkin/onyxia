@@ -837,6 +837,42 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
 // - `[N,K]` (`trans_b == true`): one output row per workgroup; 256
 //   threads stride K, adjacent threads on adjacent addresses.
 
+/// Storage element of a matmul operand or result: plain `f32`, or native
+/// `f16` (loaded and stored as f16, accumulated in f32). The kernels below
+/// are templates over it; the f32 instantiations are byte-for-byte the
+/// original kernels (the `f32(x)` / `vec4<f32>(v)` conversions are no-ops).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MatElem {
+    F32,
+    F16,
+}
+
+impl MatElem {
+    pub fn wgsl(self) -> &'static str {
+        match self {
+            MatElem::F32 => "f32",
+            MatElem::F16 => "f16",
+        }
+    }
+    pub fn tag(self) -> &'static str {
+        self.wgsl()
+    }
+    fn enable(self) -> &'static str {
+        match self {
+            MatElem::F32 => "",
+            MatElem::F16 => "enable f16;\n",
+        }
+    }
+}
+
+fn enable_any(elems: &[MatElem]) -> &'static str {
+    if elems.contains(&MatElem::F16) {
+        "enable f16;\n"
+    } else {
+        ""
+    }
+}
+
 /// M=1 matmul over `[K,N]` weights with vec4 column loads (requires
 /// `N % 4 == 0`; otherwise the scalar [`matvec_kn`] runs). Same
 /// 64-scalar-column tile as the scalar kernel — keeping the workgroup
@@ -844,43 +880,45 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
 /// but as 16 vec4 lanes × 16 K-lanes. Grid: `x` = ceil(N/64) tiles,
 /// `y` = K slices. Bindings as [`matvec_kn`], with `b`/`dst` viewed as
 /// vec4 (same byte layout).
-pub fn matvec_kn_v4() -> String {
-    "
-struct P { n4: u32, k: u32, ks: u32, chunk: u32 }
+pub fn matvec_kn_v4(inp: MatElem, out: MatElem) -> String {
+    let (i, o, en) = (inp.wgsl(), out.wgsl(), enable_any(&[inp, out]));
+    format!(
+        "{en}
+struct P {{ n4: u32, k: u32, ks: u32, chunk: u32 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read> b: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read_write> dst: array<vec4<f32>>;
+@group(0) @binding(0) var<storage, read> a: array<{i}>;
+@group(0) @binding(1) var<storage, read> b: array<vec4<{i}>>;
+@group(0) @binding(2) var<storage, read_write> dst: array<vec4<{o}>>;
 var<workgroup> scratch: array<vec4<f32>, 256>;
 
 @compute @workgroup_size(256)
 fn main(@builtin(workgroup_id) wg: vec3<u32>,
-        @builtin(local_invocation_id) lid: vec3<u32>) {
+        @builtin(local_invocation_id) lid: vec3<u32>) {{
     let tx = lid.x % 16u;
     let ty = lid.x / 16u;
     let n4 = wg.x * 16u + tx;
     let k0 = wg.y * p.chunk;
     let k1 = min(k0 + p.chunk, p.k);
     var acc = vec4<f32>(0.0);
-    if (n4 < p.n4) {
-        for (var k = k0 + ty; k < k1; k += 16u) {
-            acc += a[k] * b[k * p.n4 + n4];
-        }
-    }
+    if (n4 < p.n4) {{
+        for (var k = k0 + ty; k < k1; k += 16u) {{
+            acc += f32(a[k]) * vec4<f32>(b[k * p.n4 + n4]);
+        }}
+    }}
     scratch[lid.x] = acc;
     workgroupBarrier();
-    for (var s = 8u; s > 0u; s = s >> 1u) {
-        if (ty < s) {
+    for (var s = 8u; s > 0u; s = s >> 1u) {{
+        if (ty < s) {{
             scratch[lid.x] = scratch[lid.x] + scratch[lid.x + s * 16u];
-        }
+        }}
         workgroupBarrier();
-    }
-    if (ty == 0u && n4 < p.n4) {
-        dst[wg.y * p.n4 + n4] = scratch[tx];
-    }
-}
+    }}
+    if (ty == 0u && n4 < p.n4) {{
+        dst[wg.y * p.n4 + n4] = vec4<{o}>(scratch[tx]);
+    }}
+}}
 "
-    .to_string()
+    )
 }
 
 /// M=1 matmul over `[N,K]` weights with vec4 K loads (requires
@@ -889,18 +927,20 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
 /// workgroup covers **4 rows** as 4 × 64 lanes. Grid: linearized
 /// `ceil(N/4) × ks` workgroups. Bindings as [`matvec_transb`], with
 /// `a`/`b` viewed as vec4.
-pub fn matvec_transb_v4() -> String {
-    "
-struct P { n: u32, k4: u32, ks: u32, chunk4: u32, x_wgs: u32 }
+pub fn matvec_transb_v4(inp: MatElem, out: MatElem) -> String {
+    let (i, o, en) = (inp.wgsl(), out.wgsl(), enable_any(&[inp, out]));
+    format!(
+        "{en}
+struct P {{ n: u32, k4: u32, ks: u32, chunk4: u32, x_wgs: u32 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read> b: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read_write> dst: array<f32>;
+@group(0) @binding(0) var<storage, read> a: array<vec4<{i}>>;
+@group(0) @binding(1) var<storage, read> b: array<vec4<{i}>>;
+@group(0) @binding(2) var<storage, read_write> dst: array<{o}>;
 var<workgroup> scratch: array<f32, 256>;
 
 @compute @workgroup_size(256)
 fn main(@builtin(workgroup_id) wg: vec3<u32>,
-        @builtin(local_invocation_id) lid: vec3<u32>) {
+        @builtin(local_invocation_id) lid: vec3<u32>) {{
     let lane = lid.x % 64u;
     let row_i = lid.x / 64u;
     let wg_lin = wg.y * p.x_wgs + wg.x;
@@ -915,25 +955,25 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
     let k0 = slice * p.chunk4;
     let k1 = min(k0 + p.chunk4, p.k4);
     var acc = 0.0;
-    if (live) {
-        for (var i = k0 + lane; i < k1; i += 64u) {
-            acc += dot(a[i], b[n * p.k4 + i]);
-        }
-    }
+    if (live) {{
+        for (var i = k0 + lane; i < k1; i += 64u) {{
+            acc += dot(vec4<f32>(a[i]), vec4<f32>(b[n * p.k4 + i]));
+        }}
+    }}
     scratch[lid.x] = acc;
     workgroupBarrier();
-    for (var s = 32u; s > 0u; s = s >> 1u) {
-        if (lane < s) {
+    for (var s = 32u; s > 0u; s = s >> 1u) {{
+        if (lane < s) {{
             scratch[lid.x] = scratch[lid.x] + scratch[lid.x + s];
-        }
+        }}
         workgroupBarrier();
-    }
-    if (lane == 0u && live) {
-        dst[slice * p.n + n] = scratch[lid.x];
-    }
-}
+    }}
+    if (lane == 0u && live) {{
+        dst[slice * p.n + n] = {o}(scratch[lid.x]);
+    }}
+}}
 "
-    .to_string()
+    )
 }
 
 /// M=1 matmul over `[K,N]` weights. Grid: `x` = ceil(N/64) column
@@ -1018,13 +1058,14 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
 
 /// Fold `[ks, N]` matvec partials into the `[N]` output. One thread per
 /// output element. Bindings: 0=partials, 1=out.
-pub fn matvec_reduce() -> String {
+pub fn matvec_reduce(out: MatElem) -> String {
+    let (o, en) = (out.wgsl(), out.enable());
     format!(
-        "{h}
+        "{en}{h}
 struct P {{ size: u32, x_stride: u32, ks: u32 }}
 var<immediate> p: P;
 @group(0) @binding(0) var<storage, read> partials: array<f32>;
-@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<{o}>;
 @compute @workgroup_size(WG_SIZE)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let idx = linear_idx(gid, p.x_stride);
@@ -1033,7 +1074,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     for (var j = 0u; j < p.ks; j += 1u) {{
         acc += partials[j * p.size + idx];
     }}
-    out[idx] = acc;
+    out[idx] = {o}(acc);
 }}",
         h = header(),
     )
@@ -1278,7 +1319,7 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
 /// of `p.chunk` whose partial sums land in `[ks, batch, M, N]` and are
 /// folded by `matvec_reduce`.
 pub fn matmul_tiled_rb(trans_a: bool, trans_b: bool) -> String {
-    matmul_tiled_rb_impl(trans_a, trans_b, false)
+    matmul_tiled_rb_impl(trans_a, trans_b, false, MatElem::F32, MatElem::F32)
 }
 
 /// [`matmul_tiled_rb`] with `a` untransposed (`[M,K]`, `K % 4 == 0`) and
@@ -1289,15 +1330,28 @@ pub fn matmul_tiled_rb(trans_a: bool, trans_b: bool) -> String {
 /// in range ends in range because K, N and the K-slice bounds are
 /// multiples of 4).
 pub fn matmul_tiled_rb_v4(trans_b: bool) -> String {
-    matmul_tiled_rb_impl(false, trans_b, true)
+    matmul_tiled_rb_impl(false, trans_b, true, MatElem::F32, MatElem::F32)
 }
 
-fn matmul_tiled_rb_impl(trans_a: bool, trans_b: bool, v4: bool) -> String {
+/// [`matmul_tiled_rb_v4`] over f16 operands (`inp`), writing `out`
+/// (f16 for the result, f32 for split-K partials); accumulates in f32.
+pub fn matmul_tiled_rb_v4_elem(trans_b: bool, inp: MatElem, out: MatElem) -> String {
+    matmul_tiled_rb_impl(false, trans_b, true, inp, out)
+}
+
+fn matmul_tiled_rb_impl(
+    trans_a: bool,
+    trans_b: bool,
+    v4: bool,
+    inp: MatElem,
+    out: MatElem,
+) -> String {
     assert!(!v4 || !trans_a, "vec4 staging needs an untransposed a");
+    let (i, o, en) = (inp.wgsl(), out.wgsl(), enable_any(&[inp, out]));
     let (a_ty, b_ty) = if v4 {
-        ("array<vec4<f32>>", "array<vec4<f32>>")
+        (format!("array<vec4<{i}>>"), format!("array<vec4<{i}>>"))
     } else {
-        ("array<f32>", "array<f32>")
+        (format!("array<{i}>"), format!("array<{i}>"))
     };
     // A tile: 64 m × 16 k. Four elements per thread.
     let a_load = if v4 {
@@ -1309,7 +1363,7 @@ fn matmul_tiled_rb_impl(trans_a: bool, trans_b: bool, v4: bool) -> String {
             let m = m0 + mm;
             let k = k0 + kq;
             var v = vec4<f32>(0.0);
-            if (m < p.m && k < k_hi) { v = a[(a_base + m * p.k + k) / 4u]; }
+            if (m < p.m && k < k_hi) { v = vec4<f32>(a[(a_base + m * p.k + k) / 4u]); }
             As[kq * 16u + mm / 4u][mm % 4u] = v.x;
             As[(kq + 1u) * 16u + mm / 4u][mm % 4u] = v.y;
             As[(kq + 2u) * 16u + mm / 4u][mm % 4u] = v.z;
@@ -1326,7 +1380,7 @@ fn matmul_tiled_rb_impl(trans_a: bool, trans_b: bool, v4: bool) -> String {
             if (k < k_hi) {
                 for (var j = 0u; j < 4u; j += 1u) {
                     let m = m0 + mq + j;
-                    if (m < p.m) { v[j] = a[a_base + k * p.m + m]; }
+                    if (m < p.m) { v[j] = f32(a[a_base + k * p.m + m]); }
                 }
             }
             As[kk * 16u + mq / 4u] = v;
@@ -1341,7 +1395,7 @@ fn matmul_tiled_rb_impl(trans_a: bool, trans_b: bool, v4: bool) -> String {
             for (var j = 0u; j < 4u; j += 1u) {
                 let k = k0 + kq + j;
                 var v = 0.0;
-                if (m < p.m && k < k_hi) { v = a[a_base + m * p.k + k]; }
+                if (m < p.m && k < k_hi) { v = f32(a[a_base + m * p.k + k]); }
                 As[(kq + j) * 16u + mm / 4u][mm % 4u] = v;
             }
         }"
@@ -1356,7 +1410,7 @@ fn matmul_tiled_rb_impl(trans_a: bool, trans_b: bool, v4: bool) -> String {
             let n = n0 + nn;
             let k = k0 + kq;
             var v = vec4<f32>(0.0);
-            if (n < p.n && k < k_hi) { v = b[(b_base + n * p.k + k) / 4u]; }
+            if (n < p.n && k < k_hi) { v = vec4<f32>(b[(b_base + n * p.k + k) / 4u]); }
             Bs[kq * 16u + nn / 4u][nn % 4u] = v.x;
             Bs[(kq + 1u) * 16u + nn / 4u][nn % 4u] = v.y;
             Bs[(kq + 2u) * 16u + nn / 4u][nn % 4u] = v.z;
@@ -1371,7 +1425,7 @@ fn matmul_tiled_rb_impl(trans_a: bool, trans_b: bool, v4: bool) -> String {
             var v = vec4<f32>(0.0);
             let k = k0 + kk;
             let n = n0 + nq;
-            if (k < k_hi && n < p.n) { v = b[(b_base + k * p.n + n) / 4u]; }
+            if (k < k_hi && n < p.n) { v = vec4<f32>(b[(b_base + k * p.n + n) / 4u]); }
             Bs[kk * 16u + nq / 4u] = v;
         }"
     } else if trans_b {
@@ -1384,7 +1438,7 @@ fn matmul_tiled_rb_impl(trans_a: bool, trans_b: bool, v4: bool) -> String {
             for (var j = 0u; j < 4u; j += 1u) {
                 let k = k0 + kq + j;
                 var v = 0.0;
-                if (n < p.n && k < k_hi) { v = b[b_base + n * p.k + k]; }
+                if (n < p.n && k < k_hi) { v = f32(b[b_base + n * p.k + k]); }
                 Bs[(kq + j) * 16u + nn / 4u][nn % 4u] = v;
             }
         }"
@@ -1399,19 +1453,19 @@ fn matmul_tiled_rb_impl(trans_a: bool, trans_b: bool, v4: bool) -> String {
             if (k < k_hi) {
                 for (var j = 0u; j < 4u; j += 1u) {
                     let n = n0 + nq + j;
-                    if (n < p.n) { v[j] = b[b_base + k * p.n + n]; }
+                    if (n < p.n) { v[j] = f32(b[b_base + k * p.n + n]); }
                 }
             }
             Bs[kk * 16u + nq / 4u] = v;
         }"
     };
     format!(
-        "
+        "{en}
 struct P {{ m: u32, n: u32, k: u32, a_bs: u32, b_bs: u32, batch: u32, chunk: u32 }}
 var<immediate> p: P;
 @group(0) @binding(0) var<storage, read> a: {a_ty};
 @group(0) @binding(1) var<storage, read> b: {b_ty};
-@group(0) @binding(2) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read_write> out: array<{o}>;
 var<workgroup> As: array<vec4<f32>, 256>;
 var<workgroup> Bs: array<vec4<f32>, 256>;
 
@@ -1451,7 +1505,7 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
         if (m < p.m) {{
             for (var j = 0u; j < 4u; j += 1u) {{
                 let n = n0 + tx * 4u + j;
-                if (n < p.n) {{ out[out_base + m * p.n + n] = acc[i][j]; }}
+                if (n < p.n) {{ out[out_base + m * p.n + n] = {o}(acc[i][j]); }}
             }}
         }}
     }}

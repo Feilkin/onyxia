@@ -1428,3 +1428,93 @@ fn split_matmul_nbits_matches_whole() {
         diff_test(module, vec![("a", a)]);
     }
 }
+
+/// Native-f16 matmuls take the vec4-staged fast paths (f16 storage, f32
+/// accumulate): decode matvecs both layouts with and without split-K,
+/// the register-blocked prefill tile nn and nt, plus an unaligned shape
+/// that must fall back to the generic kernel. Outputs are cast to f32 in
+/// the graph so the reference comparison sees the f16-rounded result;
+/// tolerance is f16-sized (the two sides accumulate in different orders).
+#[test]
+#[ignore = "requires GPU"]
+fn matmul_f16_fast_paths() {
+    use half::f16;
+    fn f16_tensor(vals: &[f32], shape: &[usize]) -> Tensor {
+        let bytes: Vec<u8> = vals
+            .iter()
+            .flat_map(|v| f16::from_f32(*v).to_le_bytes())
+            .collect();
+        Tensor::new(DataType::F16, shape.to_vec(), bytes).unwrap()
+    }
+    for (m, k, n, trans_b) in [
+        (1usize, 2048usize, 640usize, false), // matvec [K,N], ks>1
+        (1, 640, 2048, false),                // matvec [K,N], ks=1
+        (1, 640, 2048, true),                 // matvec [N,K], ks=1
+        (1, 4096, 66, true),                  // matvec [N,K], ks>1, row tail
+        (1, 130, 100, false),                 // unaligned: generic kernel
+        (64, 640, 2048, false),               // rb tile nn
+        (64, 2048, 640, false),               // rb tile nn, split-K
+        (64, 1152, 4096, true),               // rb tile nt (lm_head shape)
+        (37, 132, 68, true),                  // rb tile nt, tile tails
+    ] {
+        let mut b = GraphBuilder::new();
+        let a = b.input("a", TensorType::of(DataType::F16, &[m as u64, k as u64]));
+        let w_dims = if trans_b {
+            [n as u64, k as u64]
+        } else {
+            [k as u64, n as u64]
+        };
+        let w = b.input("w", TensorType::of(DataType::F16, &w_dims));
+        let y = b
+            .prim(
+                onyxia_ir::Prim::MatMul {
+                    trans_a: false,
+                    trans_b,
+                },
+                &[a, w],
+            )
+            .unwrap();
+        let out = b
+            .prim(onyxia_ir::Prim::Cast { to: DataType::F32 }, &[y])
+            .unwrap();
+        b.output("out", out);
+        let module = b.finish().unwrap();
+        let inputs = vec![
+            (
+                "a",
+                f16_tensor(&f32s(m * k, |i| (i as f32 * 0.7).sin()), &[m, k]),
+            ),
+            (
+                "w",
+                f16_tensor(
+                    &f32s(k * n, |i| ((i % 601) as f32) * 1e-3 - 0.3),
+                    &[w_dims[0] as usize, w_dims[1] as usize],
+                ),
+            ),
+        ];
+        let expect = onyxia_backend_ref::run_once(module.clone(), &inputs).unwrap();
+        let got: Vec<(String, Tensor)> = pollster::block_on(async {
+            let ctx = GpuContext::new().await.expect("GPU available");
+            let backend = WgpuBackend::new(ctx);
+            let mut session = backend.prepare(module.clone()).expect("prepare");
+            let dev_inputs: Vec<(&str, _)> = inputs
+                .iter()
+                .map(|(n, t)| (*n, session.upload(t).expect("upload")))
+                .collect();
+            let outs = session.run(&dev_inputs).await.expect("run");
+            let mut host = Vec::new();
+            for (n, t) in outs {
+                host.push((n, session.download(&t).await.expect("download")));
+            }
+            host
+        });
+        let (e, g) = (expect[0].1.to_f32().unwrap(), got[0].1.to_f32().unwrap());
+        assert_eq!(e.len(), g.len(), "m={m} k={k} n={n} trans_b={trans_b}");
+        for (i, (x, y)) in e.iter().zip(&g).enumerate() {
+            assert!(
+                (x - y).abs() <= 2e-2 + 1e-2 * x.abs(),
+                "m={m} k={k} n={n} trans_b={trans_b} [{i}]: ref {x} vs gpu {y}"
+            );
+        }
+    }
+}
