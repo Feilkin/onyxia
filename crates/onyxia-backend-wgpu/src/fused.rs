@@ -110,6 +110,11 @@ pub fn standard_kernels() -> KernelRegistry {
         ("com.microsoft.MatMulNBits", Box::new(MatMulNBitsKernel)),
         (onyxia_ir::fuse::ADD_RMS_NORM, Box::new(AddRmsNormKernel)),
         (onyxia_ir::fuse::GELU_MUL, Box::new(GeluMulKernel)),
+        (onyxia_ir::fuse::CAST_RMS_NORM, Box::new(RmsNormKernel)),
+        (
+            onyxia_ir::fuse::CAST_ADD_RMS_NORM,
+            Box::new(AddRmsNormKernel),
+        ),
     ])
 }
 
@@ -400,6 +405,9 @@ impl CompositeKernel for SoftmaxKernel {
 struct RmsNormKernel;
 
 impl CompositeKernel for RmsNormKernel {
+    fn handles_f16(&self) -> bool {
+        true
+    }
     fn execute(
         &self,
         session: &mut WgpuSession,
@@ -412,9 +420,14 @@ impl CompositeKernel for RmsNormKernel {
                 "SimplifiedLayerNormalization expects 2 inputs".into(),
             ));
         };
-        if x.dtype != DataType::F32 {
-            return Err(Error::Unsupported("fused rms-norm is f32-only".into()));
-        }
+        // Activation f32 or native f16 (the CastRmsNorm form); the weight
+        // is f32 either way, and so is the arithmetic.
+        let e = float_elem(session, x.dtype)?.filter(|_| w.dtype == DataType::F32);
+        let Some(e) = e else {
+            return Err(Error::Unsupported(
+                "fused rms-norm needs an f32/native-f16 activation and f32 weight".into(),
+            ));
+        };
         let Some(&cols) = x.shape.last() else {
             return Err(Error::Unsupported("fused rms-norm on a scalar".into()));
         };
@@ -424,8 +437,8 @@ impl CompositeKernel for RmsNormKernel {
         let out = session.alloc_out(outs[0].0, outs[0].1.clone());
         let imm = Imm::new().u(rows as u32).u(cols as u32).f(eps);
         session.dispatch_rows(
-            "fused_rmsnorm_row_f32",
-            rmsnorm_row_wgsl,
+            &format!("fused_rmsnorm_row_{e}"),
+            || rmsnorm_row_wgsl(e),
             &[&x.buffer, &w.buffer, &out.buffer],
             &imm,
             rows,
@@ -484,6 +497,9 @@ impl CompositeKernel for GeluKernel {
 struct AddRmsNormKernel;
 
 impl CompositeKernel for AddRmsNormKernel {
+    fn handles_f16(&self) -> bool {
+        true
+    }
     fn execute(
         &self,
         session: &mut WgpuSession,
@@ -494,11 +510,15 @@ impl CompositeKernel for AddRmsNormKernel {
         let [a, b, w] = inputs else {
             return Err(Error::InvalidGraph("AddRmsNorm expects 3 inputs".into()));
         };
-        if a.dtype != DataType::F32 || a.shape != b.shape {
+        let e = float_elem(session, a.dtype)?
+            .filter(|_| b.dtype == a.dtype && w.dtype == DataType::F32 && a.shape == b.shape);
+        let Some(e) = e else {
             return Err(Error::Unsupported(
-                "fused add+rms-norm is f32-only, equal shapes".into(),
+                "fused add+rms-norm needs equal-shaped f32/native-f16 addends and an f32 \
+                 weight"
+                    .into(),
             ));
-        }
+        };
         let Some(&cols) = a.shape.last() else {
             return Err(Error::Unsupported("fused add+rms-norm on a scalar".into()));
         };
@@ -509,8 +529,8 @@ impl CompositeKernel for AddRmsNormKernel {
         let sum = session.alloc_out(outs[1].0, outs[1].1.clone());
         let imm = Imm::new().u(rows as u32).u(cols as u32).f(eps);
         session.dispatch_rows(
-            "fused_add_rmsnorm_row_f32",
-            add_rmsnorm_row_wgsl,
+            &format!("fused_add_rmsnorm_row_{e}"),
+            || add_rmsnorm_row_wgsl(e),
             &[&a.buffer, &b.buffer, &w.buffer, &sum.buffer, &y.buffer],
             &imm,
             rows,
@@ -1170,46 +1190,52 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
     )
 }
 
-fn add_rmsnorm_row_wgsl() -> String {
-    "
-struct P { rows: u32, cols: u32, eps: f32 }
+/// The residual sum is rounded to the activation dtype before it feeds
+/// the norm, as the unfused graph does (`sum` is what the next layer
+/// reads back).
+fn add_rmsnorm_row_wgsl(e: &str) -> String {
+    let en = enable_for(e);
+    format!(
+        "{en}
+struct P {{ rows: u32, cols: u32, eps: f32 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(0) var<storage, read> a: array<{e}>;
+@group(0) @binding(1) var<storage, read> b: array<{e}>;
 @group(0) @binding(2) var<storage, read> w: array<f32>;
-@group(0) @binding(3) var<storage, read_write> sum: array<f32>;
-@group(0) @binding(4) var<storage, read_write> out: array<f32>;
+@group(0) @binding(3) var<storage, read_write> sum: array<{e}>;
+@group(0) @binding(4) var<storage, read_write> out: array<{e}>;
 var<workgroup> scratch: array<f32, 256>;
 
 @compute @workgroup_size(256)
 fn main(@builtin(workgroup_id) wg: vec3<u32>,
-        @builtin(local_invocation_id) lid: vec3<u32>) {
+        @builtin(local_invocation_id) lid: vec3<u32>) {{
     let row = wg.x;
     let base = row * p.cols;
 
     // Residual sum, written out, and its mean of squares.
     var acc = 0.0;
-    for (var i = lid.x; i < p.cols; i = i + 256u) {
-        let v = a[base + i] + b[base + i];
+    for (var i = lid.x; i < p.cols; i = i + 256u) {{
+        let v = {e}(f32(a[base + i]) + f32(b[base + i]));
         sum[base + i] = v;
-        acc = acc + v * v;
-    }
+        let vf = f32(v);
+        acc = acc + vf * vf;
+    }}
     scratch[lid.x] = acc;
     workgroupBarrier();
-    for (var s = 128u; s > 0u; s = s >> 1u) {
-        if (lid.x < s) {
+    for (var s = 128u; s > 0u; s = s >> 1u) {{
+        if (lid.x < s) {{
             scratch[lid.x] = scratch[lid.x] + scratch[lid.x + s];
-        }
+        }}
         workgroupBarrier();
-    }
+    }}
     let inv = inverseSqrt(scratch[0] / f32(p.cols) + p.eps);
 
-    for (var i = lid.x; i < p.cols; i = i + 256u) {
-        out[base + i] = sum[base + i] * inv * w[i];
-    }
-}
+    for (var i = lid.x; i < p.cols; i = i + 256u) {{
+        out[base + i] = {e}(f32(sum[base + i]) * inv * w[i]);
+    }}
+}}
 "
-    .to_string()
+    )
 }
 
 fn gelu_mul_wgsl(tanh_form: bool, e: &str) -> String {
@@ -1336,41 +1362,43 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
     .to_string()
 }
 
-fn rmsnorm_row_wgsl() -> String {
-    "
-struct P { rows: u32, cols: u32, eps: f32 }
+fn rmsnorm_row_wgsl(e: &str) -> String {
+    let en = enable_for(e);
+    format!(
+        "{en}
+struct P {{ rows: u32, cols: u32, eps: f32 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> x: array<f32>;
+@group(0) @binding(0) var<storage, read> x: array<{e}>;
 @group(0) @binding(1) var<storage, read> w: array<f32>;
-@group(0) @binding(2) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read_write> out: array<{e}>;
 var<workgroup> scratch: array<f32, 256>;
 
 @compute @workgroup_size(256)
 fn main(@builtin(workgroup_id) wg: vec3<u32>,
-        @builtin(local_invocation_id) lid: vec3<u32>) {
+        @builtin(local_invocation_id) lid: vec3<u32>) {{
     let row = wg.x;
     let base = row * p.cols;
 
     // Mean of squares.
     var sum = 0.0;
-    for (var i = lid.x; i < p.cols; i = i + 256u) {
-        let v = x[base + i];
+    for (var i = lid.x; i < p.cols; i = i + 256u) {{
+        let v = f32(x[base + i]);
         sum = sum + v * v;
-    }
+    }}
     scratch[lid.x] = sum;
     workgroupBarrier();
-    for (var s = 128u; s > 0u; s = s >> 1u) {
-        if (lid.x < s) {
+    for (var s = 128u; s > 0u; s = s >> 1u) {{
+        if (lid.x < s) {{
             scratch[lid.x] = scratch[lid.x] + scratch[lid.x + s];
-        }
+        }}
         workgroupBarrier();
-    }
+    }}
     let inv = inverseSqrt(scratch[0] / f32(p.cols) + p.eps);
 
-    for (var i = lid.x; i < p.cols; i = i + 256u) {
-        out[base + i] = x[base + i] * inv * w[i];
-    }
-}
+    for (var i = lid.x; i < p.cols; i = i + 256u) {{
+        out[base + i] = {e}(f32(x[base + i]) * inv * w[i]);
+    }}
+}}
 "
-    .to_string()
+    )
 }

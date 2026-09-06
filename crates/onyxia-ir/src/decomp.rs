@@ -63,6 +63,8 @@ pub fn standard_decompositions() -> DecompositionRegistry {
     r.register("com.microsoft.MatMulNBits", matmul_nbits);
     r.register(crate::fuse::ADD_RMS_NORM, add_rms_norm);
     r.register(crate::fuse::GELU_MUL, gelu_mul);
+    r.register(crate::fuse::CAST_RMS_NORM, cast_rms_norm);
+    r.register(crate::fuse::CAST_ADD_RMS_NORM, cast_add_rms_norm);
     r
 }
 
@@ -227,6 +229,28 @@ fn add_rms_norm(c: &Composite, inputs: &[ValueId], b: &mut GraphBuilder) -> Resu
 }
 
 /// `onyxia.GeluMul` (see [`crate::fuse`]): `gelu(x) * u`.
+/// `onyxia.CastRmsNorm`: the norm in f32 around a 16-bit activation.
+fn cast_rms_norm(c: &Composite, inputs: &[ValueId], b: &mut GraphBuilder) -> Result<Vec<ValueId>> {
+    let (x, w) = (inputs[0], inputs[1]);
+    let dt = b.ty(x).dtype;
+    let x32 = b.cast(x, DataType::F32)?;
+    let y = simplified_layer_norm(c, &[x32, w], b)?;
+    Ok(vec![b.cast(y[0], dt)?])
+}
+
+/// `onyxia.CastAddRmsNorm`: `sum = a + b` in the activation dtype, then
+/// [`cast_rms_norm`]; outputs `[y, sum]`.
+fn cast_add_rms_norm(
+    c: &Composite,
+    inputs: &[ValueId],
+    b: &mut GraphBuilder,
+) -> Result<Vec<ValueId>> {
+    let (x, skip, w) = (inputs[0], inputs[1], inputs[2]);
+    let sum = b.add(x, skip)?;
+    let y = cast_rms_norm(c, &[sum, w], b)?;
+    Ok(vec![y[0], sum])
+}
+
 fn gelu_mul(c: &Composite, inputs: &[ValueId], b: &mut GraphBuilder) -> Result<Vec<ValueId>> {
     let g = gelu(c, &inputs[..1], b)?;
     Ok(vec![b.mul(g[0], inputs[1])?])

@@ -18,18 +18,29 @@
 
 use crate::graph::{Composite, Module, Node, NodeId, NodeKind, Origin, SourceInfo, ValueId};
 use crate::prim::{BinaryOp, Prim};
-use crate::{AttrValue, Attrs};
+use crate::{AttrValue, Attrs, DataType};
 use std::collections::HashSet;
 
 pub const ADD_RMS_NORM: &str = "onyxia.AddRmsNorm";
 pub const GELU_MUL: &str = "onyxia.GeluMul";
+/// `Cast(f32) → SimplifiedLayerNormalization → Cast(back)` over a 16-bit
+/// activation, as the fp16 exports write every norm: inputs `[x, w]`
+/// (`x` f16, `w` f32), output `y` in `x`'s dtype; the norm itself runs
+/// in f32.
+pub const CAST_RMS_NORM: &str = "onyxia.CastRmsNorm";
+/// [`CAST_RMS_NORM`] with the residual `Add` folded in: inputs
+/// `[a, b, w]`, outputs `[y, sum]` (`sum = a + b` in the activation dtype,
+/// consumed by the next residual).
+pub const CAST_ADD_RMS_NORM: &str = "onyxia.CastAddRmsNorm";
 
 /// Rewrite fusable patterns whose fused composite the backend `supports`.
 /// Returns the number of fusions applied.
 pub fn fuse_composites(module: &mut Module, supports: &dyn Fn(&str) -> bool) -> usize {
     let want_add_norm = supports(ADD_RMS_NORM);
     let want_gelu_mul = supports(GELU_MUL);
-    if !want_add_norm && !want_gelu_mul {
+    let want_cast_norm = supports(CAST_RMS_NORM);
+    let want_cast_add_norm = supports(CAST_ADD_RMS_NORM);
+    if !want_add_norm && !want_gelu_mul && !want_cast_norm && !want_cast_add_norm {
         return 0;
     }
 
@@ -50,6 +61,13 @@ pub fn fuse_composites(module: &mut Module, supports: &dyn Fn(&str) -> bool) -> 
             _ => None,
         }
     };
+    // Sole consumer of a single-use value (for the trailing Cast).
+    let mut consumer: Vec<Option<NodeId>> = vec![None; module.values.len()];
+    for id in module.node_ids() {
+        for &v in &module.node(id).inputs {
+            consumer[v.index()] = Some(id);
+        }
+    }
 
     let mut dead: HashSet<NodeId> = HashSet::new();
     let mut new_nodes: Vec<Node> = Vec::new();
@@ -61,6 +79,87 @@ pub fn fuse_composites(module: &mut Module, supports: &dyn Fn(&str) -> bool) -> 
             continue;
         }
         let node = module.node(id);
+        // Cast(f32) → norm → Cast(f16) around a 16-bit activation: the
+        // fp16 exports' norm idiom. Matched before the plain Add+norm so
+        // the residual Add (in f16) can fold in as well.
+        if let NodeKind::Composite(c) = &node.kind
+            && (want_cast_norm || want_cast_add_norm)
+            && c.name == "SimplifiedLayerNormalization"
+            && node.outputs.len() == 1
+            && let [x32, w] = node.inputs[..]
+            && uses[x32.index()] == 1
+            && let Some(cin_id) = producer(module, x32)
+            && !dead.contains(&cin_id)
+            && let NodeKind::Prim(Prim::Cast { to: DataType::F32 }) = module.node(cin_id).kind
+            && let [x16] = module.node(cin_id).inputs[..]
+            && module.value(x16).ty.dtype == DataType::F16
+            && module.value(w).ty.dtype == DataType::F32
+            && uses[node.outputs[0].index()] == 1
+            && let Some(cout_id) = consumer[node.outputs[0].index()]
+            && !dead.contains(&cout_id)
+            && let NodeKind::Prim(Prim::Cast { to: DataType::F16 }) = module.node(cout_id).kind
+            && module.node(cout_id).outputs.len() == 1
+        {
+            let y16 = module.node(cout_id).outputs[0];
+            let eps = c.attrs.float_or("epsilon", 1e-5).unwrap_or(1e-5);
+            let attrs = Attrs::new().with("epsilon", AttrValue::Float(eps));
+            // Residual Add feeding the cast: fold it in when its addends
+            // match the sum exactly (no broadcasting in the kernel).
+            let add = producer(module, x16).filter(|&add_id| {
+                let add = module.node(add_id);
+                !dead.contains(&add_id)
+                    && add.kind == NodeKind::Prim(Prim::Binary(BinaryOp::Add))
+                    && add.outputs.len() == 1
+                    && add.inputs.len() == 2
+                    && add
+                        .inputs
+                        .iter()
+                        .all(|&i| module.value(i).ty == module.value(x16).ty)
+            });
+            let idx = new_nodes.len();
+            match add {
+                Some(add_id) if want_cast_add_norm => {
+                    let [a, b] = module.node(add_id).inputs[..] else {
+                        unreachable!()
+                    };
+                    new_nodes.push(Node {
+                        kind: NodeKind::Composite(Composite {
+                            name: CAST_ADD_RMS_NORM.into(),
+                            attrs,
+                        }),
+                        inputs: vec![a, b, w],
+                        outputs: vec![y16, x16],
+                        loc: SourceInfo {
+                            name: node.loc.name.clone(),
+                            op_type: Some("Add+Cast+SimplifiedLayerNormalization+Cast".into()),
+                        },
+                    });
+                    rewire.push((y16, idx, 0));
+                    rewire.push((x16, idx, 1));
+                    dead.insert(add_id);
+                }
+                _ if want_cast_norm => {
+                    new_nodes.push(Node {
+                        kind: NodeKind::Composite(Composite {
+                            name: CAST_RMS_NORM.into(),
+                            attrs,
+                        }),
+                        inputs: vec![x16, w],
+                        outputs: vec![y16],
+                        loc: SourceInfo {
+                            name: node.loc.name.clone(),
+                            op_type: Some("Cast+SimplifiedLayerNormalization+Cast".into()),
+                        },
+                    });
+                    rewire.push((y16, idx, 0));
+                }
+                _ => continue,
+            }
+            dead.insert(id);
+            dead.insert(cin_id);
+            dead.insert(cout_id);
+            continue;
+        }
         match &node.kind {
             NodeKind::Composite(c) if want_add_norm && c.name == "SimplifiedLayerNormalization" => {
                 let [sum, w] = node.inputs[..] else { continue };
