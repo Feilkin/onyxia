@@ -1133,7 +1133,8 @@ fn compute(e: u32) -> f32 {{
 /// the packed row stride in words (K padded to whole blocks).
 /// Bindings: 0=a (vec4 view, K/4), 1=b (packed `[N, rw]` words),
 /// 2=scales (`[N, nb]`), [3=zp (packed `[N, nb]` nibbles)], last=dst.
-pub fn matmul_nbits_matvec(zp: bool) -> String {
+pub fn matmul_nbits_matvec(zp: bool, inp: MatElem, out: MatElem) -> String {
+    let (e, o, en) = (inp.wgsl(), out.wgsl(), enable_any(&[inp, out]));
     let (zp_bind, zp_expr, dst_slot) = if zp {
         (
             "@group(0) @binding(3) var<storage, read> zp: array<u32>;\n",
@@ -1144,13 +1145,13 @@ pub fn matmul_nbits_matvec(zp: bool) -> String {
         ("", "8.0", 3)
     };
     format!(
-        "
+        "{en}
 struct P {{ n: u32, k8: u32, rw: u32, bs8: u32, nb: u32, ks: u32, chunk8: u32, x_wgs: u32 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> a: array<vec4<f32>>;
+@group(0) @binding(0) var<storage, read> a: array<vec4<{e}>>;
 @group(0) @binding(1) var<storage, read> b: array<u32>;
-@group(0) @binding(2) var<storage, read> scales: array<f32>;
-{zp_bind}@group(0) @binding({dst_slot}) var<storage, read_write> dst: array<f32>;
+@group(0) @binding(2) var<storage, read> scales: array<{e}>;
+{zp_bind}@group(0) @binding({dst_slot}) var<storage, read_write> dst: array<{o}>;
 var<workgroup> scratch: array<f32, 256>;
 
 @compute @workgroup_size(256)
@@ -1176,10 +1177,10 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
         for (var i = k0 + lane; i < k1; i += 64u) {{
             let w = b[n * p.rw + i];
             let blk = i / p.bs8;
-            let s = scales[n * p.nb + blk];
+            let s = f32(scales[n * p.nb + blk]);
             let z = {zp_expr};
-            let a0 = a[i * 2u];
-            let a1 = a[i * 2u + 1u];
+            let a0 = vec4<f32>(a[i * 2u]);
+            let a1 = vec4<f32>(a[i * 2u + 1u]);
             let q0 = vec4<f32>(f32(w & 0xfu), f32((w >> 4u) & 0xfu),
                                f32((w >> 8u) & 0xfu), f32((w >> 12u) & 0xfu));
             let q1 = vec4<f32>(f32((w >> 16u) & 0xfu), f32((w >> 20u) & 0xfu),
@@ -1197,7 +1198,7 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
         workgroupBarrier();
     }}
     if (lane == 0u && live) {{
-        dst[slice * p.n + n] = scratch[lid.x];
+        dst[slice * p.n + n] = {o}(scratch[lid.x]);
     }}
 }}
 "
@@ -1214,7 +1215,8 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
 /// Bindings: 0=a (`[M, K]`), 1=b (packed `[N, rw]` words, `rw` = K padded
 /// to whole blocks, in words), 2=scales (`[N, nb]`), [3=zp (packed
 /// `[N, nb]` nibbles)], last=out.
-pub fn matmul_nbits_tiled(zp: bool) -> String {
+pub fn matmul_nbits_tiled(zp: bool, inp: MatElem, out: MatElem) -> String {
+    let (e, o, en) = (inp.wgsl(), out.wgsl(), enable_any(&[inp, out]));
     let (zp_bind, zp_expr, out_slot) = if zp {
         (
             "@group(0) @binding(3) var<storage, read> zp: array<u32>;\n",
@@ -1225,13 +1227,13 @@ pub fn matmul_nbits_tiled(zp: bool) -> String {
         ("", "8.0", 3)
     };
     format!(
-        "
+        "{en}
 struct P {{ m: u32, n: u32, k8: u32, rw: u32, bs8: u32, nb: u32, chunk: u32 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> a: array<f32>;
+@group(0) @binding(0) var<storage, read> a: array<{e}>;
 @group(0) @binding(1) var<storage, read> b: array<u32>;
-@group(0) @binding(2) var<storage, read> scales: array<f32>;
-{zp_bind}@group(0) @binding({out_slot}) var<storage, read_write> out: array<f32>;
+@group(0) @binding(2) var<storage, read> scales: array<{e}>;
+{zp_bind}@group(0) @binding({out_slot}) var<storage, read_write> out: array<{o}>;
 // k-major vec4 tiles: As[k][m/4], Bs[k][n/4]; 32 k × 64 columns each.
 var<workgroup> As: array<vec4<f32>, 512>;
 var<workgroup> Bs: array<vec4<f32>, 512>;
@@ -1257,7 +1259,7 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
             for (var j = 0u; j < 8u; j += 1u) {{
                 let kk = k0 + kq + j;
                 var v = 0.0;
-                if (m < p.m && kk < k_hi) {{ v = a[m * k + kk]; }}
+                if (m < p.m && kk < k_hi) {{ v = f32(a[m * k + kk]); }}
                 As[(kq + j) * 16u + mm / 4u][mm % 4u] = v;
             }}
         }}
@@ -1271,7 +1273,7 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
             if (n < p.n && word * 8u < k_hi) {{
                 let w = b[n * p.rw + word];
                 let blk = word / p.bs8;
-                let s = scales[n * p.nb + blk];
+                let s = f32(scales[n * p.nb + blk]);
                 let z = {zp_expr};
                 for (var j = 0u; j < 8u; j += 1u) {{
                     vals[j] = (f32((w >> (j * 4u)) & 0xfu) - z) * s;
@@ -1298,7 +1300,7 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
         if (m < p.m) {{
             for (var j = 0u; j < 4u; j += 1u) {{
                 let n = n0 + tx * 4u + j;
-                if (n < p.n) {{ out[out_base + m * p.n + n] = acc[i][j]; }}
+                if (n < p.n) {{ out[out_base + m * p.n + n] = {o}(acc[i][j]); }}
             }}
         }}
     }}

@@ -133,6 +133,9 @@ fn check_rows(rows: usize, what: &str) -> Result<()> {
 struct MatMulNBitsKernel;
 
 impl CompositeKernel for MatMulNBitsKernel {
+    fn handles_f16(&self) -> bool {
+        true
+    }
     fn execute(
         &self,
         session: &mut WgpuSession,
@@ -159,11 +162,17 @@ impl CompositeKernel for MatMulNBitsKernel {
                 b.dtype
             )));
         }
-        if a.dtype != DataType::F32 || scales.dtype != DataType::F32 {
-            return Err(Error::Unsupported(
-                "fused MatMulNBits: f32 activations and scales only".into(),
-            ));
-        }
+        let elem = match float_elem(session, a.dtype)? {
+            Some("f32") if scales.dtype == DataType::F32 => kernels::MatElem::F32,
+            Some("f16") if scales.dtype == DataType::F16 => kernels::MatElem::F16,
+            _ => {
+                return Err(Error::Unsupported(
+                    "fused MatMulNBits: activations and scales must both be f32 or \
+                     native f16"
+                        .into(),
+                ));
+            }
+        };
         if bs % 8 != 0 || k % 8 != 0 || k == 0 || n == 0 {
             return Err(Error::Unsupported(format!(
                 "fused MatMulNBits: K={k} and block_size={bs} must be multiples of 8"
@@ -188,7 +197,7 @@ impl CompositeKernel for MatMulNBitsKernel {
         let out = session.alloc_out(outs[0].0, outs[0].1.clone());
 
         if m == 1 {
-            matvec_nbits(session, a, b, scales, zp, &out, n, k, bs)?;
+            matvec_nbits(session, a, b, scales, zp, &out, n, k, bs, elem)?;
             return Ok(vec![out]);
         }
 
@@ -232,13 +241,15 @@ impl CompositeKernel for MatMulNBitsKernel {
         }
         buffers.push(dst);
         let has_zp = zp.is_some();
+        let out_elem = if ks > 1 { kernels::MatElem::F32 } else { elem };
         session.dispatch_grid(
-            if has_zp {
-                "fused_matmul_nbits_tiled_zp_f32"
-            } else {
-                "fused_matmul_nbits_tiled_f32"
-            },
-            || kernels::matmul_nbits_tiled(has_zp),
+            &format!(
+                "fused_matmul_nbits_tiled{}_{}_{}",
+                if has_zp { "_zp" } else { "" },
+                elem.tag(),
+                out_elem.tag()
+            ),
+            || kernels::matmul_nbits_tiled(has_zp, elem, out_elem),
             &buffers,
             &imm,
             [grid_x as u32, grid_y as u32, ks as u32],
@@ -247,8 +258,8 @@ impl CompositeKernel for MatMulNBitsKernel {
             let (imm, n_out) = crate::session::size_imm(size);
             let imm = imm.u(ks as u32);
             session.dispatch(
-                "matvec_reduce_f32",
-                || kernels::matvec_reduce(kernels::MatElem::F32),
+                &format!("matvec_reduce_{}", elem.tag()),
+                || kernels::matvec_reduce(elem),
                 &[&scratch, &out.buffer],
                 &imm,
                 n_out,
@@ -274,6 +285,7 @@ fn matvec_nbits(
     n: usize,
     k: usize,
     bs: usize,
+    elem: kernels::MatElem,
 ) -> Result<()> {
     // Split K only for very narrow N: measured on the 1B q4 (N ≥ 256,
     // 64+ workgroups), the split's `matvec_reduce` dispatch costs more
@@ -312,13 +324,15 @@ fn matvec_nbits(
     }
     buffers.push(dst);
     let has_zp = zp.is_some();
+    let out_elem = if ks > 1 { kernels::MatElem::F32 } else { elem };
     session.dispatch_grid(
-        if has_zp {
-            "fused_matmul_nbits_matvec_zp_f32"
-        } else {
-            "fused_matmul_nbits_matvec_f32"
-        },
-        || kernels::matmul_nbits_matvec(has_zp),
+        &format!(
+            "fused_matmul_nbits_matvec{}_{}_{}",
+            if has_zp { "_zp" } else { "" },
+            elem.tag(),
+            out_elem.tag()
+        ),
+        || kernels::matmul_nbits_matvec(has_zp, elem, out_elem),
         &buffers,
         &imm,
         grid,
@@ -327,8 +341,8 @@ fn matvec_nbits(
         let (imm, size) = crate::session::size_imm(n);
         let imm = imm.u(ks as u32);
         session.dispatch(
-            "matvec_reduce_f32",
-            || kernels::matvec_reduce(kernels::MatElem::F32),
+            &format!("matvec_reduce_{}", elem.tag()),
+            || kernels::matvec_reduce(elem),
             &[&scratch, &out.buffer],
             &imm,
             size,
