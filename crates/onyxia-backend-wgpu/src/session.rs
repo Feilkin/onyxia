@@ -133,7 +133,13 @@ impl onyxia_ir::Backend for WgpuBackend {
         })?;
         // Weight tables larger than one storage binding (mobile GPUs cap it
         // at 128 MiB; the embedding table is 671 MB) become row chunks.
-        let max_binding = self.ctx.device.limits().max_storage_buffer_binding_size as usize;
+        // `ONYXIA_MAX_BINDING=<bytes>` forces a smaller limit (to exercise the
+        // mobile path on a desktop GPU).
+        let max_binding = std::env::var("ONYXIA_MAX_BINDING")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(usize::MAX)
+            .min(self.ctx.device.limits().max_storage_buffer_binding_size as usize);
         onyxia_ir::split_large_tables(&mut module, max_binding)?;
         onyxia_ir::validate::validate(&module)?;
         let order = module.topo_order()?;

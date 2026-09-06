@@ -1351,3 +1351,80 @@ fn split_matmul_table_matches_whole() {
     let a = Tensor::from_f32(&f32s(24, |i| (i as f32 * 0.11).cos()), &[3, 8]).unwrap();
     diff_test(module, vec![("a", a)]);
 }
+
+/// Pack low-nibble-first u4 values.
+fn pack_u4(vals: &[u8]) -> Vec<u8> {
+    let mut out = vec![0u8; vals.len().div_ceil(2)];
+    for (i, &v) in vals.iter().enumerate() {
+        out[i / 2] |= (v & 0xF) << ((i % 2) * 4);
+    }
+    out
+}
+
+/// A 4-bit table (the GatherBlockQuantized embedding) split into chunks:
+/// the chunk results are merged as u8 and cast back before dequantizing.
+#[test]
+#[ignore = "requires GPU"]
+fn split_u4_gather_table_matches_whole() {
+    let mut bld = GraphBuilder::new();
+    let vals: Vec<u8> = (0..1000).map(|i| (i * 7 % 16) as u8).collect();
+    let table = bld
+        .constant(TensorType::of(DataType::U4, &[125, 8]), pack_u4(&vals))
+        .unwrap();
+    let ids = bld.input("ids", TensorType::of(DataType::I64, &[2, 5]));
+    let y = bld.gather(table, ids, 0).unwrap();
+    let y = bld.prim(Prim::Cast { to: DataType::F32 }, &[y]).unwrap();
+    bld.output("y", y);
+    let mut module = bld.finish().unwrap();
+    // 4-byte rows, 100-byte cap → 25 rows per chunk → 5 chunks.
+    assert_eq!(onyxia_ir::split_large_tables(&mut module, 100).unwrap(), 1);
+    let ids = Tensor::from_i64(&[0, 24, 25, 49, 50, 99, 100, 124, -1, -125], &[2, 5]).unwrap();
+    diff_test(module, vec![("ids", ids)]);
+}
+
+/// The 4-bit lm_head: MatMulNBits weights/scales/zero points chunked by N
+/// and run through the fused kernels (matvec at M=1, tiled at M=3).
+#[test]
+#[ignore = "requires GPU"]
+fn split_matmul_nbits_matches_whole() {
+    let (k, n, bs, nb) = (64usize, 125usize, 32usize, 2usize);
+    let q: Vec<u8> = (0..n * k).map(|i| (i * 5 % 16) as u8).collect();
+    let scales = f32s(n * nb, |i| 0.01 + (i % 7) as f32 * 0.005);
+    let zp: Vec<u8> = (0..n * nb).map(|i| (i * 3 % 16) as u8).collect();
+    for m in [1usize, 3] {
+        let mut bld = GraphBuilder::new();
+        let a = bld.input("a", TensorType::of(DataType::F32, &[m as u64, k as u64]));
+        let b = bld
+            .constant(
+                TensorType::of(DataType::U4, &[n as u64, nb as u64, bs as u64]),
+                pack_u4(&q),
+            )
+            .unwrap();
+        let s = bld.const_f32(&scales, &[(n * nb) as u64]).unwrap();
+        let z = bld
+            .constant(
+                TensorType::of(DataType::U4, &[n as u64, nb as u64]),
+                pack_u4(&zp),
+            )
+            .unwrap();
+        let attrs = Attrs::new()
+            .with("K", AttrValue::Int(k as i64))
+            .with("N", AttrValue::Int(n as i64))
+            .with("bits", AttrValue::Int(4))
+            .with("block_size", AttrValue::Int(bs as i64));
+        let y = bld
+            .composite(
+                "com.microsoft.MatMulNBits",
+                attrs,
+                &[a, b, s, z],
+                vec![TensorType::of(DataType::F32, &[m as u64, n as u64])],
+            )
+            .unwrap()[0];
+        bld.output("y", y);
+        let mut module = bld.finish().unwrap();
+        // 32-byte weight rows, 1000-byte cap → 31 rows per chunk → 5 chunks.
+        assert_eq!(onyxia_ir::split_large_tables(&mut module, 1000).unwrap(), 1);
+        let a = Tensor::from_f32(&f32s(m * k, |i| (i as f32 * 0.11).cos()), &[m, k]).unwrap();
+        diff_test(module, vec![("a", a)]);
+    }
+}

@@ -73,11 +73,12 @@ lower straight to primitives in `onyxia-lower/src/rules/`.
    of any composite the backend lacks a kernel for, recursively, at
    `prepare` time. A composite with neither is a compile-time error.
    **Table splitting** (`split::split_large_tables`) is the other
-   backend-driven rewrite: a `Gather` table or transposed-`MatMul` weight
-   larger than the device's storage-binding limit (128 MiB on mobile Vulkan,
-   versus a 671 MB embedding table) becomes row chunks — chunked gathers
-   merged by range selects, chunked matmuls concatenated — built from
-   existing primitives, so the interpreter checks the rewrite.
+   backend-driven rewrite: a `Gather` table or a transposed `MatMul` /
+   `MatMulNBits` weight larger than the device's storage-binding limit
+   (128 MiB on mobile Vulkan, versus a 671 MB embedding table) becomes row
+   chunks — chunked gathers merged by range selects (4-bit ones merged as
+   8-bit and cast back), chunked heads concatenated — built from existing
+   primitives, so the interpreter checks the rewrite.
 
 Every fused kernel differential-tests against its own decomposition
 on-device (`fused_kernels_match_decompositions`).

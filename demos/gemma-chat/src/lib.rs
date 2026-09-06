@@ -60,6 +60,30 @@ type ModelSource = PathBuf;
 #[cfg(target_arch = "wasm32")]
 type ModelSource = String;
 
+/// Display name from the model directory: `gemma-3-1b-it-ONNX-GQA` →
+/// `Gemma 3 1B`, `gemma-3-270m-it-ONNX` → `Gemma 3 270M`.
+#[cfg(not(target_arch = "wasm32"))]
+fn model_name(dir: &std::path::Path) -> String {
+    let stem = dir.file_name().and_then(|n| n.to_str()).unwrap_or("model");
+    let words: Vec<String> = stem
+        .split('-')
+        .take(3)
+        .map(|w| {
+            let mut cs = w.chars();
+            match cs.next() {
+                Some(c) if c.is_ascii_digit() => w.to_ascii_uppercase(),
+                Some(c) => c.to_uppercase().chain(cs).collect(),
+                None => String::new(),
+            }
+        })
+        .collect();
+    words.join(" ")
+}
+#[cfg(target_arch = "wasm32")]
+fn model_name(_base_url: &str) -> String {
+    "Gemma 3 270M".to_string()
+}
+
 const MAX_TOKENS: usize = 512;
 const MAX_SEQ_LEN: usize = 2048;
 
@@ -115,6 +139,8 @@ struct ChatApp {
     /// Index into [`theme::STAGE_LABELS`] for the segmented progress bar.
     loading_stage: usize,
     gpu_name: String,
+    /// Model name shown in the header (`Gemma 3 270M`), from the model dir.
+    model_name: String,
     /// Weight precision shown in the header (`fp32` / `q4`).
     precision: String,
     last_tokens_per_sec: Option<f64>,
@@ -142,6 +168,7 @@ struct ChatApp {
 
 impl ChatApp {
     fn new(cc: &eframe::CreationContext, source: ModelSource, demo: bool) -> Self {
+        let model_name = model_name(&source);
         let (request_tx, request_rx) = async_mpsc::unbounded::<InferenceRequest>();
         let (event_tx, event_rx) = mpsc::channel::<InferenceEvent>();
         let egui_ctx = cc.egui_ctx.clone();
@@ -204,6 +231,7 @@ impl ChatApp {
             loading_message: theme::STAGE_LABELS[1].to_string(),
             loading_stage: 1,
             gpu_name: String::new(),
+            model_name,
             precision: "fp32".to_string(),
             last_tokens_per_sec: None,
             last_ttft_ms: None,
@@ -243,7 +271,7 @@ impl ChatApp {
         } else {
             self.gpu_name.clone()
         };
-        format!("Gemma 3 270M · {} · {device}", self.precision)
+        format!("{} · {} · {device}", self.model_name, self.precision)
     }
 
     fn set_theme(&mut self, ctx: &egui::Context, theme: Theme) {
@@ -1361,7 +1389,14 @@ fn android_main(app: android_activity::AndroidApp) {
         .external_data_path()
         .or_else(|| app.internal_data_path())
         .unwrap_or_else(|| PathBuf::from("/sdcard"));
-    let model_dir = base.join("gemma-3-270m-it-ONNX");
+    // First model directory present, in preference order. To demo the other
+    // one, move it aside with `adb shell mv` (or delete it).
+    const CANDIDATES: [&str; 2] = ["gemma-3-1b-it-ONNX-GQA", "gemma-3-270m-it-ONNX"];
+    let model_dir = CANDIDATES
+        .iter()
+        .map(|d| base.join(d))
+        .find(|d| d.join("onnx").is_dir())
+        .unwrap_or_else(|| base.join(CANDIDATES[1]));
     log::info!("model dir: {}", model_dir.display());
     let options = eframe::NativeOptions {
         android_app: Some(app.clone()),

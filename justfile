@@ -48,18 +48,19 @@ android-apk:
 android-install: android-apk
     {{android_env}} adb install -r target/release/apk/gemma-chat.apk
 
-# Copy the 270m model into the app's external files dir (fp32, ~1.1 GB,
-# one-time). The app is started once first so Android creates `files/` owned
-# by the app uid; a dir created by `adb shell mkdir` is owned by `shell` and
-# unreadable from inside the app. `just android-push-model model_q4` pushes
-# the 4-bit export instead (the app prefers model.onnx when both are there).
-android-push-model MODEL="model": android-install
+# Copy a model into the app's external files dir (one-time per model). The
+# app is started once first so Android creates `files/` owned by the app
+# uid; a dir created by `adb shell mkdir` is owned by `shell` and unreadable
+# from inside the app. `just android-push-model gemma-3-1b-it-ONNX-GQA
+# model_q4` pushes the 1B 4-bit export; the app prefers model.onnx when both
+# exports are in a directory.
+android-push-model DIR="gemma-3-270m-it-ONNX" MODEL="model": android-install
     {{android_env}} adb shell am start -n {{android_pkg}}/android.app.NativeActivity
     sleep 3
     {{android_env}} adb shell am force-stop {{android_pkg}}
-    {{android_env}} adb shell mkdir -p /sdcard/Android/data/{{android_pkg}}/files/gemma-3-270m-it-ONNX/onnx
-    {{android_env}} adb push models/gemma-3-270m-it-ONNX/tokenizer.json models/gemma-3-270m-it-ONNX/chat_template.jinja /sdcard/Android/data/{{android_pkg}}/files/gemma-3-270m-it-ONNX/
-    {{android_env}} adb push models/gemma-3-270m-it-ONNX/onnx/{{MODEL}}.onnx models/gemma-3-270m-it-ONNX/onnx/{{MODEL}}.onnx_data /sdcard/Android/data/{{android_pkg}}/files/gemma-3-270m-it-ONNX/onnx/
+    {{android_env}} adb shell mkdir -p /sdcard/Android/data/{{android_pkg}}/files/{{DIR}}/onnx
+    {{android_env}} adb push models/{{DIR}}/tokenizer.json models/{{DIR}}/chat_template.jinja /sdcard/Android/data/{{android_pkg}}/files/{{DIR}}/
+    {{android_env}} adb push models/{{DIR}}/onnx/{{MODEL}}.onnx models/{{DIR}}/onnx/{{MODEL}}.onnx_data /sdcard/Android/data/{{android_pkg}}/files/{{DIR}}/onnx/
 
 # Launch the app and tail its logcat output
 android-run:

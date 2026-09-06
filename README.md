@@ -140,8 +140,9 @@ cargo run -p onyxia-cli -- ir-dot model.onnx -o module.dot
 
 ## Demos
 
-`demos/gemma-chat` — egui chat UI running Gemma 3 270m fp32, native, in
-the browser (WebGPU, Chrome 149+) and on Android (Vulkan):
+`demos/gemma-chat` — egui chat UI running Gemma 3 270m fp32 (or the 1B q4),
+native, in the browser (WebGPU, Chrome 149+) and on Android (Vulkan; 1B q4
+at 16 tok/s on an Adreno 730):
 
 ```bash
 cargo run --release -p gemma-chat -- models/gemma-3-270m-it-ONNX   # native

@@ -76,14 +76,18 @@ fp32 model parses in about 3 GB of RAM):
 
 ```sh
 just android-install       # cargo apk build --release + adb install
-just android-push-model    # copies models/gemma-3-270m-it-ONNX to the app's files dir (once)
+just android-push-model    # copies models/gemma-3-270m-it-ONNX (fp32) to the app's files dir
+just android-push-model gemma-3-1b-it-ONNX-GQA model_q4   # the 1B, 4-bit
 just android-run           # launches the activity and tails logcat
 ```
 
-The model lives in the app's external files directory,
-`/sdcard/Android/data/games.bilberry.onyxia.gemma/files/gemma-3-270m-it-ONNX`,
-which `adb push` can write without any storage permission (the app has to
-have created `files/` first — the recipe starts it once). The Rust side logs
+Models live in the app's external files directory,
+`/sdcard/Android/data/games.bilberry.onyxia.gemma/files/<model dir>`, which
+`adb push` can write without any storage permission (the app has to have
+created `files/` first — the recipe starts it once). The app loads the first
+directory present out of `gemma-3-1b-it-ONNX-GQA`, `gemma-3-270m-it-ONNX`,
+preferring `model.onnx` over `model_q4.onnx` inside it; to demo the other
+model, move the directory aside with `adb shell mv`. The Rust side logs
 under the `gemma-chat` logcat tag. The soft keyboard opens when the prompt
 field gets focus; the header, composer and system-bar/keyboard insets come
 from the activity's content rect.
@@ -94,14 +98,17 @@ Measured on a OnePlus 10T (Snapdragon 8+ Gen 1, Adreno 730, Android 15):
 |-----------|-------------|-------------------|----------|
 | 270m fp32 | 11–19 tok/s | 1.5 s             | 1.8 GB   |
 | 270m q4   | 22 tok/s    | 3.4 s             | 1.4 GB   |
+| 1B q4     | 16 tok/s    | 3.1 s             | 0.9 GB   |
 
-Mobile Vulkan drivers cap a single storage-buffer binding at 128 MiB, well
-under the 671 MB embedding table (which the q4 export keeps in fp32 as the
-tied lm_head). The wgpu session asks the IR to split such tables into row
-chunks (`onyxia_ir::split_large_tables`: chunked gathers merged by range
-selects, chunked transposed matmuls concatenated), so both exports run
-unchanged. The 1B's embedding is 151 MB even at 4 bits and would need the
-same treatment for `MatMulNBits`, which is not done. The `ONYXIA_*`
+The 1B q4 answers well; the 270m q4 does not (see above), so for the small
+model use fp32. Mobile Vulkan drivers cap a single storage-buffer binding
+at 128 MiB, under the 671 MB fp32 embedding table (which the 270m q4 export
+keeps in fp32 as the tied lm_head) and under the 1B's 151 MB 4-bit one. The
+wgpu session asks the IR to split such tables into row chunks
+(`onyxia_ir::split_large_tables`: chunked gathers merged by range selects,
+chunked `MatMul`/`MatMulNBits` heads concatenated), so all three exports run
+unchanged; `ONYXIA_MAX_BINDING=134217728` forces the same path on a desktop
+GPU, where the 1B q4 output is identical to the unsplit run. The `ONYXIA_*`
 fallbacks (no f16, no int64, no push constants) are exercised by the wgpu
 tests, so an older driver should still run.
 
