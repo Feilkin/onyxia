@@ -18,7 +18,7 @@ use onyxia_ir::graph::{Module, NodeId, NodeKind, Origin, ValueId};
 use onyxia_ir::interp::{Tensor, bind_shapes};
 use onyxia_ir::prim::{BinaryOp, CmpOp, Prim, ReduceOp, UnaryOp};
 use onyxia_ir::{DataType, Error, Result, Session as _};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// A device-resident tensor handle. Cheap to clone (buffer is shared).
@@ -128,9 +128,13 @@ impl onyxia_ir::Backend for WgpuBackend {
         let kernels = self.kernels.clone();
         // Fuse patterns this backend has kernels for, then legalize.
         onyxia_ir::fuse_composites(&mut module, &|name| kernels.contains(name));
-        let module = onyxia_ir::inline_composites(module, &self.decompositions, &|name| {
+        let mut module = onyxia_ir::inline_composites(module, &self.decompositions, &|name| {
             kernels.contains(name)
         })?;
+        // Weight tables larger than one storage binding (mobile GPUs cap it
+        // at 128 MiB; the embedding table is 671 MB) become row chunks.
+        let max_binding = self.ctx.device.limits().max_storage_buffer_binding_size as usize;
+        onyxia_ir::split_large_tables(&mut module, max_binding)?;
         onyxia_ir::validate::validate(&module)?;
         let order = module.topo_order()?;
 
@@ -162,11 +166,22 @@ impl onyxia_ir::Backend for WgpuBackend {
         let mem = Arc::new(MemCounter::default());
         let mut consts: HashMap<ValueId, GpuTensor> = HashMap::new();
         let mut staged: u64 = 0;
+        // Constants nothing reads (e.g. a table replaced by its chunks) stay
+        // on the host.
+        let used: HashSet<ValueId> = module
+            .nodes
+            .iter()
+            .flat_map(|n| n.inputs.iter().copied())
+            .chain(module.outputs.iter().map(|(_, v)| *v))
+            .collect();
         for id in module.value_ids() {
             let def = module.value(id);
             let Origin::Const(cid) = def.origin else {
                 continue;
             };
+            if !used.contains(&id) {
+                continue;
+            }
             let layout = Layout::of(def.ty.dtype, self.ctx.caps)?; // fail early
             let host = onyxia_ir::interp::const_tensor(&module, cid)?;
             let data = to_phys(&host, self.ctx.caps)?;

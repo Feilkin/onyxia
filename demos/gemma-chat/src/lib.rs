@@ -74,6 +74,8 @@ enum InferenceEvent {
     },
     Ready {
         gpu_name: String,
+        /// `fp32` or `q4`, from the model file that was found.
+        precision: String,
         vram_bytes: u64,
     },
     Token(String),
@@ -113,6 +115,8 @@ struct ChatApp {
     /// Index into [`theme::STAGE_LABELS`] for the segmented progress bar.
     loading_stage: usize,
     gpu_name: String,
+    /// Weight precision shown in the header (`fp32` / `q4`).
+    precision: String,
     last_tokens_per_sec: Option<f64>,
     /// Time-to-first-token for the most recent answer.
     last_ttft_ms: Option<f64>,
@@ -131,6 +135,9 @@ struct ChatApp {
     /// When set (via `--shots`), drives a scripted screenshot sequence.
     #[cfg(not(target_arch = "wasm32"))]
     shots: Option<screenshot::Shots>,
+    /// The activity handle, for the system-bar / keyboard insets.
+    #[cfg(target_os = "android")]
+    android_app: Option<android_activity::AndroidApp>,
 }
 
 impl ChatApp {
@@ -140,6 +147,18 @@ impl ChatApp {
         let egui_ctx = cc.egui_ctx.clone();
         let stop_flag = Arc::new(AtomicBool::new(false));
         let task_stop_flag = Arc::clone(&stop_flag);
+
+        if let Some(rs) = &cc.wgpu_render_state {
+            let l = rs.adapter.limits();
+            log::info!(
+                "wgpu adapter limits: max_buffer_size={} max_storage_buffer_binding_size={} \
+                 max_storage_buffers_per_shader_stage={} max_compute_workgroup_storage_size={}",
+                l.max_buffer_size,
+                l.max_storage_buffer_binding_size,
+                l.max_storage_buffers_per_shader_stage,
+                l.max_compute_workgroup_storage_size
+            );
+        }
 
         // Install the custom fonts and night-theme visuals up front.
         let theme = Theme::Night;
@@ -185,6 +204,7 @@ impl ChatApp {
             loading_message: theme::STAGE_LABELS[1].to_string(),
             loading_stage: 1,
             gpu_name: String::new(),
+            precision: "fp32".to_string(),
             last_tokens_per_sec: None,
             last_ttft_ms: None,
             vram_bytes: 0,
@@ -194,7 +214,26 @@ impl ChatApp {
             stop_flag,
             #[cfg(not(target_arch = "wasm32"))]
             shots: None,
+            #[cfg(target_os = "android")]
+            android_app: None,
         }
+    }
+
+    /// Top and bottom insets in points: the area hidden behind the status
+    /// bar, the navigation bar and (while open) the soft keyboard. Zero
+    /// everywhere but Android, where `content_rect` tracks all three.
+    fn insets(&self, ctx: &egui::Context) -> (f32, f32) {
+        #[cfg(target_os = "android")]
+        if let Some(app) = &self.android_app {
+            let r = app.content_rect();
+            let ppp = ctx.pixels_per_point();
+            let h = ctx.viewport_rect().height() * ppp;
+            let top = (r.top as f32 / ppp).max(0.0);
+            let bottom = ((h - r.bottom as f32) / ppp).max(0.0);
+            return (top, bottom);
+        }
+        let _ = ctx;
+        (0.0, 0.0)
     }
 
     /// Model line shown in the header, e.g. `Gemma 3 270M · fp32 · <gpu>`.
@@ -204,7 +243,7 @@ impl ChatApp {
         } else {
             self.gpu_name.clone()
         };
-        format!("Gemma 3 270M · fp32 · {device}")
+        format!("Gemma 3 270M · {} · {device}", self.precision)
     }
 
     fn set_theme(&mut self, ctx: &egui::Context, theme: Theme) {
@@ -301,9 +340,11 @@ impl eframe::App for ChatApp {
                 }
                 InferenceEvent::Ready {
                     gpu_name,
+                    precision,
                     vram_bytes,
                 } => {
                     self.gpu_name = gpu_name;
+                    self.precision = precision;
                     self.vram_bytes = vram_bytes;
                     self.status = AppStatus::Ready;
                 }
@@ -352,23 +393,28 @@ impl eframe::App for ChatApp {
 
         let pal = self.theme.palette();
         let ctx = ui.ctx().clone();
+        let (inset_top, inset_bottom) = self.insets(&ctx);
+        let narrow = ui.available_width() < 560.0;
+        let side = if narrow { 16 } else { 28 };
 
         // ── header ──────────────────────────────────────────────────────────
         egui::Panel::top("header")
-            .frame(
-                egui::Frame::new()
-                    .fill(pal.bg)
-                    .inner_margin(Margin::symmetric(28, 16)),
-            )
-            .show_inside(ui, |ui| self.header(ui, &ctx, &pal));
+            .frame(egui::Frame::new().fill(pal.bg).inner_margin(Margin {
+                left: side,
+                right: side,
+                top: 16 + inset_top.round() as i8,
+                bottom: 16,
+            }))
+            .show_inside(ui, |ui| self.header(ui, &ctx, &pal, narrow));
 
         // ── composer ────────────────────────────────────────────────────────
         egui::Panel::bottom("composer")
-            .frame(
-                egui::Frame::new()
-                    .fill(pal.bg)
-                    .inner_margin(Margin::symmetric(28, 16)),
-            )
+            .frame(egui::Frame::new().fill(pal.bg).inner_margin(Margin {
+                left: side,
+                right: side,
+                top: 16,
+                bottom: 16 + inset_bottom.round() as i8,
+            }))
             .show_inside(ui, |ui| self.composer(ui, &pal));
 
         // ── main region: loading panel or chat ──────────────────────────────
@@ -376,7 +422,7 @@ impl eframe::App for ChatApp {
             .frame(
                 egui::Frame::new()
                     .fill(pal.bg)
-                    .inner_margin(Margin::symmetric(40, 0)),
+                    .inner_margin(Margin::symmetric(if narrow { 12 } else { 40 }, 0)),
             )
             .show_inside(ui, |ui| match &self.status {
                 AppStatus::Loading => self.loading_panel(ui, &pal),
@@ -423,7 +469,13 @@ impl eframe::App for ChatApp {
 
 impl ChatApp {
     /// Logo + wordmark + model line on the left; reload + theme toggle on the right.
-    fn header(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, pal: &theme::Palette) {
+    fn header(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        pal: &theme::Palette,
+        narrow: bool,
+    ) {
         ui.horizontal(|ui| {
             ui.set_height(30.0);
             let (logo_rect, _) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::hover());
@@ -436,14 +488,10 @@ impl ChatApp {
                     .color(pal.text),
             );
             ui.add_space(12.0);
-            ui.label(
-                RichText::new(self.model_info())
-                    .family(mono())
-                    .size(15.0)
-                    .color(pal.muted),
-            );
 
-            // right_to_left places the first-added widget rightmost.
+            // right_to_left places the first-added widget rightmost. The model
+            // line comes last and truncates to whatever width the buttons leave
+            // (phone screens are narrower than the desktop window).
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 // Theme toggle: a segmented control of two icon buttons.
                 egui::Frame::new()
@@ -476,8 +524,34 @@ impl ChatApp {
                 if reload_button(ui, pal) {
                     self.new_conversation();
                 }
+                if !narrow {
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(self.model_info())
+                                    .family(mono())
+                                    .size(15.0)
+                                    .color(pal.muted),
+                            )
+                            .truncate(),
+                        );
+                    });
+                }
             });
         });
+        // Phone-width: the model line gets its own row under the wordmark.
+        if narrow {
+            ui.add_space(6.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(self.model_info())
+                        .family(mono())
+                        .size(13.0)
+                        .color(pal.muted),
+                )
+                .truncate(),
+            );
+        }
     }
 
     /// The input row: text field + send, with a stop button while generating.
@@ -490,7 +564,9 @@ impl ChatApp {
                 ui.spacing_mut().item_spacing.x = 12.0;
                 let btn = 52.0;
                 let stop_w = if is_generating { 88.0 } else { 0.0 };
-                let input_w = (ui.available_width() - btn - stop_w - 12.0).max(80.0);
+                // Buttons, item spacing and the field frame's own 18px side
+                // margins all come out of the row width.
+                let input_w = (ui.available_width() - btn - stop_w - 12.0 - 36.0).max(80.0);
 
                 let hint = if is_ready || is_generating {
                     "Ask Onyxia anything"
@@ -965,7 +1041,7 @@ async fn run_inference(
         egui_ctx.request_repaint();
     };
 
-    let (mut session, tokenizer, gpu_name) = match load(source, &progress).await {
+    let (mut session, tokenizer, gpu_name, precision) = match load(source, &progress).await {
         Ok(t) => t,
         Err(e) => {
             send(InferenceEvent::Error(format!(
@@ -978,6 +1054,7 @@ async fn run_inference(
     let vram_bytes = session.vram_bytes();
     send(InferenceEvent::Ready {
         gpu_name,
+        precision,
         vram_bytes,
     });
 
@@ -1130,8 +1207,9 @@ async fn yield_to_browser() {}
 async fn build_session(
     graph: onyxia_onnx::Graph,
     tokenizer: Tokenizer,
+    precision: &str,
     progress: &dyn Fn(usize, &str),
-) -> Result<(LlmSession, Tokenizer, String)> {
+) -> Result<(LlmSession, Tokenizer, String, String)> {
     progress(5, "Initializing GPU");
     yield_to_browser().await;
     let ctx = onyxia_backend_wgpu::GpuContext::new()
@@ -1149,17 +1227,25 @@ async fn build_session(
     let backend = onyxia_backend_wgpu::WgpuBackend::new(ctx);
     let session =
         LlmSession::new(&backend, module, MAX_SEQ_LEN).context("Failed to prepare session")?;
-    Ok((session, tokenizer, gpu_name))
+    Ok((session, tokenizer, gpu_name, precision.to_string()))
 }
 
-/// Native: read the model + tokenizer from a directory on disk.
+/// Native: read the model + tokenizer from a directory on disk. Prefers the
+/// fp32 `model.onnx`; falls back to `model_q4.onnx` when only that one is
+/// present (mobile GPUs cap a storage-buffer binding at 128 MiB, which the
+/// fp32 embedding table exceeds — the 4-bit export stays under it).
 #[cfg(not(target_arch = "wasm32"))]
 async fn load(
     model_dir: PathBuf,
     progress: &dyn Fn(usize, &str),
-) -> Result<(LlmSession, Tokenizer, String)> {
+) -> Result<(LlmSession, Tokenizer, String, String)> {
     progress(3, "Parsing model");
-    let onnx_path = model_dir.join("onnx/model.onnx");
+    let fp32_path = model_dir.join("onnx/model.onnx");
+    let (onnx_path, precision) = if fp32_path.exists() {
+        (fp32_path, "fp32")
+    } else {
+        (model_dir.join("onnx/model_q4.onnx"), "q4")
+    };
     let graph = onyxia_onnx::load_and_parse_model(&onnx_path)
         .with_context(|| format!("Failed to parse ONNX from {}", onnx_path.display()))?;
 
@@ -1174,7 +1260,7 @@ async fn load(
             .context("Failed to load chat template")?;
     }
 
-    build_session(graph, tokenizer, progress).await
+    build_session(graph, tokenizer, precision, progress).await
 }
 
 /// Web: fetch the model + tokenizer over HTTP relative to `base_url`.
@@ -1182,7 +1268,7 @@ async fn load(
 async fn load(
     base_url: String,
     progress: &dyn Fn(usize, &str),
-) -> Result<(LlmSession, Tokenizer, String)> {
+) -> Result<(LlmSession, Tokenizer, String, String)> {
     progress(2, "Fetching model");
     yield_to_browser().await;
     let model_bytes = fetch_bytes(&format!("{base_url}/onnx/model.onnx")).await?;
@@ -1203,7 +1289,7 @@ async fn load(
         tokenizer = tokenizer.with_chat_template(template);
     }
 
-    build_session(graph, tokenizer, progress).await
+    build_session(graph, tokenizer, "fp32", progress).await
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1278,10 +1364,19 @@ fn android_main(app: android_activity::AndroidApp) {
     let model_dir = base.join("gemma-3-270m-it-ONNX");
     log::info!("model dir: {}", model_dir.display());
     let options = eframe::NativeOptions {
-        android_app: Some(app),
+        android_app: Some(app.clone()),
         ..Default::default()
     };
-    if let Err(e) = run_native(model_dir, false, None, options) {
+    let result = eframe::run_native(
+        "gemma-chat",
+        options,
+        Box::new(move |cc| {
+            let mut chat = ChatApp::new(cc, model_dir, false);
+            chat.android_app = Some(app);
+            Ok(Box::new(chat))
+        }),
+    );
+    if let Err(e) = result {
         log::error!("eframe exited with error: {e}");
     }
 }

@@ -48,11 +48,18 @@ android-apk:
 android-install: android-apk
     {{android_env}} adb install -r target/release/apk/gemma-chat.apk
 
-# Copy the 270m model into the app's external files dir (~1.1 GB, one-time)
-android-push-model:
+# Copy the 270m model into the app's external files dir (fp32, ~1.1 GB,
+# one-time). The app is started once first so Android creates `files/` owned
+# by the app uid; a dir created by `adb shell mkdir` is owned by `shell` and
+# unreadable from inside the app. `just android-push-model model_q4` pushes
+# the 4-bit export instead (the app prefers model.onnx when both are there).
+android-push-model MODEL="model": android-install
+    {{android_env}} adb shell am start -n {{android_pkg}}/android.app.NativeActivity
+    sleep 3
+    {{android_env}} adb shell am force-stop {{android_pkg}}
     {{android_env}} adb shell mkdir -p /sdcard/Android/data/{{android_pkg}}/files/gemma-3-270m-it-ONNX/onnx
     {{android_env}} adb push models/gemma-3-270m-it-ONNX/tokenizer.json models/gemma-3-270m-it-ONNX/chat_template.jinja /sdcard/Android/data/{{android_pkg}}/files/gemma-3-270m-it-ONNX/
-    {{android_env}} adb push models/gemma-3-270m-it-ONNX/onnx/model.onnx models/gemma-3-270m-it-ONNX/onnx/model.onnx_data /sdcard/Android/data/{{android_pkg}}/files/gemma-3-270m-it-ONNX/onnx/
+    {{android_env}} adb push models/gemma-3-270m-it-ONNX/onnx/{{MODEL}}.onnx models/gemma-3-270m-it-ONNX/onnx/{{MODEL}}.onnx_data /sdcard/Android/data/{{android_pkg}}/files/gemma-3-270m-it-ONNX/onnx/
 
 # Launch the app and tail its logcat output
 android-run:

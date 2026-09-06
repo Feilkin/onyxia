@@ -71,8 +71,8 @@ rustup target add aarch64-linux-android
 cargo install cargo-apk
 ```
 
-Then, with a phone in USB-debugging mode (Android 9+ with Vulkan 1.1, and
-enough RAM to parse a 1.1 GB model — 8 GB or more):
+Then, with a phone in USB-debugging mode (Android 9+ with Vulkan 1.1; the
+fp32 model parses in about 3 GB of RAM):
 
 ```sh
 just android-install       # cargo apk build --release + adb install
@@ -82,15 +82,28 @@ just android-run           # launches the activity and tails logcat
 
 The model lives in the app's external files directory,
 `/sdcard/Android/data/games.bilberry.onyxia.gemma/files/gemma-3-270m-it-ONNX`,
-which `adb push` can write without any storage permission. The Rust side
-logs under the `gemma-chat` logcat tag. The soft keyboard opens when the
-prompt field gets focus (winit's Android backend calls `show_soft_input`).
+which `adb push` can write without any storage permission (the app has to
+have created `files/` first — the recipe starts it once). The Rust side logs
+under the `gemma-chat` logcat tag. The soft keyboard opens when the prompt
+field gets focus; the header, composer and system-bar/keyboard insets come
+from the activity's content rect.
 
-Caveats: not yet run on a device at the time of writing (built and signed
-only). Expect mobile GPUs to be bandwidth-bound on the fp32 matvecs (a few
-tokens per second on a phone versus hundreds on a desktop GPU); the
-`ONYXIA_*` fallbacks (no f16, no int64, no push constants) are exercised by
-the wgpu tests so an older Vulkan driver should still run.
+Measured on a OnePlus 10T (Snapdragon 8+ Gen 1, Adreno 730, Android 15):
+
+| model     | decode      | time to first token | resident |
+|-----------|-------------|-------------------|----------|
+| 270m fp32 | 11–19 tok/s | 1.5 s             | 1.8 GB   |
+| 270m q4   | 22 tok/s    | 3.4 s             | 1.4 GB   |
+
+Mobile Vulkan drivers cap a single storage-buffer binding at 128 MiB, well
+under the 671 MB embedding table (which the q4 export keeps in fp32 as the
+tied lm_head). The wgpu session asks the IR to split such tables into row
+chunks (`onyxia_ir::split_large_tables`: chunked gathers merged by range
+selects, chunked transposed matmuls concatenated), so both exports run
+unchanged. The 1B's embedding is 151 MB even at 4 bits and would need the
+same treatment for `MatMulNBits`, which is not done. The `ONYXIA_*`
+fallbacks (no f16, no int64, no push constants) are exercised by the wgpu
+tests, so an older driver should still run.
 
 [cargo-apk]: https://github.com/rust-mobile/cargo-apk
 

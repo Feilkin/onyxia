@@ -34,6 +34,7 @@ pub mod graph;
 pub mod infer;
 pub mod interp;
 pub mod prim;
+pub mod split;
 pub mod types;
 pub mod validate;
 
@@ -48,6 +49,7 @@ pub use graph::{
     ValueId,
 };
 pub use prim::{BinaryOp, CmpOp, Prim, ReduceOp, ScatterReduce, SliceSpec, UnaryOp};
+pub use split::split_large_tables;
 pub use types::{DataType, TensorType};
 
 /// Result type using the crate's error type.

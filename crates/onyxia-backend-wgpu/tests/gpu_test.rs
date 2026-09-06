@@ -8,7 +8,7 @@
 use onyxia_backend_wgpu::{GpuContext, WgpuBackend};
 use onyxia_ir::interp::Tensor;
 use onyxia_ir::{
-    AttrValue, Attrs, Backend, DataType, DimExpr, GraphBuilder, Module, ReduceOp, Session,
+    AttrValue, Attrs, Backend, DataType, DimExpr, GraphBuilder, Module, Prim, ReduceOp, Session,
     SymbolicShape, TensorType, UnaryOp,
 };
 
@@ -1306,4 +1306,48 @@ fn fused_add_rmsnorm_and_gelu_mul_match_unfused() {
             );
         }
     }
+}
+
+/// A gather table split into row chunks (what the session does for tables
+/// over the device's binding limit) must gather exactly what the whole
+/// table does, including negative and chunk-boundary indices.
+#[test]
+#[ignore = "requires GPU"]
+fn split_gather_table_matches_whole() {
+    let mut bld = GraphBuilder::new();
+    let vals = f32s(1000, |i| (i / 8) as f32 + (i % 8) as f32 * 0.125);
+    let table = bld.const_f32(&vals, &[125, 8]).unwrap();
+    let ids = bld.input("ids", TensorType::of(DataType::I64, &[2, 5]));
+    let y = bld.gather(table, ids, 0).unwrap();
+    bld.output("y", y);
+    let mut module = bld.finish().unwrap();
+    // 32-byte rows, 1000-byte cap → 31 rows per chunk → 5 chunks.
+    assert_eq!(onyxia_ir::split_large_tables(&mut module, 1000).unwrap(), 1);
+    let ids = Tensor::from_i64(&[0, 30, 31, 61, 62, 92, 93, 124, -1, -125], &[2, 5]).unwrap();
+    diff_test(module, vec![("ids", ids)]);
+}
+
+/// The lm_head form: `x @ table^T` with the table split into row chunks and
+/// the partial products concatenated.
+#[test]
+#[ignore = "requires GPU"]
+fn split_matmul_table_matches_whole() {
+    let mut bld = GraphBuilder::new();
+    let vals = f32s(1000, |i| (i as f32 * 0.37).sin());
+    let table = bld.const_f32(&vals, &[125, 8]).unwrap();
+    let a = bld.input("a", TensorType::of(DataType::F32, &[3, 8]));
+    let y = bld
+        .prim(
+            Prim::MatMul {
+                trans_a: false,
+                trans_b: true,
+            },
+            &[a, table],
+        )
+        .unwrap();
+    bld.output("y", y);
+    let mut module = bld.finish().unwrap();
+    assert_eq!(onyxia_ir::split_large_tables(&mut module, 1000).unwrap(), 1);
+    let a = Tensor::from_f32(&f32s(24, |i| (i as f32 * 0.11).cos()), &[3, 8]).unwrap();
+    diff_test(module, vec![("a", a)]);
 }

@@ -48,6 +48,7 @@ pub async fn run(
         std::thread::sleep(STEP);
     }
     send(InferenceEvent::Ready {
+        precision: "fp32".to_string(),
         gpu_name: "Demo GPU · WebGPU".to_string(),
         vram_bytes: 1_181_116_006, // ~1.1 GiB, a plausible placeholder
     });
