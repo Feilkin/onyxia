@@ -1,17 +1,17 @@
 model,runtime,task,tokens_per_s
-gemma-3-270m (fp16),Onyxia wgpu,prefill,23097
+gemma-3-270m (fp16),Onyxia wgpu,prefill,29690
 gemma-3-270m (fp16),ORT CUDA,prefill,159074
 gemma-3-270m (fp16),Onyxia wgpu,decode,316.7
 gemma-3-270m (fp16),ORT CUDA,decode,247.3
-gemma-3-270m (q4f16),Onyxia wgpu,prefill,23583
+gemma-3-270m (q4f16),Onyxia wgpu,prefill,27330
 gemma-3-270m (q4f16),ORT CUDA,prefill,144441
 gemma-3-270m (q4f16),Onyxia wgpu,decode,397.7
 gemma-3-270m (q4f16),ORT CUDA,decode,257.6
-gemma-3-1b (fp16),Onyxia wgpu,prefill,8131
+gemma-3-1b (fp16),Onyxia wgpu,prefill,15335
 gemma-3-1b (fp16),ORT CUDA,prefill,64301
 gemma-3-1b (fp16),Onyxia wgpu,decode,207.0
 gemma-3-1b (fp16),ORT CUDA,decode,150.9
-gemma-3-1b (q4f16),Onyxia wgpu,prefill,9243
+gemma-3-1b (q4f16),Onyxia wgpu,prefill,13533
 gemma-3-1b (q4f16),ORT CUDA,prefill,56019
 gemma-3-1b (q4f16),Onyxia wgpu,decode,275.3
 gemma-3-1b (q4f16),ORT CUDA,decode,167.6

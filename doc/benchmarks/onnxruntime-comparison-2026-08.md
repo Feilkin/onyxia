@@ -438,9 +438,43 @@ an `(m, l, acc)` partial that a combine dispatch folds — the
 That is back to the short-context decode rate (the 64-token table above:
 336 / 415 / 216 / 291) and ahead of ORT's plain `run()` on the same
 file at this context length — its decode step grew 1.8 ms from 100 to
-1100 tokens, Onyxia's now 0.2 ms. Prefill at 1024 tokens stays at 44 /
-43 / 126 / 111 ms vs ORT's 6 / 7 / 16 / 18: the matmul tile is the whole
-of that gap now.
+1100 tokens, Onyxia's now 0.2 ms. Prefill at 1024 tokens stayed at 44 /
+43 / 126 / 111 ms vs ORT's 6 / 7 / 16 / 18 at that point: the matmul
+tile was the whole of that gap.
+
+### Same evening: the prefill matmul on tensor cores (63c31f8, next commit)
+
+Ada's steer: no staging through workgroup memory — `coopLoad` straight
+from the storage buffer. `matmul_coop_f16`: 128×64 output tile per
+256-thread workgroup, 8 subgroups each owning 32×32 as 2×2 f16
+`16×16×16` MMAs with f32 accumulate, A/B read directly from the
+buffers (`coopLoadT` for row-major `[M,K]` and `[K,N]`, `coopLoad` for
+`[N,K]`), no barriers in the K loop, one workgroup-memory pass at the
+end for the bounds-checked, converted store. K and N must be 16-aligned
+(true of every projection here); M is padded to 16 by copying the
+activation into a scratch with junk tail rows. The old
+`ONYXIA_MATMUL_TILE=coop` kernel, which staged f32 operands through
+shared memory element by element, was 2.4× *slower* than the rb tile at
+this size; this one is 2.8× faster. For the q4f16 export, prefills of
+128+ rows dequantize the weights to an f16 scratch first and take the
+same kernel (17.4 vs 19.4 ms at 128 tokens on the 1B; 2× the packed
+weight bytes in traffic, paid once per matmul).
+
+1024-token prompt, 128 decode steps at ~1100 tokens of context:
+
+| model | Onyxia prefill, rb tile | Onyxia prefill, tensor cores | ORT CUDA EP | Onyxia decode | ORT decode |
+|---|---|---|---|---|---|
+| 270m fp16 | 44.3 ms | **34.5 ms** | 6.4 ms | 322 tok/s | 247 |
+| 270m q4f16 | 43.4 | **37.5** | 7.1 | 390 | 258 |
+| 1B fp16 | 125.9 | **66.8** | 15.9 | 207 | 151 |
+| 1B q4f16 | 110.8 | **75.7** | 18.3 | 274 | 168 |
+
+Profile of the 1B fp16 prefill now: attention 30 ms (45 %), the three
+matmul groups 34 ms (50 %) at ~78 TFLOPS. The next step is the same
+MMAs inside the flash attention kernel (QKᵀ and PV), and a larger
+query block so the K/V traffic amortizes further. Short prompts: the
+64-token prefill is within noise of the rb tile (10.6 vs 9.9 ms on the
+1B fp16, 5.7 vs 4.8 on the 270m) — the 128-row tile is half empty there.
 
 ## Onyxia's CubeCL backend on the same GPU (270m, 2026-08-23)
 
