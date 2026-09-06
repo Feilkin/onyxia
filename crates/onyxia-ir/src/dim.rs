@@ -212,6 +212,14 @@ impl DimExpr {
         }
     }
 
+    /// Whether this expression is provably non-negative for every binding:
+    /// every term has a positive coefficient (symbols are `u64` dims, so
+    /// their products are non-negative). `false` means "unknown", not
+    /// "negative".
+    pub fn is_nonneg(&self) -> bool {
+        self.terms.iter().all(|t| t.coeff > 0)
+    }
+
     /// Whether this expression contains no symbols.
     pub fn is_const(&self) -> bool {
         self.terms.iter().all(|t| t.syms.is_empty())

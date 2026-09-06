@@ -1,6 +1,7 @@
 //! The standard-domain attention ops (opset 23+): `Attention` as a
 //! composite (fusable; decomposition in `onyxia_ir::decomp`), and
-//! `RotaryEmbedding` emitted directly.
+//! `RotaryEmbedding` emitted directly. `com.microsoft.MultiHeadAttention`
+//! lowers onto the same composite.
 
 use super::helpers::*;
 use crate::{LowerCtx, LoweringRegistry, attrs};
@@ -10,6 +11,7 @@ use onyxia_ir::{AttrValue, DataType, Error, Result, SymbolicShape, TensorType, V
 pub(crate) fn register(r: &mut LoweringRegistry) {
     r.register("", "Attention", attention);
     r.register("", "RotaryEmbedding", rotary_embedding);
+    r.register("com.microsoft", "MultiHeadAttention", multi_head_attention);
 }
 
 /// `[B, S, H*D]` → `[B, H, S, D]`.
@@ -34,18 +36,38 @@ fn from_heads(ctx: &mut LowerCtx, x: ValueId) -> Result<ValueId> {
     )
 }
 
-fn attention(ctx: &mut LowerCtx) -> Result<()> {
-    let (mut q, mut k, mut v) = (val(ctx, 0)?, val(ctx, 1)?, val(ctx, 2)?);
-    let three_d = rank(ctx, q) == 3;
-    let q_heads_attr = ctx.attr_i("q_num_heads");
-    let kv_heads_attr = ctx.attr_i("kv_num_heads");
-    if three_d {
-        let qh = q_heads_attr.ok_or_else(|| ctx.missing_attr("q_num_heads"))? as u64;
-        let kvh = kv_heads_attr.ok_or_else(|| ctx.missing_attr("kv_num_heads"))? as u64;
-        q = to_heads(ctx, q, qh)?;
-        k = to_heads(ctx, k, kvh)?;
-        v = to_heads(ctx, v, kvh)?;
-    }
+/// Everything the `Attention` composite needs, gathered by the two
+/// front-ends (`Attention`, `com.microsoft.MultiHeadAttention`).
+struct AttnArgs {
+    /// `[B, H, S, D]` query, `[B, Hkv, T, D]` key/value.
+    q: ValueId,
+    k: ValueId,
+    v: ValueId,
+    /// Additive float mask (cast to the q dtype) or bool mask.
+    mask: Option<ValueId>,
+    past: Option<(ValueId, ValueId)>,
+    nonpad: Option<ValueId>,
+    scale: Option<f64>,
+    is_causal: bool,
+    softcap: f64,
+    qk_matmul_output_mode: i64,
+}
+
+/// Emit the `Attention` composite over 4-D q/k/v. Returns
+/// `[y, present_key, present_value, qk]`.
+fn emit_attention(ctx: &mut LowerCtx, args: AttnArgs) -> Result<Vec<ValueId>> {
+    let AttnArgs {
+        q,
+        k,
+        v,
+        mask,
+        past,
+        nonpad,
+        scale,
+        is_causal,
+        softcap,
+        qk_matmul_output_mode,
+    } = args;
     let qd = dims(ctx, q);
     let kd = dims(ctx, k);
     let vd = dims(ctx, v);
@@ -60,14 +82,10 @@ fn attention(ctx: &mut LowerCtx) -> Result<()> {
     let head = qd[3]
         .as_const()
         .ok_or_else(|| Error::Unsupported("Attention with symbolic head size".into()))?;
-    let scale = match ctx.attr_f("scale") {
-        Some(s) => s as f64,
-        None => 1.0 / (head as f64).sqrt(),
-    };
+    let scale = scale.unwrap_or_else(|| 1.0 / (head as f64).sqrt());
     let dt = dtype(ctx, q);
 
     let mut inputs = vec![q, k, v];
-    let mask = opt_val(ctx, 3)?;
     let mask_bool = mask
         .map(|m| dtype(ctx, m) == DataType::Bool)
         .unwrap_or(false);
@@ -75,20 +93,10 @@ fn attention(ctx: &mut LowerCtx) -> Result<()> {
         let m = if mask_bool { m } else { cast(ctx, m, dt)? };
         inputs.push(m);
     }
-    let past = match (opt_val(ctx, 4)?, opt_val(ctx, 5)?) {
-        (Some(pk), Some(pv)) => {
-            inputs.push(pk);
-            inputs.push(pv);
-            Some((pk, pv))
-        }
-        (None, None) => None,
-        _ => {
-            return Err(Error::Unsupported(
-                "Attention with only one of past_key/past_value".into(),
-            ));
-        }
-    };
-    let nonpad = opt_val(ctx, 6)?;
+    if let Some((pk, pv)) = past {
+        inputs.push(pk);
+        inputs.push(pv);
+    }
     if let Some(np) = nonpad {
         let np = cast(ctx, np, DataType::I64)?;
         inputs.push(np);
@@ -129,29 +137,65 @@ fn attention(ctx: &mut LowerCtx) -> Result<()> {
         SymbolicShape(vec![qd[0].clone(), qd[1].clone(), qd[2].clone(), total]),
     );
     let a = attrs(vec![
-        (
-            "is_causal",
-            AttrValue::Int(ctx.attr_i("is_causal").unwrap_or(0)),
-        ),
+        ("is_causal", AttrValue::Int(is_causal as i64)),
         ("q_num_heads", AttrValue::Int(qh as i64)),
         ("kv_num_heads", AttrValue::Int(kvh as i64)),
         ("scale", AttrValue::Float(scale)),
-        (
-            "softcap",
-            AttrValue::Float(ctx.attr_f("softcap").unwrap_or(0.0) as f64),
-        ),
+        ("softcap", AttrValue::Float(softcap)),
         (
             "qk_matmul_output_mode",
-            AttrValue::Int(ctx.attr_i("qk_matmul_output_mode").unwrap_or(0)),
+            AttrValue::Int(qk_matmul_output_mode),
         ),
         ("has_mask", AttrValue::Int(mask.is_some() as i64)),
         ("mask_is_bool", AttrValue::Int(mask_bool as i64)),
         ("has_past", AttrValue::Int(past.is_some() as i64)),
         ("has_nonpad", AttrValue::Int(nonpad.is_some() as i64)),
     ]);
-    let outs = ctx
-        .builder()
-        .composite("Attention", a, &inputs, vec![y_ty, pk_ty, pv_ty, qk_ty])?;
+    ctx.builder()
+        .composite("Attention", a, &inputs, vec![y_ty, pk_ty, pv_ty, qk_ty])
+}
+
+fn past_kv(
+    ctx: &mut LowerCtx,
+    key_idx: usize,
+    value_idx: usize,
+) -> Result<Option<(ValueId, ValueId)>> {
+    match (opt_val(ctx, key_idx)?, opt_val(ctx, value_idx)?) {
+        (Some(pk), Some(pv)) => Ok(Some((pk, pv))),
+        (None, None) => Ok(None),
+        _ => Err(Error::Unsupported(
+            "Attention with only one of past_key/past_value".into(),
+        )),
+    }
+}
+
+fn attention(ctx: &mut LowerCtx) -> Result<()> {
+    let (mut q, mut k, mut v) = (val(ctx, 0)?, val(ctx, 1)?, val(ctx, 2)?);
+    let three_d = rank(ctx, q) == 3;
+    if three_d {
+        let qh = ctx
+            .attr_i("q_num_heads")
+            .ok_or_else(|| ctx.missing_attr("q_num_heads"))? as u64;
+        let kvh = ctx
+            .attr_i("kv_num_heads")
+            .ok_or_else(|| ctx.missing_attr("kv_num_heads"))? as u64;
+        q = to_heads(ctx, q, qh)?;
+        k = to_heads(ctx, k, kvh)?;
+        v = to_heads(ctx, v, kvh)?;
+    }
+    let args = AttnArgs {
+        q,
+        k,
+        v,
+        mask: opt_val(ctx, 3)?,
+        past: past_kv(ctx, 4, 5)?,
+        nonpad: opt_val(ctx, 6)?,
+        scale: ctx.attr_f("scale").map(|s| s as f64),
+        is_causal: ctx.attr_i("is_causal").unwrap_or(0) != 0,
+        softcap: ctx.attr_f("softcap").unwrap_or(0.0) as f64,
+        qk_matmul_output_mode: ctx.attr_i("qk_matmul_output_mode").unwrap_or(0),
+    };
+    let outs = emit_attention(ctx, args)?;
     let y = if three_d {
         from_heads(ctx, outs[0])?
     } else {
@@ -161,6 +205,66 @@ fn attention(ctx: &mut LowerCtx) -> Result<()> {
     ctx.set_value_opt(1, outs[1]);
     ctx.set_value_opt(2, outs[2]);
     ctx.set_value_opt(3, outs[3]);
+    Ok(())
+}
+
+/// `com.microsoft.MultiHeadAttention`, the un-packed 3-D form: query
+/// `[B, S, H*D]`, key/value `[B, T, H*D]`, optional additive
+/// `attention_bias` `[B|1, H|1, S, T]`, optional 4-D past key/value. It is
+/// the standard `Attention` composite with `num_heads` on both sides
+/// (the encoder exports use it; `unidirectional` selects the causal mask).
+/// Packed QKV / packed KV, the `bias` and `key_padding_mask` inputs are
+/// not supported.
+fn multi_head_attention(ctx: &mut LowerCtx) -> Result<()> {
+    let heads = ctx
+        .attr_i("num_heads")
+        .ok_or_else(|| ctx.missing_attr("num_heads"))? as u64;
+    let q = val(ctx, 0)?;
+    let (Some(k), Some(v)) = (opt_val(ctx, 1)?, opt_val(ctx, 2)?) else {
+        return Err(Error::Unsupported(
+            "MultiHeadAttention with packed QKV/KV".into(),
+        ));
+    };
+    if rank(ctx, q) != 3 || rank(ctx, k) != 3 || rank(ctx, v) != 3 {
+        return Err(Error::Unsupported(
+            "MultiHeadAttention with packed (5-D) key/value".into(),
+        ));
+    }
+    if ctx.has_input(3) {
+        return Err(Error::Unsupported(
+            "MultiHeadAttention with a bias input".into(),
+        ));
+    }
+    if ctx.has_input(4) {
+        return Err(Error::Unsupported(
+            "MultiHeadAttention with key_padding_mask".into(),
+        ));
+    }
+    if ctx.has_input(8) || ctx.has_input(9) {
+        return Err(Error::Unsupported(
+            "MultiHeadAttention with past_sequence_length/cache_indirection".into(),
+        ));
+    }
+    let q = to_heads(ctx, q, heads)?;
+    let k = to_heads(ctx, k, heads)?;
+    let v = to_heads(ctx, v, heads)?;
+    let args = AttnArgs {
+        q,
+        k,
+        v,
+        mask: opt_val(ctx, 5)?,
+        past: past_kv(ctx, 6, 7)?,
+        nonpad: None,
+        scale: ctx.attr_f("scale").map(|s| s as f64),
+        is_causal: ctx.attr_i("unidirectional").unwrap_or(0) != 0,
+        softcap: 0.0,
+        qk_matmul_output_mode: 0,
+    };
+    let outs = emit_attention(ctx, args)?;
+    let y = from_heads(ctx, outs[0])?;
+    ctx.set_value(0, y);
+    ctx.set_value_opt(1, outs[1]);
+    ctx.set_value_opt(2, outs[2]);
     Ok(())
 }
 

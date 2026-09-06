@@ -3,6 +3,8 @@ warmup prefill(P) + 2 decode, then measured prefill(P), then D measured
 single-token decode steps. Tokenizer-free (dummy token 42). Logits are
 copied to host every step (Onyxia downloads logits too). KV cache stays
 on device in the 'cuda-iobinding' mode; round-trips host in 'cuda-numpy'.
+Models without a `logits` output (embedding models) get the forward
+protocol: D timed stateless passes over P tokens.
 """
 import sys, time, json, statistics as st
 import numpy as np
@@ -31,6 +33,30 @@ else:
 inputs = sess.get_inputs()
 outputs = sess.get_outputs()
 input_names = {i.name for i in inputs}
+
+if not any(o.name == "logits" for o in outputs):
+    # Forward protocol (mirrors `onyxia bench` on a model without logits):
+    # one warmup pass, then D timed stateless passes over P tokens; the
+    # last output (the pooled embedding) is copied to host every pass.
+    out = outputs[-1].name
+    feed = {"input_ids": np.full((1, P), DUMMY, np.int64),
+            "attention_mask": np.ones((1, P), np.int64)}
+    feed = {k: v for k, v in feed.items() if k in input_names}
+    sess.run([out], feed)
+    passes, emb = [], None
+    for _ in range(D):
+        t0 = time.perf_counter()
+        emb = sess.run([out], feed)[0]
+        passes.append(time.perf_counter() - t0)
+    mean = st.mean(passes)
+    print(f"onnxruntime {ort.__version__} mode={mode} providers={sess.get_providers()[0]}")
+    print(f"forward: {P} tokens, {mean*1e3:.2f} ms/pass mean (min {min(passes)*1e3:.2f}, max {max(passes)*1e3:.2f}, σ {st.pstdev(passes)*1e3:.2f}) → {P/mean:.1f} tok/s, {1/mean:.1f} passes/s")
+    v = emb.reshape(-1)
+    print(f"output '{out}' shape {list(emb.shape)}, L2 norm {float(np.linalg.norm(v)):.4f}, head {v[:4].tolist()}")
+    print(json.dumps({"mode": mode, "forward_ms_per_pass": mean * 1e3, "forward_tok_s": P / mean,
+                      "output_values": v.tolist()}))
+    sys.exit(0)
+
 kv_in = [i for i in inputs if i.name.startswith("past_key_values.")]
 kv_out = [o for o in outputs if o.name.startswith("present.")]
 assert len(kv_in) == len(kv_out)

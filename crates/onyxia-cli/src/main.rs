@@ -236,19 +236,28 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    /// Benchmark prefill/decode throughput on the wgpu backend
+    /// Benchmark prefill/decode throughput (or forward-pass throughput for
+    /// models without a `logits` output, e.g. embedding models)
     Bench {
         /// Path to the ONNX model file
         #[arg(value_name = "MODEL")]
         model: PathBuf,
 
-        /// Prompt length for the measured prefill
+        /// Prompt length for the measured prefill / forward pass
         #[arg(long, default_value = "64")]
         prefill_len: usize,
 
         /// Number of measured single-token decode steps
         #[arg(long, default_value = "32")]
         decode_tokens: usize,
+
+        /// Number of measured forward passes (models without logits)
+        #[arg(long, default_value = "32")]
+        repeats: usize,
+
+        /// Execution backend
+        #[arg(long, value_enum, default_value_t = BackendKind::Wgpu)]
+        backend: BackendKind,
 
         /// Maximum sequence length (KV cache size)
         #[arg(long, default_value = "2048")]
@@ -446,17 +455,24 @@ fn main() -> Result<()> {
             model,
             prefill_len,
             decode_tokens,
+            repeats,
+            backend,
             max_seq_len,
             profile,
             json,
         } => {
             pollster::block_on(cmd_bench(
                 model,
-                prefill_len,
-                decode_tokens,
+                onyxia_cli::bench::BenchConfig {
+                    prefill_len,
+                    decode_tokens,
+                    repeats,
+                    profile,
+                    json,
+                    adapter: String::new(),
+                },
+                backend,
                 max_seq_len,
-                profile,
-                json,
             ))?;
         }
         Commands::Validate { model, verbose } => {
@@ -1117,11 +1133,9 @@ fn chat_with_session<S: onyxia_ir::Session>(
 /// Benchmark prefill/decode throughput on the wgpu backend.
 async fn cmd_bench(
     model_path: PathBuf,
-    prefill_len: usize,
-    decode_tokens: usize,
+    mut cfg: onyxia_cli::bench::BenchConfig,
+    backend: BackendKind,
     max_seq_len: usize,
-    profile: bool,
-    json: Option<PathBuf>,
 ) -> Result<()> {
     println!("Loading model from {}...", model_path.display());
     let graph = onyxia_onnx::load_and_parse_model(&model_path)
@@ -1131,25 +1145,27 @@ async fn cmd_bench(
     let module = onyxia_lower::lower(graph, &onyxia_lower::standard_registry())
         .with_context(|| "Failed to lower model")?;
 
-    println!("Initializing GPU (wgpu backend)...");
-    let ctx = onyxia_backend_wgpu::GpuContext::new()
-        .await
-        .with_context(|| "Failed to create GPU context")?;
-    let adapter = format!("{} ({:?})", ctx.adapter_info.name, ctx.adapter_info.backend);
-    let backend = onyxia_backend_wgpu::WgpuBackend::new(ctx);
-    println!("Preparing session (uploading weights)...");
-    let mut session = onyxia_cli::llm::LlmSession::new(&backend, module, max_seq_len)?;
-
-    onyxia_cli::bench::run(
-        &mut session,
-        &onyxia_cli::bench::BenchConfig {
-            prefill_len,
-            decode_tokens,
-            profile,
-            json,
-            adapter,
-        },
-    )
+    match backend {
+        BackendKind::Wgpu => {
+            println!("Initializing GPU (wgpu backend)...");
+            let ctx = onyxia_backend_wgpu::GpuContext::new()
+                .await
+                .with_context(|| "Failed to create GPU context")?;
+            cfg.adapter = format!("{} ({:?})", ctx.adapter_info.name, ctx.adapter_info.backend);
+            let backend = onyxia_backend_wgpu::WgpuBackend::new(ctx);
+            println!("Preparing session (uploading weights)...");
+            let mut session = onyxia_cli::llm::LlmSession::new(&backend, module, max_seq_len)?;
+            onyxia_cli::bench::run(&mut session, &cfg)
+        }
+        BackendKind::Cubecl => {
+            println!("Initializing GPU (cubecl backend, primitives only)...");
+            cfg.adapter = "cubecl wgpu runtime (default device)".to_string();
+            let backend = onyxia_backend_cubecl::CubeclBackend::new();
+            println!("Preparing session (uploading weights)...");
+            let mut session = onyxia_cli::llm::LlmSession::new(&backend, module, max_seq_len)?;
+            onyxia_cli::bench::run(&mut session, &cfg)
+        }
+    }
 }
 
 /// Inspect specific nodes in an ONNX model.

@@ -27,6 +27,8 @@ pub struct LlmSession<S: Session> {
     session: S,
     inputs: Vec<InputSpec>,
     symbols: SymbolTable,
+    /// Module output names, in signature order.
+    outputs: Vec<String>,
     /// KV cache tensor name pairs: (present_output_name, past_input_name).
     kv_pairs: Vec<(String, String)>,
     /// Device-resident KV handles, keyed by past_key_values.* name.
@@ -59,6 +61,7 @@ impl<S: Session> LlmSession<S> {
                 }
             })
             .collect();
+        let outputs: Vec<String> = module.outputs.iter().map(|(n, _)| n.clone()).collect();
         let kv_pairs = discover_kv_pairs(&module);
         let symbols = module.symbols.clone();
         let session = backend
@@ -67,6 +70,7 @@ impl<S: Session> LlmSession<S> {
         Ok(Self {
             session,
             inputs,
+            outputs,
             symbols,
             kv_pairs,
             kv_cache: HashMap::new(),
@@ -105,9 +109,54 @@ impl<S: Session> LlmSession<S> {
         pollster::block_on(self.step(&[token_id], &[position]))
     }
 
-    /// One forward pass over `ids`. Uploads bound inputs, feeds stored KV
-    /// handles back, stores the new `present.*` handles, downloads logits.
+    /// A single stateless forward pass over `ids` from position 0 (no KV
+    /// cache carried in or out): what an encoder / embedding model needs.
+    /// Returns the module output called `output` on the host.
+    pub fn forward(&mut self, input_ids: &[i64], output: &str) -> Result<Tensor> {
+        if input_ids.is_empty() {
+            bail!("Cannot run forward with empty input_ids");
+        }
+        self.reset_full();
+        let positions: Vec<i64> = (0..input_ids.len() as i64).collect();
+        let outputs = pollster::block_on(self.run_step(input_ids, &positions))?;
+        let (_, t) = outputs
+            .iter()
+            .find(|(n, _)| n == output)
+            .with_context(|| format!("output '{output}' missing"))?;
+        let t = pollster::block_on(self.session.download(t))?;
+        self.reset_full();
+        Ok(t)
+    }
+
+    /// Module output names, in signature order.
+    pub fn output_names(&self) -> &[String] {
+        &self.outputs
+    }
+
+    /// One forward pass over `ids`; downloads the last position's logits.
     async fn step(&mut self, ids: &[i64], positions: &[i64]) -> Result<Vec<f32>> {
+        let seq = ids.len();
+        let outputs = self.run_step(ids, positions).await?;
+
+        // Download logits; return the last position ([1, S, V] → [V]).
+        let (_, logits) = outputs
+            .iter()
+            .find(|(n, _)| n == "logits")
+            .context("output 'logits' missing")?;
+        let logits = self.session.download(logits).await?;
+        let vocab = *logits.shape().last().context("scalar logits output")?;
+        let all = logits.to_f32()?;
+        Ok(all[(seq - 1) * vocab..seq * vocab].to_vec())
+    }
+
+    /// One forward pass over `ids`. Uploads bound inputs, feeds stored KV
+    /// handles back, stores the new `present.*` handles, returns every
+    /// module output on-device.
+    async fn run_step(
+        &mut self,
+        ids: &[i64],
+        positions: &[i64],
+    ) -> Result<Vec<(String, S::Tensor)>> {
         let seq = ids.len();
         let bindings = self.bindings_for(seq)?;
 
@@ -170,16 +219,7 @@ impl<S: Session> LlmSession<S> {
             self.kv_cache.insert(past, t.clone());
         }
         self.past_seq_len += seq;
-
-        // Download logits; return the last position ([1, S, V] → [V]).
-        let (_, logits) = outputs
-            .iter()
-            .find(|(n, _)| n == "logits")
-            .context("output 'logits' missing")?;
-        let logits = self.session.download(logits).await?;
-        let vocab = *logits.shape().last().context("scalar logits output")?;
-        let all = logits.to_f32()?;
-        Ok(all[(seq - 1) * vocab..seq * vocab].to_vec())
+        Ok(outputs)
     }
 
     fn bindings_for(&self, seq: usize) -> Result<Bindings> {

@@ -5,6 +5,10 @@
 //! step. Modes: `cuda-host` (KV round-trips host, like `run()` callers do)
 //! and `cuda-iobinding` (KV stays on device; only logits come back).
 //!
+//! Models without a `logits` output (embedding models) get the forward
+//! protocol instead: D timed stateless passes over P tokens, the last
+//! output (the pooled embedding) copied to host every pass.
+//!
 //! Usage: ort-bench-rs <libonnxruntime.so> <model.onnx> <mode> <P> <D>
 use ndarray::{Array2, Array4};
 use ort::ep;
@@ -214,6 +218,9 @@ fn main() {
         .unwrap()
         .commit_from_file(model)
         .unwrap();
+    if !session.outputs().iter().any(|o| o.name() == "logits") {
+        return forward_bench(session, mode, p, d);
+    }
     let kv = kv_layout(&session);
     let names: Vec<String> = session.inputs().iter().map(|i| i.name().to_string()).collect();
     let mut runner: Box<dyn Runner> = match mode {
@@ -276,5 +283,58 @@ fn main() {
         max * 1e3,
         var.sqrt() * 1e3,
         1.0 / mean
+    );
+}
+
+/// Forward protocol: warmup, then `d` timed passes over `p` tokens.
+fn forward_bench(mut session: Session, mode: &str, p: usize, d: usize) {
+    let names: Vec<String> = session.inputs().iter().map(|i| i.name().to_string()).collect();
+    let out = session.outputs().last().unwrap().name().to_string();
+    let mut inputs: Vec<(String, DynValue)> = vec![(
+        "input_ids".to_string(),
+        Tensor::from_array(Array2::from_elem((1, p), DUMMY)).unwrap().into_dyn(),
+    )];
+    if names.iter().any(|n| n == "attention_mask") {
+        inputs.push((
+            "attention_mask".to_string(),
+            Tensor::from_array(Array2::<i64>::ones((1, p))).unwrap().into_dyn(),
+        ));
+    }
+    let run = |session: &mut Session| -> Vec<f32> {
+        let feed: Vec<(String, SessionInputValue<'_>)> = inputs
+            .iter()
+            .map(|(n, v)| (n.clone(), SessionInputValue::from(v)))
+            .collect();
+        let outputs = session.run(feed).unwrap();
+        let arr = outputs[out.as_str()].try_extract_array::<f32>().unwrap();
+        arr.iter().copied().collect()
+    };
+    run(&mut session);
+    let mut passes = Vec::with_capacity(d);
+    let mut emb = Vec::new();
+    for _ in 0..d {
+        let t = Instant::now();
+        emb = run(&mut session);
+        passes.push(t.elapsed().as_secs_f64());
+    }
+    let mean = passes.iter().sum::<f64>() / d as f64;
+    let min = passes.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = passes.iter().cloned().fold(0.0, f64::max);
+    let var = passes.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / d as f64;
+    let norm = emb.iter().map(|v| v * v).sum::<f32>().sqrt();
+    println!("onnxruntime (C API via ort crate) mode={mode}");
+    println!(
+        "forward: {p} tokens, {:.2} ms/pass mean (min {:.2}, max {:.2}, σ {:.2}) → {:.1} tok/s, {:.1} passes/s",
+        mean * 1e3,
+        min * 1e3,
+        max * 1e3,
+        var.sqrt() * 1e3,
+        p as f64 / mean,
+        1.0 / mean
+    );
+    println!(
+        "output '{out}' len {}, L2 norm {norm:.4}, head {:?}",
+        emb.len(),
+        &emb[..emb.len().min(4)]
     );
 }

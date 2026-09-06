@@ -828,7 +828,18 @@ fn group_query_attention(
 
     // Additive attention bias `[B|1, H|1, S, T]`, broadcast over scores.
     if c.attrs.int_or("has_attention_bias", 0)? != 0 {
-        let bias = *inputs.last().expect("bias input recorded by lowering");
+        let mut bias = *inputs.last().expect("bias input recorded by lowering");
+        // The export types the bias's last dim as its own symbol
+        // (`total_sequence_length`), which equals past + seq at run time
+        // but is not the same expression; restate it so the add
+        // broadcasts (a symbolic reshape is checked at binding).
+        let bd = b.ty(bias).shape.dims().to_vec();
+        if bd.len() == 4 && bd[3] != total {
+            bias = b.reshape(
+                bias,
+                vec![bd[0].clone(), bd[1].clone(), bd[2].clone(), total.clone()],
+            )?;
+        }
         scores = b.add(scores, bias)?;
     }
 

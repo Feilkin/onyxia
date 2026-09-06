@@ -358,6 +358,53 @@ macro_rules! launch_phys {
 }
 
 impl CubeclSession {
+    /// A temporary not tied to the current node's output slot.
+    fn fresh(&self, dtype: DataType, shape: Vec<usize>) -> CubeTensor {
+        let numel: usize = shape.iter().product();
+        CubeTensor {
+            handle: self.client.empty(numel.max(1) * 4),
+            dtype,
+            shape,
+        }
+    }
+
+    /// `x` converted to `to` in a fresh temporary (i32 ↔ f32 only).
+    fn cast_tmp(&self, x: &CubeTensor, to: DataType) -> CubeTensor {
+        let out = self.fresh(to, x.shape.clone());
+        self.cast_into(x, &out);
+        out
+    }
+
+    /// Element-wise convert `x` into `out` (i32 ↔ f32 physical types).
+    fn cast_into(&self, x: &CubeTensor, out: &CubeTensor) {
+        let size = out.numel();
+        let p = self.params(P::new(size));
+        let (count, dim) = geometry(size);
+        match (phys(x.dtype).unwrap_or("?"), phys(out.dtype).unwrap_or("?")) {
+            ("i32", "f32") => unsafe {
+                kernels::cast_i32_f32::launch_unchecked::<WgpuRuntime>(
+                    &self.client,
+                    count,
+                    dim,
+                    self.arg(x),
+                    self.arg(out),
+                    self.parg(&p),
+                )
+            },
+            ("f32", "i32") => unsafe {
+                kernels::cast_f32_i32::launch_unchecked::<WgpuRuntime>(
+                    &self.client,
+                    count,
+                    dim,
+                    self.arg(x),
+                    self.arg(out),
+                    self.parg(&p),
+                )
+            },
+            (a, b) => panic!("cast_into: unsupported {a} -> {b}"),
+        }
+    }
+
     fn alloc_out(&self, dtype: DataType, shape: Vec<usize>) -> CubeTensor {
         let cached = self.cur_out.get().filter(|id| !self.escaping[id.index()]);
         if let Some(id) = cached {
@@ -803,10 +850,34 @@ impl CubeclSession {
 
             // ── linear algebra ───────────────────────────────────────
             Prim::MatMul { trans_a, trans_b } => {
-                let (a, b) = (input(0)?.clone(), input(1)?.clone());
-                if phys(a.dtype)? != "f32" {
-                    return Err(Error::Unsupported("non-f32 matmul on cubecl".into()));
+                let (mut a, mut b) = (input(0)?.clone(), input(1)?.clone());
+                // Integer matmuls (the CumSum decomposition's one-hot
+                // products on position ids) go through f32: exact below
+                // 2^24, and the only matmul kernel here is f32.
+                let int_in = phys(a.dtype)? == "i32";
+                if int_in {
+                    a = self.cast_tmp(&a, DataType::F32);
+                    b = self.cast_tmp(&b, DataType::F32);
+                } else if phys(a.dtype)? != "f32" {
+                    return Err(Error::Unsupported(format!(
+                        "non-f32 matmul on cubecl ({} {:?} × {} {:?})",
+                        a.dtype, a.shape, b.dtype, b.shape
+                    )));
                 }
+                // Integer outputs: the f32 product lands in a temporary and
+                // is converted into the node's own output slot at the end.
+                let int_out = int_in.then(|| (out_dtype, out_shape.clone()));
+                let out_dtype = if int_in { DataType::F32 } else { out_dtype };
+                let finish = |s: &Self, f: CubeTensor| -> CubeTensor {
+                    match &int_out {
+                        Some((dt, shape)) => {
+                            let o = s.alloc_out(*dt, shape.clone());
+                            s.cast_into(&f, &o);
+                            o
+                        }
+                        None => f,
+                    }
+                };
                 let (ar, br) = (a.shape.len(), b.shape.len());
                 let (m, k) = {
                     let (r, c) = (a.shape[ar - 2], a.shape[ar - 1]);
@@ -831,13 +902,18 @@ impl CubeclSession {
                 };
                 let a_bs = stride_of(a.shape[..ar - 2].iter().product(), m * k)?;
                 let b_bs = stride_of(b.shape[..br - 2].iter().product(), k * n)?;
-                let out = self.alloc_out(out_dtype, out_shape);
+                let out = if int_in {
+                    self.fresh(out_dtype, out_shape)
+                } else {
+                    self.alloc_out(out_dtype, out_shape)
+                };
                 // Decode-shaped projections: split-K matvec fast path
                 // (`trans_a` is irrelevant at m == 1). Sizes that aren't
                 // 4-aligned take the generic kernel below.
                 let vec4_ok = if *trans_b { k % 4 == 0 } else { n % 4 == 0 };
                 if batch == 1 && m == 1 && vec4_ok && n.div_ceil(64) <= 65535 {
-                    return Ok(vec![self.matvec(&a, &b, out, n, k, *trans_b)]);
+                    let r = self.matvec(&a, &b, out, n, k, *trans_b);
+                    return Ok(vec![finish(self, r)]);
                 }
                 let size = out.numel();
                 let p = self.params(
@@ -862,7 +938,7 @@ impl CubeclSession {
                         self.parg(&p),
                     )
                 }
-                out
+                finish(self, out)
             }
 
             Prim::Reduce { op, axes, .. } => {

@@ -134,6 +134,89 @@ ortenv/bin/python doc/benchmarks/ort_bench.py models/gemma-3-1b-it-ONNX-GQA/onnx
 ortenv/bin/python doc/benchmarks/ort_bench.py models/gemma-3-1b-it-ONNX-GQA/onnx/model_q4.onnx webgpu 64 128
 ```
 
+## 2026-09-06: the day-before-RustConf table (all backends, plus an embedding model)
+
+Same machine (RTX 5090, Ryzen 9 9950X3D), onnxruntime-gpu 1.29.0 (CUDA
+EP through the C API via `ort-bench-rs`; CPU and WebGPU EP rows through
+`ort_bench.py`, where Python costs ≤ 0.5 ms/step), `onnxruntime-ep-webgpu`
+0.2.1. Onyxia at this commit, Vulkan. Protocol as above: 64-token
+prefill, 128 measured decode steps; the Onyxia prefill is now the median
+of 5 (`onyxia bench`; a single 1B fp32 prefill swung 25–52 ms run to run,
+the decode numbers did not move). CPU EP uses all 16 cores.
+
+New today: `onnx-community/embeddinggemma-300m-ONNX` (fp32, 1.15 GiB),
+an encoder with no KV cache — `onyxia bench` and both ORT scripts got a
+forward protocol for models without a `logits` output: 32 timed
+stateless passes over 64 tokens, the pooled `sentence_embedding` copied
+to host every pass. Running it needed two lowering additions
+(`Where(shape == -1, …)` folding against symbolic dims; a
+`com.microsoft.MultiHeadAttention` rule onto the `Attention` composite)
+and, for CubeCL, integer matmuls through f32 (the CumSum decomposition).
+The embedding matches ORT-CPU to 2e-7 max abs (cosine 1 − 2e-12).
+`onyxia bench --backend cubecl` is also new; the 1B needed the GQA
+decomposition to restate the attention-bias's `total_sequence_length`
+dim as `past + seq` (a symbolic reshape) before it would build.
+
+**Decode**, tok/s (ms/tok); **prefill** of 64 tokens, ms. Onyxia
+resident VRAM in the first column.
+
+| model | Onyxia wgpu | Onyxia CubeCL | ORT CUDA EP | ORT CPU EP | ORT WebGPU EP |
+|---|---|---|---|---|---|
+| 270m fp32 decode | **331** (3.03) · 1.16 GiB | 47 (21.1) | 274 (3.65) | 43 (23.4) | 82 (12.1) |
+| 270m q4 decode | **423** (2.37) · 0.84 GiB | — (no 4-bit tensors) | 355 (2.82) | 68 (14.7) | 95 (10.5) |
+| 1B fp32 decode | **175** (5.72) · 3.91 GiB | 24 (42.4) | 159 (6.29) | 12 (82.8) | 24 (41.2) |
+| 1B q4 decode | **306** (3.26) · 0.92 GiB | — | 232 (4.30) | 65 (15.5) | 71 (14.1) |
+| 270m fp32 prefill | 19.4 | 79.9 | **7.5** | 31.0 | 20.8 |
+| 270m q4 prefill | 18.8 | — | **8.1** | 29.6 | 19.6 |
+| 1B fp32 prefill | 25.0 | 172.7 | **12.5** | 101.3 | 55.5 |
+| 1B q4 prefill | 24.4 | — | **20.1** | 64.0 | 33.9 |
+
+Embedding model, one 64-token forward pass (mean of 32), ms; passes/s
+in parentheses:
+
+| model | Onyxia wgpu | Onyxia CubeCL | ORT CUDA EP | ORT CPU EP | ORT WebGPU EP |
+|---|---|---|---|---|---|
+| embeddinggemma-300m fp32 | 6.37 (157/s) · 1.16 GiB | 40.6 (25/s) | **2.04** (490/s) | 19.6 (51/s) | 10.6 (95/s) |
+
+Ratios, Onyxia wgpu vs the others:
+
+| | vs ORT CUDA | vs ORT CPU | vs ORT WebGPU |
+|---|---|---|---|
+| 270m fp32 decode | 1.21× | 7.7× | 4.0× |
+| 270m q4 decode | 1.19× | 6.2× | 4.5× |
+| 1B fp32 decode | 1.10× | 14.5× | 7.2× |
+| 1B q4 decode | 1.32× | 4.7× | 4.3× |
+| 270m fp32 prefill | 0.39× | 1.6× | 1.07× |
+| 270m q4 prefill | 0.43× | 1.6× | 1.04× |
+| 1B fp32 prefill | 0.50× | 4.1× | 2.2× |
+| 1B q4 prefill | 0.82× | 2.6× | 1.4× |
+| embedding forward | 0.32× | 3.1× | 1.7× |
+
+Reading it:
+
+- **Decode is ahead of ORT-CUDA on every model** (1.10–1.32×), from
+  parity a day earlier; the fusion pass (`onyxia_ir::fuse`) and the
+  single-dispatch GQA concat are the difference. Both runtimes are still
+  launch-bound here.
+- **Prefill and the encoder are cuBLAS's**: 0.32–0.82× of ORT-CUDA. The
+  embedding model is a pure prefill (64 tokens through 24 layers plus
+  pooling), so it lands where the prefill rows do — 3× behind cuBLAS,
+  1.7× ahead of the WebGPU EP.
+- **CubeCL backend**: 7× behind the wgpu backend on 270m decode, 7× on
+  the 1B, 6× on the encoder — unchanged in character since August: the
+  fully decomposed graph (no fused GQA / RoPE / norm kernels, no tiled
+  matmul) is launch-count-bound. The q4 exports do not run there (no
+  packed 4-bit layout in that backend).
+- ORT-CPU on q4 is 1.6× (270m) / 5× (1B) its own fp32: MatMulNBits has a
+  good AVX-512 kernel; Onyxia wgpu is still 4.7–7.7× ahead of it.
+
+```sh
+cargo run --release -p onyxia-cli -- bench models/embeddinggemma-300m-ONNX/onnx/model.onnx --prefill-len 64 --repeats 32
+cargo run --release -p onyxia-cli -- bench models/gemma-3-1b-it-ONNX-GQA/onnx/model.onnx --backend cubecl --prefill-len 64 --decode-tokens 128
+doc/benchmarks/ort-bench-rs/target/release/ort-bench-rs ortenv/lib/python3.12/site-packages/onnxruntime/capi/libonnxruntime.so.1.29.0 models/embeddinggemma-300m-ONNX/onnx/model.onnx cuda-host 64 32
+ortenv/bin/python doc/benchmarks/ort_bench.py models/embeddinggemma-300m-ONNX/onnx/model.onnx cpu 64 32
+```
+
 ## Onyxia's CubeCL backend on the same GPU (270m, 2026-08-23)
 
 Re-run after the July perf pass, which only touched the wgpu backend. The

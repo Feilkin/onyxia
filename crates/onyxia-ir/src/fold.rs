@@ -343,19 +343,33 @@ pub fn eval_content(prim: &Prim, inputs: &[Option<&SymbolicContent>]) -> Option<
             })
         }
 
-        // Comparisons of constant shape-domain values → 0/1 content.
+        // Comparisons of shape-domain values → 0/1 content. Both constant,
+        // or a provably non-negative symbolic dim against a negative
+        // constant (the exporter's `Where(shape == -1, ...)` idiom for
+        // Expand/Reshape with -1 entries): a dim is never negative, so
+        // the comparison is decided without knowing the dim.
         Prim::Compare(op) => {
             let (a, b) = (get(0)?, get(1)?);
             zip_content(a, b, |x, y| {
-                let (x, y) = (const_of(&x)?, const_of(&y)?);
                 use crate::prim::CmpOp::*;
-                let r = match op {
-                    Eq => x == y,
-                    Ne => x != y,
-                    Lt => x < y,
-                    Le => x <= y,
-                    Gt => x > y,
-                    Ge => x >= y,
+                let r = match (const_of(&x), const_of(&y)) {
+                    (Some(x), Some(y)) => match op {
+                        Eq => x == y,
+                        Ne => x != y,
+                        Lt => x < y,
+                        Le => x <= y,
+                        Gt => x > y,
+                        Ge => x >= y,
+                    },
+                    // x ≥ 0 symbolic, y < 0: x > y always.
+                    (None, Some(y)) if y < 0 && x.is_nonneg() => {
+                        matches!(op, Ne | Gt | Ge)
+                    }
+                    // x < 0, y ≥ 0 symbolic: x < y always.
+                    (Some(x), None) if x < 0 && y.is_nonneg() => {
+                        matches!(op, Ne | Lt | Le)
+                    }
+                    _ => return None,
                 };
                 Some(DimExpr::constant(r as u64))
             })

@@ -6,10 +6,19 @@
 //! cost does not depend on token values, only on sequence positions). One
 //! warmup prefill + a few decode steps compile every pipeline before
 //! anything is measured.
+//!
+//! Models without a `logits` output (encoders, embedding models) get the
+//! forward protocol instead: one warmup pass, then `repeats` timed
+//! stateless passes over `prefill_len` tokens.
+//!
+//! Generic over the backend session; the per-kernel profile, VRAM and
+//! host-clock split are wgpu-only and come through [`BenchProbe`].
 
 use crate::llm::LlmSession;
 use anyhow::{Context, Result};
+use onyxia_backend_wgpu::session::CpuTiming;
 use onyxia_backend_wgpu::{KernelTiming, WgpuSession};
+use onyxia_ir::Session;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -19,11 +28,22 @@ const DUMMY_TOKEN: i64 = 42;
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
+/// Measured prefills per run; the report takes the median.
+const PREFILL_SAMPLES: usize = 5;
+
+fn median(samples: &[f64]) -> f64 {
+    let mut v = samples.to_vec();
+    v.sort_by(|a, b| a.total_cmp(b));
+    v[v.len() / 2]
+}
+
 pub struct BenchConfig {
-    /// Prompt length for the measured prefill.
+    /// Prompt length for the measured prefill (or the forward pass).
     pub prefill_len: usize,
     /// Number of measured single-token decode steps.
     pub decode_tokens: usize,
+    /// Number of measured forward passes (forward protocol only).
+    pub repeats: usize,
     /// Record per-kernel GPU time (needs timestamp queries).
     pub profile: bool,
     /// Write the full report as JSON here.
@@ -31,6 +51,42 @@ pub struct BenchConfig {
     /// Adapter description, for the report header.
     pub adapter: String,
 }
+
+/// Backend-specific instrumentation the report can use when available.
+/// Every method has a "not available" default, so a backend without
+/// timestamp queries or a memory tracker still benchmarks.
+pub trait BenchProbe {
+    fn enable_profiling(&mut self) -> bool {
+        false
+    }
+    fn take_timings(&mut self) -> Result<Vec<KernelTiming>> {
+        Ok(Vec::new())
+    }
+    fn take_cpu_timing(&mut self) -> Option<CpuTiming> {
+        None
+    }
+    /// `(resident, peak)` device bytes.
+    fn memory(&self) -> Option<(u64, u64)> {
+        None
+    }
+}
+
+impl BenchProbe for WgpuSession {
+    fn enable_profiling(&mut self) -> bool {
+        WgpuSession::enable_profiling(self)
+    }
+    fn take_timings(&mut self) -> Result<Vec<KernelTiming>> {
+        Ok(pollster::block_on(WgpuSession::take_timings(self))?)
+    }
+    fn take_cpu_timing(&mut self) -> Option<CpuTiming> {
+        Some(WgpuSession::take_cpu_timing(self))
+    }
+    fn memory(&self) -> Option<(u64, u64)> {
+        Some((self.resident_bytes(), self.peak_resident_bytes()))
+    }
+}
+
+impl BenchProbe for onyxia_backend_cubecl::CubeclSession {}
 
 /// Wall-clock statistics over a set of decode steps, in seconds.
 struct StepStats {
@@ -133,8 +189,12 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 /// Run the benchmark on a prepared session and print (and optionally
-/// serialize) the report.
-pub fn run(session: &mut LlmSession<WgpuSession>, cfg: &BenchConfig) -> Result<()> {
+/// serialize) the report. Picks the forward protocol for models without
+/// a `logits` output.
+pub fn run<S: Session + BenchProbe>(session: &mut LlmSession<S>, cfg: &BenchConfig) -> Result<()> {
+    if !session.output_names().iter().any(|n| n == "logits") {
+        return run_forward(session, cfg);
+    }
     let ids = vec![DUMMY_TOKEN; cfg.prefill_len];
 
     // Warmup: compiles every pipeline and populates the buffer pool so the
@@ -158,21 +218,33 @@ pub fn run(session: &mut LlmSession<WgpuSession>, cfg: &BenchConfig) -> Result<(
         false
     };
 
-    // Measured prefill.
-    let start = Instant::now();
-    session.prefill(&ids).context("prefill failed")?;
-    let prefill_s = start.elapsed().as_secs_f64();
-    let prefill_timings = pollster::block_on(session.backend_mut().take_timings())?;
+    // Measured prefill: the median of several, each from a fresh state
+    // (a single prefill on the larger models swings 2× run to run).
+    let mut prefills: Vec<f64> = Vec::with_capacity(PREFILL_SAMPLES);
+    for i in 0..PREFILL_SAMPLES {
+        if i > 0 {
+            session.reset_full();
+        }
+        let start = Instant::now();
+        session.prefill(&ids).context("prefill failed")?;
+        prefills.push(start.elapsed().as_secs_f64());
+    }
+    let prefill_timings = session.backend_mut().take_timings()?;
+    let prefill_s = median(&prefills);
+    let prefill_min = prefills.iter().copied().fold(f64::INFINITY, f64::min);
 
     // Measured decode.
-    let misses_before = session.backend_mut().take_cpu_timing().bind_misses;
+    let misses_before = session
+        .backend_mut()
+        .take_cpu_timing()
+        .map_or(0, |c| c.bind_misses);
     let mut step_s: Vec<f64> = Vec::with_capacity(cfg.decode_tokens);
     for _ in 0..cfg.decode_tokens {
         let start = Instant::now();
         session.decode(DUMMY_TOKEN).context("decode failed")?;
         step_s.push(start.elapsed().as_secs_f64());
     }
-    let decode_timings = pollster::block_on(session.backend_mut().take_timings())?;
+    let decode_timings = session.backend_mut().take_timings()?;
     let cpu = session.backend_mut().take_cpu_timing();
 
     // Report.
@@ -180,21 +252,16 @@ pub fn run(session: &mut LlmSession<WgpuSession>, cfg: &BenchConfig) -> Result<(
     let decode_gpu_ns: u64 = decode_timings.iter().map(|t| t.time_ns).sum();
     let decode_gpu_per_step = ms(decode_gpu_ns) / cfg.decode_tokens.max(1) as f64;
 
-    let (resident, peak) = (
-        session.backend_mut().resident_bytes(),
-        session.backend_mut().peak_resident_bytes(),
-    );
+    let memory = session.backend_mut().memory();
 
     println!("\nAdapter: {}", cfg.adapter);
+    print_memory(memory);
     println!(
-        "VRAM: {:.2} GiB resident, {:.2} GiB peak",
-        resident as f64 / GIB,
-        peak as f64 / GIB,
-    );
-    println!(
-        "prefill: {} tokens in {:.1} ms ({:.1} tok/s)",
+        "prefill: {} tokens in {:.1} ms median of {} (min {:.1}) ({:.1} tok/s)",
         cfg.prefill_len,
         prefill_s * 1e3,
+        PREFILL_SAMPLES,
+        prefill_min * 1e3,
         cfg.prefill_len as f64 / prefill_s,
     );
     println!(
@@ -206,7 +273,7 @@ pub fn run(session: &mut LlmSession<WgpuSession>, cfg: &BenchConfig) -> Result<(
         stats.stddev * 1e3,
         1.0 / stats.mean,
     );
-    {
+    if let Some(cpu) = &cpu {
         let n = cfg.decode_tokens.max(1) as f64;
         let per = |ns: u64| ms(ns) / n;
         let accounted = per(cpu.shapes_ns + cpu.encode_ns + cpu.wait_ns + cpu.readback_ns);
@@ -235,7 +302,13 @@ pub fn run(session: &mut LlmSession<WgpuSession>, cfg: &BenchConfig) -> Result<(
             "note: profiling encodes one pass per dispatch (timestamps); wall times above are \
              inflated — take throughput numbers from an unprofiled run"
         );
-        print_table("prefill by kernel", &prefill_timings, 1, 15, false);
+        print_table(
+            "prefill by kernel",
+            &prefill_timings,
+            PREFILL_SAMPLES,
+            15,
+            false,
+        );
         print_table(
             "decode by kernel",
             &decode_timings,
@@ -254,13 +327,136 @@ pub fn run(session: &mut LlmSession<WgpuSession>, cfg: &BenchConfig) -> Result<(
 
     if let Some(path) = &cfg.json {
         let mut report = json_report(cfg, prefill_s, &step_s, &prefill_timings, &decode_timings);
-        report["vram"] = serde_json::json!({
+        report["vram"] = memory_json(memory);
+        write_json(path, &report)?;
+    }
+    Ok(())
+}
+
+fn print_memory(memory: Option<(u64, u64)>) {
+    if let Some((resident, peak)) = memory {
+        println!(
+            "VRAM: {:.2} GiB resident, {:.2} GiB peak",
+            resident as f64 / GIB,
+            peak as f64 / GIB,
+        );
+    }
+}
+
+fn memory_json(memory: Option<(u64, u64)>) -> serde_json::Value {
+    match memory {
+        Some((resident, peak)) => serde_json::json!({
             "resident_bytes": resident,
             "peak_bytes": peak,
+        }),
+        None => serde_json::Value::Null,
+    }
+}
+
+fn write_json(path: &PathBuf, report: &serde_json::Value) -> Result<()> {
+    std::fs::write(path, serde_json::to_string_pretty(report)?)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    println!("\nwrote {}", path.display());
+    Ok(())
+}
+
+/// Forward protocol for stateless models: `repeats` timed passes over
+/// `prefill_len` tokens, each from a fresh session state. The last
+/// module output (the pooled embedding for the embedding exports) is
+/// downloaded every pass, as logits are in the decode protocol, and its
+/// values go into the JSON report so two runtimes can be compared.
+fn run_forward<S: Session + BenchProbe>(
+    session: &mut LlmSession<S>,
+    cfg: &BenchConfig,
+) -> Result<()> {
+    let output = session
+        .output_names()
+        .last()
+        .context("model has no outputs")?
+        .clone();
+    let ids = vec![DUMMY_TOKEN; cfg.prefill_len];
+    println!(
+        "No 'logits' output: forward protocol, {} tokens × {} passes, output '{output}'",
+        cfg.prefill_len, cfg.repeats
+    );
+
+    println!("Warmup (1 forward pass)...");
+    session
+        .forward(&ids, &output)
+        .context("warmup forward failed")?;
+
+    let profiling = cfg.profile && session.backend_mut().enable_profiling();
+    if cfg.profile && !profiling {
+        eprintln!("warning: device lacks TIMESTAMP_QUERY; --profile ignored");
+    }
+    let _ = session.backend_mut().take_timings()?;
+
+    let mut pass_s: Vec<f64> = Vec::with_capacity(cfg.repeats);
+    let mut last = None;
+    for _ in 0..cfg.repeats {
+        let start = Instant::now();
+        last = Some(session.forward(&ids, &output).context("forward failed")?);
+        pass_s.push(start.elapsed().as_secs_f64());
+    }
+    let timings = session.backend_mut().take_timings()?;
+    let stats = StepStats::of(&pass_s);
+    let memory = session.backend_mut().memory();
+    let last = last.context("no passes run")?;
+    let values = last.to_f32()?;
+
+    println!("\nAdapter: {}", cfg.adapter);
+    print_memory(memory);
+    println!(
+        "forward: {} tokens, {:.2} ms/pass mean (min {:.2}, max {:.2}, σ {:.2}) → {:.1} tok/s, {:.1} passes/s",
+        cfg.prefill_len,
+        stats.mean * 1e3,
+        stats.min * 1e3,
+        stats.max * 1e3,
+        stats.stddev * 1e3,
+        cfg.prefill_len as f64 / stats.mean,
+        1.0 / stats.mean,
+    );
+    let norm = values.iter().map(|v| v * v).sum::<f32>().sqrt();
+    println!(
+        "output '{output}' shape {:?}, L2 norm {norm:.4}, head {:?}",
+        last.shape(),
+        &values[..values.len().min(4)]
+    );
+    if profiling {
+        print_table("forward by kernel", &timings, cfg.repeats, 15, false);
+        print_table("forward by node", &timings, cfg.repeats, 20, true);
+    }
+
+    if let Some(path) = &cfg.json {
+        let kernels: serde_json::Value = aggregate(&timings, |t| &t.kernel)
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "kernel": r.kernel,
+                    "dispatches": r.count,
+                    "total_ms": ms(r.total_ns),
+                })
+            })
+            .collect();
+        let report = serde_json::json!({
+            "adapter": cfg.adapter,
+            "forward": {
+                "tokens": cfg.prefill_len,
+                "passes": cfg.repeats,
+                "mean_ms_per_pass": stats.mean * 1e3,
+                "min_ms_per_pass": stats.min * 1e3,
+                "max_ms_per_pass": stats.max * 1e3,
+                "stddev_ms": stats.stddev * 1e3,
+                "tokens_per_sec": cfg.prefill_len as f64 / stats.mean,
+                "passes_per_sec": 1.0 / stats.mean,
+                "kernels": kernels,
+                "output": output,
+                "output_shape": last.shape(),
+                "output_values": values,
+            },
+            "vram": memory_json(memory),
         });
-        std::fs::write(path, serde_json::to_string_pretty(&report)?)
-            .with_context(|| format!("failed to write {}", path.display()))?;
-        println!("\nwrote {}", path.display());
+        write_json(path, &report)?;
     }
     Ok(())
 }
@@ -291,6 +487,7 @@ fn json_report(
             "tokens": cfg.prefill_len,
             "seconds": prefill_s,
             "tokens_per_sec": cfg.prefill_len as f64 / prefill_s,
+            "samples": PREFILL_SAMPLES,
             "kernels": kernels(prefill_timings),
         },
         "decode": {
