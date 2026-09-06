@@ -188,14 +188,12 @@ impl<S: Session> LlmSession<S> {
                     t.clone()
                 } else {
                     // First step: empty cache in the declared shape (past=0).
+                    // Zero bytes of the declared dtype (f32 or f16 exports).
                     let dims = self.inputs[i].shape.eval(&bindings)?;
                     let numel: usize = dims.iter().product();
-                    match dtype {
-                        DataType::F32 => self
-                            .session
-                            .upload(&Tensor::from_f32(&vec![0.0; numel], &dims)?)?,
-                        dt => bail!("KV input '{name}' has unsupported dtype {dt}"),
-                    }
+                    let bytes = numel * dtype.bits().div_ceil(8);
+                    self.session
+                        .upload(&Tensor::new(dtype, dims, vec![0u8; bytes])?)?
                 }
             } else {
                 // Masks and friends: all-ones in the declared shape.

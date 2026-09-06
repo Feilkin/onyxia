@@ -323,6 +323,46 @@ genaienv/bin/python -m onnxruntime_genai.models.builder -m google/gemma-3-1b-it 
 genaienv/bin/python doc/benchmarks/genai_bench.py models/genai/gemma-3-1b-int4 64 128
 ```
 
+### Same day: the same file in fp16 (`model_fp16.onnx`, `model_q4f16.onnx`)
+
+The one comparison that is both same-file and all-GPU on the ORT side
+is the 16-bit exports the same repos ship: on `model_fp16.onnx` ORT's
+CUDA EP places 11 shape ops on the CPU and inserts **1** Memcpy node —
+the attention runs on the GPU. Both lower on Onyxia (the session's empty
+KV cache now takes the declared dtype). ORT rows via `ort_bench.py`
+(Python, ≤ 0.5 ms/step), prefill on the `_last` variants:
+
+| model | Onyxia wgpu, fp32 file (from above) | Onyxia wgpu, fp16 file | ORT CUDA EP, fp16 file |
+|---|---|---|---|
+| 270m fp16 decode | 333 tok/s | **24 tok/s** (41.5 ms) · 0.61 GiB | **454 tok/s** (2.20 ms) |
+| 270m q4f16 decode | 424 | 264 (3.79) · 0.43 GiB | **503** (1.99) |
+| 1B fp16 decode | 176 | **8 tok/s** (123 ms) · 1.99 GiB | **264** (3.78) |
+| 1B q4f16 decode | 310 | 179 (5.58) · 0.94 GiB | **322** (3.11) |
+| 270m fp16 prefill | 4.1 ms | 119 ms | **2.1 ms** |
+| 270m q4f16 prefill | 4.0 | 5.8 | **2.5** |
+| 1B fp16 prefill | 8.9 | 296 | **3.5** |
+| 1B q4f16 prefill | 9.1 | 11.8 | **4.5** |
+
+Onyxia has no f16 fast path: the profile of the 270m fp16 decode step
+is 91 % `matmul_f16`, the naive one-thread-per-output kernel (42.7 of
+46.6 ms GPU), plus 470 casts around the f32-only fused kernels. Output
+is correct (greedy text identical). The q4f16 exports fare better only
+because MatMulNBits' fused matvec is dtype-agnostic on the weights and
+the activations are cast once per matmul. Building the f16 variants of
+`matvec_kn_v4` / `matvec_transb_v4` / `matmul_tiled_rb` is the missing
+piece, and with the wgpu backend on f16 storage the weight bytes halve
+(the 1B fp16 file is 1.99 GiB resident vs 3.92).
+
+So there is no single same-file row that is fair to both sides today:
+on the fp32 files ORT-CUDA runs the attention on the CPU; on the fp16
+files Onyxia runs the matmuls through its fallback kernel. The
+defensible pairing is ORT-CUDA on the fp16 file against Onyxia on the
+fp32 file — each runtime on the precision it has kernels for: ORT
+**1.36× / 1.19× / 1.50× / 1.04×** ahead on decode (270m fp16, 270m
+q4f16, 1B fp16, 1B q4f16 vs Onyxia fp32 / q4) and **2.0× / 1.6× / 2.5×
+/ 2.0×** ahead on prefill — before onnxruntime-genai's CUDA graphs,
+which add another ~2×.
+
 ## Onyxia's CubeCL backend on the same GPU (270m, 2026-08-23)
 
 Re-run after the July perf pass, which only touched the wgpu backend. The

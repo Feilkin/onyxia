@@ -66,8 +66,11 @@ dev = {"cpu": "cpu", "webgpu": "cpu", "webgpu-iobinding": "webgpu"}.get(mode, "c
 use_binding = mode.endswith("-iobinding")
 
 
+kv_dtype = np.float16 if "float16" in kv_in[0].type else np.float32
+
+
 def empty_kv():
-    return {i.name: np.zeros((1, n_kv_heads, 0, head_dim), np.float32) for i in kv_in}
+    return {i.name: np.zeros((1, n_kv_heads, 0, head_dim), kv_dtype) for i in kv_in}
 
 
 class State:
