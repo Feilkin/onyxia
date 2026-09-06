@@ -591,6 +591,10 @@ impl WgpuSession {
     }
 }
 
+/// Output width from which the cooperative-matrix matmul uses the
+/// 128-column tile.
+const COOP_WIDE_N: usize = 4096;
+
 /// Immediate prefix + thread count for a kernel that runs one thread per
 /// output *word* of layout `l` over `numel` elements.
 fn size_imm_l(l: &Layout, numel: usize) -> (Imm, usize) {
@@ -1065,9 +1069,17 @@ impl WgpuSession {
             }
             None => &a.buffer,
         };
-        let grid_x = n.div_ceil(64);
+        // Wide outputs take the 128-column tile (half the A re-reads per
+        // output column); narrower ones keep 64 so the grid still fills
+        // the device without leaning on split-K.
+        let tn = if n >= COOP_WIDE_N { 128 } else { 64 };
+        let grid_x = n.div_ceil(tn);
         let grid_y = m_pad.div_ceil(128);
-        const TARGET_WG: usize = 512;
+        // 256 measured best for this kernel on the 5090 (1B fp16, 1024
+        // tokens: 128 → 38.6 ms, 256 → 36.0, 512 → 38.3, 1024 → 41.0):
+        // its workgroups are heavy enough that ~1.5 waves already fill
+        // the device, and every extra split costs an f32 partial pass.
+        const TARGET_WG: usize = 256;
         const MAX_KS: usize = 32;
         let base_wg = grid_x * grid_y;
         let ks = if base_wg >= TARGET_WG {
@@ -1094,11 +1106,11 @@ impl WgpuSession {
             .u(chunk as u32);
         self.dispatch_grid(
             &format!(
-                "matmul_coop_f16_{}_n{}",
+                "matmul_coop_f16_{}_n{}_t{tn}",
                 out_elem.tag(),
                 if trans_b { "t" } else { "n" }
             ),
-            || kernels::matmul_coop_f16(trans_b, out_elem),
+            || kernels::matmul_coop_f16(trans_b, out_elem, tn),
             &[a_buf, &b.buffer, dst],
             &imm,
             [grid_x as u32, grid_y as u32, ks as u32],
