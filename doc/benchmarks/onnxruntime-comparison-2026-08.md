@@ -343,25 +343,54 @@ KV cache now takes the declared dtype). ORT rows via `ort_bench.py`
 | 1B fp16 prefill | 8.9 | 296 | **3.5** |
 | 1B q4f16 prefill | 9.1 | 11.8 | **4.5** |
 
-Onyxia has no f16 fast path: the profile of the 270m fp16 decode step
-is 91 % `matmul_f16`, the naive one-thread-per-output kernel (42.7 of
-46.6 ms GPU), plus 470 casts around the f32-only fused kernels. Output
-is correct (greedy text identical). The q4f16 exports fare better only
-because MatMulNBits' fused matvec is dtype-agnostic on the weights and
-the activations are cast once per matmul. Building the f16 variants of
-`matvec_kn_v4` / `matvec_transb_v4` / `matmul_tiled_rb` is the missing
-piece, and with the wgpu backend on f16 storage the weight bytes halve
-(the 1B fp16 file is 1.99 GiB resident vs 3.92).
+Onyxia had no f16 fast path at that point: the profile of the 270m fp16
+decode step was 91 % `matmul_f16`, the naive one-thread-per-output
+kernel (42.7 of 46.6 ms GPU), plus 470 casts around the f32-only fused
+kernels (output correct, greedy text identical).
 
-So there is no single same-file row that is fair to both sides today:
-on the fp32 files ORT-CUDA runs the attention on the CPU; on the fp16
-files Onyxia runs the matmuls through its fallback kernel. The
-defensible pairing is ORT-CUDA on the fp16 file against Onyxia on the
-fp32 file — each runtime on the precision it has kernels for: ORT
-**1.36× / 1.19× / 1.50× / 1.04×** ahead on decode (270m fp16, 270m
-q4f16, 1B fp16, 1B q4f16 vs Onyxia fp32 / q4) and **2.0× / 1.6× / 2.5×
-/ 2.0×** ahead on prefill — before onnxruntime-genai's CUDA graphs,
-which add another ~2×.
+### Same evening: f16 fast paths (commits 4e31242 … c4579da)
+
+Four steps, each measured on the same files:
+
+| step | 270m fp16 | 270m q4f16 | 1B fp16 | 1B q4f16 |
+|---|---|---|---|---|
+| before (fallback kernels) | 24 tok/s | 264 | 8 | 179 |
+| + f16 matvec / rb tile (`MatElem` templates, f32 accumulate) | 270 | 264 | 166 | 179 |
+| + fused GQA and gelu*mul native f16 (`handles_f16`) | 317 | 317 | 200 | 217 |
+| + fused MatMulNBits over f16 activations/scales | — | 380 | — | 263 |
+| + `Cast→RMSNorm→Cast` (± residual Add) fused into f16-in/out norms | **336** | **415** | **216** | **291** |
+
+Final numbers (128 decode steps, prefill median of 5), against the same
+file on ORT-CUDA and Onyxia's own fp32/q4 files:
+
+| model | Onyxia, fp16 file | Onyxia, fp32/q4 file | ORT CUDA EP, fp16 file | Onyxia f16 / ORT |
+|---|---|---|---|---|
+| 270m fp16 decode | **336 tok/s** (2.98 ms) · 0.59 GiB | 333 · 1.17 GiB | 454 (2.20) | 0.74× |
+| 270m q4f16 decode | **415** (2.41) · 0.31 GiB | 424 · 0.84 GiB | 503 (1.99) | 0.83× |
+| 1B fp16 decode | **216** (4.63) · 1.98 GiB | 176 · 3.92 GiB | 264 (3.78) | 0.82× |
+| 1B q4f16 decode | **291** (3.43) · 0.78 GiB | 310 · 0.92 GiB | 322 (3.11) | 0.90× |
+| 270m fp16 prefill | 4.8 ms | 4.1 | **2.1** | 0.44× |
+| 270m q4f16 prefill | 4.4 | 4.0 | **2.5** | 0.57× |
+| 1B fp16 prefill | 9.9 | 8.9 | **3.5** | 0.35× |
+| 1B q4f16 prefill | 9.2 | 9.1 | **4.5** | 0.49× |
+
+So the same-file fp16 comparison now exists and is fair to both sides
+(ORT: attention on the GPU, 1 Memcpy; Onyxia: every hot kernel native
+f16): **Onyxia decodes at 0.74–0.90× of ORT-CUDA and prefills at
+0.35–0.57×**. The f16 file halves Onyxia's resident VRAM (1B: 3.92 →
+1.98 GiB) and is faster than the fp32 file on the 1B (216 vs 176 tok/s)
+but not on the 270m (336 vs 333): at 0.6 GB of weights the 5090's
+bandwidth is not the limit, the ~530 dispatches per step are. The
+remaining f32-only fused kernels (softmax, rotary, plain Gelu) don't
+appear in these graphs; the decode step still carries 126 split-K
+`matvec_reduce` dispatches on the 270m that the MatMulNBits path avoids
+(its split threshold is 64 workgroups, the f32/f16 matvec's 512).
+
+The old "each runtime on the precision it has kernels for" pairing
+(ORT fp16 file vs Onyxia fp32 file) stands for the fp32 rows:
+ORT **1.36× / 1.19× / 1.50× / 1.04×** ahead on decode, **2.0× / 1.6× /
+2.5× / 2.0×** on prefill — and onnxruntime-genai's CUDA graphs add
+another ~2× on top of either.
 
 ## Onyxia's CubeCL backend on the same GPU (270m, 2026-08-23)
 
