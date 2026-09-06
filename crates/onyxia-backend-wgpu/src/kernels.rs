@@ -1515,6 +1515,87 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
     )
 }
 
+/// f16 matmul on cooperative matrices with operands read straight from
+/// the storage buffers: 128×64 output tile per 256-thread workgroup, 8
+/// subgroups (32 wide) each owning a 32×32 block as 2×2 `16×16×16`
+/// MMAs, K stepped by 16 with no workgroup memory and no barriers in the
+/// loop. `a` is row-major `[M,K]` (`coopLoadT`, stride K); `b` is
+/// row-major `[K,N]` (`coopLoadT`, stride N) or `[N,K]` (`coopLoad`,
+/// stride K). Requires `K % 16 == 0`, `N % 16 == 0` and `a` padded to a
+/// multiple of 16 rows (the caller copies); the f32 accumulators go
+/// through workgroup memory once at the end for the bounds-checked,
+/// type-converted store. Same immediates and grid convention as
+/// [`matmul_tiled_rb`] (`z` = K slice; batch is 1).
+pub fn matmul_coop_f16(trans_b: bool, out: MatElem) -> String {
+    let o = out.wgsl();
+    let b_load = if trans_b {
+        "coopLoad<coop_mat16x16<f16, B>>(&b[(nb + j * 16u) * p.k + k0], p.k)"
+    } else {
+        "coopLoadT<coop_mat16x16<f16, B>>(&b[k0 * p.n + nb + j * 16u], p.n)"
+    };
+    format!(
+        "enable f16;
+enable wgpu_cooperative_matrix;
+struct P {{ m: u32, n: u32, k: u32, a_bs: u32, b_bs: u32, batch: u32, chunk: u32 }}
+var<immediate> p: P;
+@group(0) @binding(0) var<storage, read> a: array<f16>;
+@group(0) @binding(1) var<storage, read> b: array<f16>;
+@group(0) @binding(2) var<storage, read_write> out: array<{o}>;
+var<workgroup> Cs: array<f32, 8192>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(workgroup_id) wg: vec3<u32>,
+        @builtin(local_invocation_id) lid: vec3<u32>) {{
+    let lin = lid.x;
+    let sg = lin / 32u;
+    let n0 = wg.x * 64u;
+    let m0 = wg.y * 128u;
+    let k_lo = wg.z * p.chunk;
+    let k_hi = min(k_lo + p.chunk, p.k);
+    // Subgroup (qm, qn) owns rows m0 + qm*32 .. +32, cols n0 + qn*32 .. +32.
+    let qm = sg / 2u;
+    let qn = sg % 2u;
+    let ma = m0 + qm * 32u;
+    let nb = n0 + qn * 32u;
+    var c00 = coop_mat16x16<f32, C>();
+    var c01 = coop_mat16x16<f32, C>();
+    var c10 = coop_mat16x16<f32, C>();
+    var c11 = coop_mat16x16<f32, C>();
+    for (var k0 = k_lo; k0 < k_hi; k0 += 16u) {{
+        let a0 = coopLoadT<coop_mat16x16<f16, A>>(&a[ma * p.k + k0], p.k);
+        let a1 = coopLoadT<coop_mat16x16<f16, A>>(&a[(ma + 16u) * p.k + k0], p.k);
+        var j = 0u;
+        let b0 = {b_load};
+        j = 1u;
+        let b1 = {b_load};
+        c00 = coopMultiplyAdd(a0, b0, c00);
+        c01 = coopMultiplyAdd(a0, b1, c01);
+        c10 = coopMultiplyAdd(a1, b0, c10);
+        c11 = coopMultiplyAdd(a1, b1, c11);
+    }}
+    // Row-major 128×64 f32 tile in workgroup memory, then the guarded,
+    // converted store (rows ≥ M are the padding).
+    let cb = (qm * 32u) * 64u + qn * 32u;
+    coopStoreT(c00, &Cs[cb], 64u);
+    coopStoreT(c01, &Cs[cb + 16u], 64u);
+    coopStoreT(c10, &Cs[cb + 16u * 64u], 64u);
+    coopStoreT(c11, &Cs[cb + 16u * 64u + 16u], 64u);
+    workgroupBarrier();
+    let out_base = wg.z * p.m * p.n;
+    for (var i = lin; i < 128u * 64u; i += 256u) {{
+        let r = i / 64u;
+        let c = i % 64u;
+        let mm = m0 + r;
+        let nn = n0 + c;
+        if (mm < p.m && nn < p.n) {{
+            out[out_base + mm * p.n + nn] = {o}(Cs[i]);
+        }}
+    }}
+}}
+"
+    )
+}
+
 /// Cooperative-matrix (tensor core) tiled matmul, native only
 /// (`Features::EXPERIMENTAL_COOPERATIVE_MATRIX`, 32-wide subgroups).
 ///

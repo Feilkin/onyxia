@@ -40,6 +40,10 @@ pub struct GpuContext {
     /// `ONYXIA_NO_F16=1` / `ONYXIA_NO_INT64=1` force the fallbacks so
     /// native test runs cover the packed / narrowed paths.
     pub caps: crate::layout::Caps,
+    /// Cooperative matrices are available (f16 16×16×16 with f32
+    /// accumulate, 32-wide subgroups): the f16 matmul fast path uses
+    /// tensor cores through [`kernels::matmul_coop_f16`].
+    pub coop: bool,
     /// Dispatches per intermediate `queue.submit` within a run, so the GPU
     /// starts on the first kernels while the CPU is still encoding the
     /// rest (a decode step is ~2 ms of encode for ~650 dispatches — fully
@@ -183,6 +187,7 @@ impl GpuContext {
             .and_then(|v| v.parse().ok())
             .unwrap_or(DEFAULT_SUBMIT_CHUNK);
         Ok(Self {
+            coop,
             device: Arc::new(device),
             queue: Arc::new(queue),
             adapter_info,

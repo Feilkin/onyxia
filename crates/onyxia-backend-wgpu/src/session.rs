@@ -243,6 +243,7 @@ impl onyxia_ir::Backend for WgpuBackend {
             use_immediates: self.ctx.use_immediates,
             submit_chunk: self.ctx.submit_chunk,
             matmul_tile: self.ctx.matmul_tile,
+            coop: self.ctx.coop,
             imm_buffers: Vec::new(),
             imm_free: Vec::new(),
             profiler: None,
@@ -296,6 +297,8 @@ pub struct WgpuSession {
     submit_chunk: usize,
     /// See [`GpuContext::matmul_tile`].
     matmul_tile: crate::gpu::MatmulTile,
+    /// See [`GpuContext::coop`].
+    coop: bool,
     /// Params buffers for the in-flight batch. Each dispatch gets its own
     /// (all `write_buffer`s execute before the batch), returned to
     /// `imm_free` at submit. MUST NOT come from the tensor pool: a params
@@ -1019,6 +1022,100 @@ impl WgpuSession {
         Ok(())
     }
 
+    /// f16 `[M,K] × [K,N]` (or `[N,K]ᵀ`) on cooperative matrices, f32
+    /// accumulate: 128×64 output tile per 256-thread workgroup (8
+    /// subgroups × 32×32), operands `coopLoad`ed straight from the
+    /// storage buffers. `M` not a multiple of 16 is padded by copying
+    /// `a` into a scratch with junk tail rows (each output row depends on
+    /// its own input row only; the tail is never stored). Split-K as the
+    /// rb tile, partials folded by `matvec_reduce`.
+    #[allow(clippy::too_many_arguments)]
+    fn matmul_coop_f16(
+        &mut self,
+        a: &GpuTensor,
+        b: &GpuTensor,
+        out: &GpuTensor,
+        m: usize,
+        n: usize,
+        k: usize,
+        trans_b: bool,
+    ) -> Result<()> {
+        let m_pad = m.div_ceil(16) * 16;
+        let padded = (m_pad != m).then(|| {
+            let l = Layout::of(DataType::F16, self.caps).expect("f16 layout");
+            self.acquire_scratch(l.buffer_bytes(m_pad * k))
+        });
+        let a_buf: &Arc<TrackedBuffer> = match &padded {
+            Some(scratch) => {
+                let l = Layout::of(DataType::F16, self.caps)?;
+                let (imm, size) = size_imm_l(&l, m * k);
+                self.dispatch(
+                    &format!("copy_{}", l.tag()),
+                    || kernels::copy(&l),
+                    &[&a.buffer, scratch],
+                    &imm,
+                    size,
+                )?;
+                scratch
+            }
+            None => &a.buffer,
+        };
+        let grid_x = n.div_ceil(64);
+        let grid_y = m_pad.div_ceil(128);
+        const TARGET_WG: usize = 512;
+        const MAX_KS: usize = 32;
+        let base_wg = grid_x * grid_y;
+        let ks = if base_wg >= TARGET_WG {
+            1
+        } else {
+            TARGET_WG
+                .div_ceil(base_wg)
+                .min(k.div_ceil(64))
+                .clamp(1, MAX_KS)
+        };
+        let chunk = k.div_ceil(ks).div_ceil(32) * 32;
+        let ks = k.div_ceil(chunk.max(1)).max(1);
+        let size = m * n;
+        let scratch = (ks > 1).then(|| self.acquire_scratch((ks * size * 4) as u64));
+        let dst = scratch.as_ref().unwrap_or(&out.buffer);
+        let out_elem = if ks > 1 { MatElem::F32 } else { MatElem::F16 };
+        let imm = Imm::new()
+            .u(m as u32)
+            .u(n as u32)
+            .u(k as u32)
+            .u(0)
+            .u(0)
+            .u(1)
+            .u(chunk as u32);
+        self.dispatch_grid(
+            &format!(
+                "matmul_coop_f16_{}_n{}",
+                out_elem.tag(),
+                if trans_b { "t" } else { "n" }
+            ),
+            || kernels::matmul_coop_f16(trans_b, out_elem),
+            &[a_buf, &b.buffer, dst],
+            &imm,
+            [grid_x as u32, grid_y as u32, ks as u32],
+        )?;
+        if let Some(scratch) = scratch {
+            let (imm, n_out) = size_imm(size);
+            let imm = imm.u(ks as u32);
+            self.dispatch(
+                "matvec_reduce_f16",
+                || kernels::matvec_reduce(MatElem::F16),
+                &[&scratch, &out.buffer],
+                &imm,
+                n_out,
+            )?;
+            self.release_scratch(scratch);
+        }
+        if let Some(p) = padded {
+            self.release_scratch(p);
+        }
+        Ok(())
+    }
+
     /// Block dequantization (`Prim::Dequantize` and the prefill half of
     /// the fused `MatMulNBits`): `(q - zp) * scale` per element, output in
     /// the scales' dtype.
@@ -1399,6 +1496,24 @@ impl WgpuSession {
                     if batch == 1 && m == 1 && n.div_ceil(64) <= 65535 && f16_ok {
                         let out = self.alloc_out(out_dtype, out_shape);
                         return self.matvec(&a, &b, out, n, k, *trans_b, elem);
+                    }
+                    // f16 prefill on tensor cores: operands read straight
+                    // from the storage buffers, so K and N must be
+                    // 16-aligned (rows 32-byte aligned); M is padded.
+                    if elem == MatElem::F16
+                        && self.coop
+                        && !std::env::var("ONYXIA_NO_COOPMAT").is_ok_and(|v| v != "0")
+                        && batch == 1
+                        && m >= 16
+                        && !*trans_a
+                        && k % 16 == 0
+                        && n % 16 == 0
+                        && n.div_ceil(64) <= 65535
+                        && m.div_ceil(128) <= 65535
+                    {
+                        let out = self.alloc_out(out_dtype, out_shape);
+                        self.matmul_coop_f16(&a, &b, &out, m, n, k, *trans_b)?;
+                        return Ok(out);
                     }
                     let rb_ok = elem == MatElem::F32
                         || (self.matmul_tile == crate::gpu::MatmulTile::Rb
