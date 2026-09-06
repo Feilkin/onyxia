@@ -498,12 +498,34 @@ The full picture, same fp16 files, 128 decode steps:
 | 1B q4f16 | **9.8** | 4.5 | **53.5** (188.5) | 18.3 | 275 | 168 |
 
 At 1024 tokens Onyxia went from 15× behind onnxruntime-CUDA to
-2.6–2.9× behind, with the same ONNX file on both sides, and the
-1B fp16 prefill profile is now 34 ms of matmul (the `lm_head` alone
-11 ms at ~56 TFLOPS) + 6 ms of attention + 3 ms of the rest. The next
-matmul lever is a 128×128 tile with two accumulators per subgroup row
-(halves the A traffic) and a look at split-K on the wide `lm_head`.
-Decode at long context is ahead of ORT's plain `run()` on every file.
+2.6–2.9× behind, with the same ONNX file on both sides.
+
+### Same evening: 128×128 tile for the wide matmuls (016eabd)
+
+The coop matmul is generic over its tile width: `N ≥ 4096` (gate/up,
+`lm_head`) takes a 128×128 tile — each subgroup 32×64 as 2×4 MMAs,
+halving the A re-reads per output column — narrower projections keep
+128×64 so the grid fills the device without split-K. The split-K
+target for this kernel measured best at 256 workgroups (1B fp16, 1024
+tokens: 128 → 38.6 ms, 256 → 36.0, 512 → 38.3, 1024 → 41.0). Final
+numbers for the day, same fp16 file on both sides:
+
+| model | prefill 64, Onyxia | ORT CUDA | prefill 1024, Onyxia (start of day) | ORT CUDA | decode @1100, Onyxia | ORT |
+|---|---|---|---|---|---|---|
+| 270m fp16 | **4.2 ms** | 2.1 | **15.6 ms** (96.5) | 6.4 | 323 tok/s | 247 |
+| 270m q4f16 | **4.4** | 2.5 | **17.5** (98.3) | 7.1 | 395 | 258 |
+| 1B fp16 | **8.1** | 3.5 | **36.8** (197.5) | 15.9 | 208 | 151 |
+| 1B q4f16 | **9.5** | 4.5 | **45.4** (188.5) | 18.3 | 276 | 168 |
+
+2.3–2.5× behind cuBLAS-class prefill at 1024 tokens, 1.9–2.1× at 64,
+ahead on long-context decode. The 1B fp16 prefill profile (38 ms GPU):
+narrow projections 10.1 ms (130 dispatches, split-K partials), gate/up
+9.9, `lm_head` 8.9 (~70 TFLOPS), attention 6.0, norms and reduces 2.6.
+What is left on the matmul side is per-workgroup efficiency (the
+subgroups re-read A and B tiles from L1/L2 — a shared-memory-staged
+double-buffered variant would cut that, at the cost of the barriers
+this kernel was written to avoid) and the lm_head's single 128×128
+dispatch over 2048 column tiles.
 
 ## Onyxia's CubeCL backend on the same GPU (270m, 2026-08-23)
 
