@@ -180,10 +180,15 @@ impl LlmSession {
             .iter()
             .find(|(n, _)| n == "logits")
             .context("output 'logits' missing")?;
-        let logits = self.session.download(logits).await?;
-        let vocab = *logits.shape().last().context("scalar logits output")?;
-        let all = logits.to_f32()?;
-        Ok(all[(seq - 1) * vocab..seq * vocab].to_vec())
+        // Only the last row: the full [1, S, V] tensor is 64 MB at S=64 on
+        // the 262k vocab and dominated prefill (the whole conversation is
+        // re-prefilled every turn).
+        let vocab = *logits.shape.last().context("scalar logits output")?;
+        let row = self
+            .session
+            .download_range(logits, (seq - 1) * vocab, vocab)
+            .await?;
+        Ok(row.to_f32()?)
     }
 
     fn bindings_for(&self, seq: usize) -> Result<Bindings> {

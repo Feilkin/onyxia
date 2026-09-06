@@ -215,7 +215,56 @@ cargo run --release -p onyxia-cli -- bench models/embeddinggemma-300m-ONNX/onnx/
 cargo run --release -p onyxia-cli -- bench models/gemma-3-1b-it-ONNX-GQA/onnx/model.onnx --backend cubecl --prefill-len 64 --decode-tokens 128
 doc/benchmarks/ort-bench-rs/target/release/ort-bench-rs ortenv/lib/python3.12/site-packages/onnxruntime/capi/libonnxruntime.so.1.29.0 models/embeddinggemma-300m-ONNX/onnx/model.onnx cuda-host 64 32
 ortenv/bin/python doc/benchmarks/ort_bench.py models/embeddinggemma-300m-ONNX/onnx/model.onnx cpu 64 32
+# last-row logits variants for ORT (needs the onnx package: `just fetch-onnx-tests`)
+.venv/bin/python doc/benchmarks/last_row.py models/gemma-3-1b-it-ONNX-GQA/onnx/model.onnx
 ```
+
+### Same day, later: prefill was mostly the logits download
+
+`onyxia bench` grew a host-clock split for the prefill (as it had for
+decode), which put 11–12 ms of the 20–25 ms prefill in *readback*: the
+session downloaded the whole `[1, 64, 262144]` logits tensor (67 MB
+through a fresh staging buffer) to keep one row. `Session::download_range`
+(new trait method, default = download-and-slice; the wgpu backend copies
+the byte range, the CubeCL backend reads a sub-handle) fetches the last
+row only, from `LlmSession` and the gemma-chat demo alike. Two smaller
+GPU-side changes on top: the register-blocked prefill tile stages its
+operands with `vec4` loads when the rows are 4-aligned (`_v4` variants,
+nn and nt; the 1B's projection matmuls 6.7 → 5.9 ms GPU), and the
+split-K target went 256 → 512 workgroups (1B fp32 prefill 9.3 → 8.8 ms;
+flat elsewhere). Decode is untouched: it never ran these paths.
+
+To keep onnxruntime on the same footing, `last_row.py` writes
+`<model>_last.onnx` next to each export: the same graph with a `Slice`
+so `logits` is `[1, 1, V]` and `run()` copies one row, exactly what
+Onyxia now does. Both ORT scripts also take the prefill as the median of
+5. ORT rows below are those variants; the full-logits ORT prefill is in
+parentheses for reference.
+
+**Prefill, 64 tokens, ms** (decode unchanged from the morning table):
+
+| model | Onyxia wgpu (was) | ORT CUDA EP, last row (full logits) | ORT CPU EP, last row | ORT WebGPU EP, last row |
+|---|---|---|---|---|
+| 270m fp32 | **4.1** (19.4) | 4.0 (7.6) | 32.6 | 11.6 |
+| 270m q4 | **4.0** (18.8) | 4.9 (8.3) | 31.9 | 11.5 |
+| 1B fp32 | **8.9** (25.0) | 8.8 (11.9) | 96.0 | 43.7 |
+| 1B q4 | **9.1** (24.4) | 16.1 (19.3) | 56.3 | 26.3 |
+
+Onyxia / ORT-CUDA prefill: 0.98×, 1.23×, 0.99×, 1.77× — parity with
+cuBLAS at 64 tokens on the fp32 exports, ahead on q4. The remaining 1B
+fp32 prefill is 8.9 ms wall for ~9.5 ms of GPU time (profiled: the
+projection matmuls 5.9 ms, lm_head 1.5, split-K reduces 1.1, attention
+0.9, norms 1.1) with ~1.1 ms of encode overlapped; the next lever is the
+matmul tile itself (a 64×64 tile with 4×4 micro-tiles is at ~25 TFLOPS
+against the 5090's ~100), then folding the 182 split-K reduces.
+
+The ORT CUDA *decode* on the `_last` graphs is noisier than on the
+originals (σ up to 1.7 ms/step) and its q4 1B row came out slower
+(213 vs 231 tok/s); the morning table's decode column stands.
+
+CubeCL backend after the same change: 270m fp32 prefill 79.9 → 70.1 ms,
+1B fp32 172.7 → 160.4 ms (decode 49 / 24 tok/s, unchanged) — the same
+~10 ms of download gone, the rest is its unfused kernels.
 
 ## Onyxia's CubeCL backend on the same GPU (270m, 2026-08-23)
 

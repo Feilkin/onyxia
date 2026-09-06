@@ -39,7 +39,7 @@ pub mod types;
 pub mod validate;
 
 pub use attrs::{AttrValue, Attrs};
-pub use backend::{Backend, Session};
+pub use backend::{Backend, Session, slice_host_tensor};
 pub use builder::GraphBuilder;
 pub use decomp::{DecompositionRegistry, inline_composites, standard_decompositions};
 pub use dim::{Bindings, DimExpr, SymId, SymbolTable, SymbolicShape};

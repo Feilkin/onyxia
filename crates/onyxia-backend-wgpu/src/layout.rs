@@ -150,6 +150,19 @@ impl Layout {
         raw.div_ceil(4) * 4
     }
 
+    /// Byte `(offset, size)` of elements `[start, start + len)` inside a
+    /// buffer laid out for this type, when the range starts on a storage
+    /// word and a 4-byte copy boundary (packed layouts can't start
+    /// mid-word). `size` is padded like [`Self::buffer_bytes`], which
+    /// stays inside the source buffer because both share the rounding.
+    pub fn range_bytes(&self, start: usize, len: usize) -> Option<(u64, u64)> {
+        if start % self.lanes() as usize != 0 {
+            return None;
+        }
+        let offset = self.words(start) * self.store_bytes();
+        (offset % 4 == 0).then(|| (offset, self.buffer_bytes(len)))
+    }
+
     /// Whether the device bytes are the host bytes (padding aside).
     pub fn is_host_identical(&self) -> bool {
         !matches!(self.repr, Repr::I64Narrow) && self.logical != DataType::Bool

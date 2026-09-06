@@ -29,6 +29,7 @@
 //! browser event loop. Native callers can wrap with a blocking executor
 //! such as `pollster`.
 
+use crate::Error;
 use crate::Result;
 use crate::graph::Module;
 use crate::interp::Tensor;
@@ -65,4 +66,36 @@ pub trait Session {
 
     /// Move a device tensor back to the host.
     async fn download(&mut self, tensor: &Self::Tensor) -> Result<Tensor>;
+
+    /// Move elements `[start, start + len)` (flat, row-major) of a device
+    /// tensor back to the host as a rank-1 tensor. Backends override this
+    /// to copy only that range (an LLM caller wants one row of a
+    /// `[1, S, vocab]` logits tensor, not the 64 MB of them); the default
+    /// downloads everything and slices.
+    async fn download_range(
+        &mut self,
+        tensor: &Self::Tensor,
+        start: usize,
+        len: usize,
+    ) -> Result<Tensor> {
+        let whole = self.download(tensor).await?;
+        slice_host_tensor(&whole, start, len)
+    }
+}
+
+/// Elements `[start, start + len)` of a host tensor as a rank-1 tensor.
+pub fn slice_host_tensor(t: &Tensor, start: usize, len: usize) -> Result<Tensor> {
+    let numel = t.numel();
+    if start + len > numel {
+        return Err(Error::Shape(format!(
+            "download_range [{start}, {}) exceeds {numel} elements",
+            start + len
+        )));
+    }
+    let elem = t.bytes().len() / numel.max(1);
+    Tensor::new(
+        t.dtype(),
+        vec![len],
+        t.bytes()[start * elem..(start + len) * elem].to_vec(),
+    )
 }

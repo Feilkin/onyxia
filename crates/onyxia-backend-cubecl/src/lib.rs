@@ -326,6 +326,32 @@ impl onyxia_ir::Session for CubeclSession {
             .map_err(|e| Error::Runtime(format!("cubecl readback failed: {e:?}")))?;
         from_phys(tensor.dtype, &tensor.shape, &bytes)
     }
+
+    async fn download_range(
+        &mut self,
+        tensor: &CubeTensor,
+        start: usize,
+        len: usize,
+    ) -> Result<Tensor> {
+        let numel = tensor.numel();
+        if start + len > numel {
+            return Err(Error::Shape(format!(
+                "download_range [{start}, {}) exceeds {numel} elements",
+                start + len
+            )));
+        }
+        // Every physical type here is a 4-byte word.
+        let handle = tensor
+            .handle
+            .clone()
+            .offset_start(start as u64 * 4)
+            .offset_end((numel - start - len) as u64 * 4);
+        let bytes = self
+            .client
+            .read_one(handle)
+            .map_err(|e| Error::Runtime(format!("cubecl readback failed: {e:?}")))?;
+        from_phys(tensor.dtype, &[len], &bytes)
+    }
 }
 
 /// Launch geometry for `size` output elements, one thread each.

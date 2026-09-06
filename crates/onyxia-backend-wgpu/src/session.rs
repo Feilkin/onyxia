@@ -725,9 +725,44 @@ impl onyxia_ir::Session for WgpuSession {
     }
 
     async fn download(&mut self, tensor: &GpuTensor) -> Result<Tensor> {
+        let size = self.layout(tensor.dtype)?.buffer_bytes(tensor.numel());
+        let bytes = self.download_bytes(&tensor.buffer, 0, size).await?;
+        from_phys(tensor.dtype, &tensor.shape, &bytes, self.caps)
+    }
+
+    async fn download_range(
+        &mut self,
+        tensor: &GpuTensor,
+        start: usize,
+        len: usize,
+    ) -> Result<Tensor> {
+        if start + len > tensor.numel() {
+            return Err(Error::Shape(format!(
+                "download_range [{start}, {}) exceeds {} elements",
+                start + len,
+                tensor.numel()
+            )));
+        }
+        let Some((offset, size)) = self.layout(tensor.dtype)?.range_bytes(start, len) else {
+            let whole = self.download(tensor).await?;
+            return onyxia_ir::slice_host_tensor(&whole, start, len);
+        };
+        let bytes = self.download_bytes(&tensor.buffer, offset, size).await?;
+        from_phys(tensor.dtype, &[len], &bytes, self.caps)
+    }
+}
+
+impl WgpuSession {
+    /// Copy `size` bytes at `offset` of a device buffer to the host via a
+    /// staging buffer, waiting for everything submitted so far.
+    async fn download_bytes(
+        &mut self,
+        buffer: &wgpu::Buffer,
+        offset: u64,
+        size: u64,
+    ) -> Result<Vec<u8>> {
         let t0 = std::time::Instant::now();
         self.submit();
-        let size = self.layout(tensor.dtype)?.buffer_bytes(tensor.numel());
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("download_staging"),
             size,
@@ -737,7 +772,7 @@ impl onyxia_ir::Session for WgpuSession {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        encoder.copy_buffer_to_buffer(&tensor.buffer, 0, &staging, 0, size);
+        encoder.copy_buffer_to_buffer(buffer, offset, &staging, 0, size);
         let sub = self.queue.submit([encoder.finish()]);
 
         let slice = staging.slice(..);
@@ -763,9 +798,8 @@ impl onyxia_ir::Session for WgpuSession {
         self.cpu.wait_ns += (t2 - t1).as_nanos() as u64;
         let bytes = slice.get_mapped_range().to_vec();
         staging.unmap();
-        let out = from_phys(tensor.dtype, &tensor.shape, &bytes, self.caps);
         self.cpu.readback_ns += t2.elapsed().as_nanos() as u64;
-        out
+        Ok(bytes)
     }
 }
 
@@ -906,7 +940,10 @@ impl WgpuSession {
             );
         }
         // Split K when the tile grid can't fill the device.
-        const TARGET_WG: usize = 256;
+        // 512 measured best on the 5090 for the 1B's [64×1152] tiles
+        // (256: 9.3 ms prefill, 512: 8.8, 1024: 9.1); the 270m shapes and
+        // the q4 path are flat across 256–768.
+        const TARGET_WG: usize = 512;
         const MAX_KS: usize = 32;
         let base_wg = (grid[0] as usize) * (grid[1] as usize) * batch;
         let ks = if base_wg >= TARGET_WG {
@@ -931,11 +968,25 @@ impl WgpuSession {
             .u(batch as u32)
             .u(chunk as u32);
         let coop = self.matmul_tile == MatmulTile::Coop;
+        // vec4-staged variant: untransposed a with 4-aligned rows, b
+        // either [K,N] with N % 4 == 0 or [N,K] (the prefill projections
+        // and the lm_head; per-batch strides are then 4-aligned too).
+        let v4 = !coop && !trans_a && k % 4 == 0 && (trans_b || n % 4 == 0);
+        let label = if v4 {
+            format!(
+                "matmul_tiled_rb_v4_f32_n{}",
+                if trans_b { "t" } else { "n" }
+            )
+        } else {
+            label
+        };
         self.dispatch_grid(
             &label,
             || {
                 if coop {
                     kernels::matmul_coop(trans_a, trans_b)
+                } else if v4 {
+                    kernels::matmul_tiled_rb_v4(trans_b)
                 } else {
                     kernels::matmul_tiled_rb(trans_a, trans_b)
                 }

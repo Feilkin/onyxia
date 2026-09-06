@@ -1278,8 +1278,44 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
 /// of `p.chunk` whose partial sums land in `[ks, batch, M, N]` and are
 /// folded by `matvec_reduce`.
 pub fn matmul_tiled_rb(trans_a: bool, trans_b: bool) -> String {
+    matmul_tiled_rb_impl(trans_a, trans_b, false)
+}
+
+/// [`matmul_tiled_rb`] with `a` untransposed (`[M,K]`, `K % 4 == 0`) and
+/// `b` either `[K,N]` with `N % 4 == 0` or transposed `[N,K]`: both
+/// operands are bound as `array<vec4<f32>>` and each thread stages its
+/// four contiguous elements with one 16-byte load instead of four scalar
+/// ones (the per-element bounds checks go with them: a vec4 that starts
+/// in range ends in range because K, N and the K-slice bounds are
+/// multiples of 4).
+pub fn matmul_tiled_rb_v4(trans_b: bool) -> String {
+    matmul_tiled_rb_impl(false, trans_b, true)
+}
+
+fn matmul_tiled_rb_impl(trans_a: bool, trans_b: bool, v4: bool) -> String {
+    assert!(!v4 || !trans_a, "vec4 staging needs an untransposed a");
+    let (a_ty, b_ty) = if v4 {
+        ("array<vec4<f32>>", "array<vec4<f32>>")
+    } else {
+        ("array<f32>", "array<f32>")
+    };
     // A tile: 64 m × 16 k. Four elements per thread.
-    let a_load = if trans_a {
+    let a_load = if v4 {
+        // a is [M,K], K % 4 == 0: one vec4 of 4 consecutive k per thread.
+        "
+        {
+            let mm = lin / 4u;
+            let kq = (lin % 4u) * 4u;
+            let m = m0 + mm;
+            let k = k0 + kq;
+            var v = vec4<f32>(0.0);
+            if (m < p.m && k < k_hi) { v = a[(a_base + m * p.k + k) / 4u]; }
+            As[kq * 16u + mm / 4u][mm % 4u] = v.x;
+            As[(kq + 1u) * 16u + mm / 4u][mm % 4u] = v.y;
+            As[(kq + 2u) * 16u + mm / 4u][mm % 4u] = v.z;
+            As[(kq + 3u) * 16u + mm / 4u][mm % 4u] = v.w;
+        }"
+    } else if trans_a {
         // a is [K,M]: contiguous along m → thread owns (k, 4 consecutive m).
         "
         {
@@ -1311,7 +1347,34 @@ pub fn matmul_tiled_rb(trans_a: bool, trans_b: bool) -> String {
         }"
     };
     // B tile: 16 k × 64 n.
-    let b_load = if trans_b {
+    let b_load = if v4 && trans_b {
+        // b is [N,K], K % 4 == 0: one vec4 of 4 consecutive k per thread.
+        "
+        {
+            let nn = lin / 4u;
+            let kq = (lin % 4u) * 4u;
+            let n = n0 + nn;
+            let k = k0 + kq;
+            var v = vec4<f32>(0.0);
+            if (n < p.n && k < k_hi) { v = b[(b_base + n * p.k + k) / 4u]; }
+            Bs[kq * 16u + nn / 4u][nn % 4u] = v.x;
+            Bs[(kq + 1u) * 16u + nn / 4u][nn % 4u] = v.y;
+            Bs[(kq + 2u) * 16u + nn / 4u][nn % 4u] = v.z;
+            Bs[(kq + 3u) * 16u + nn / 4u][nn % 4u] = v.w;
+        }"
+    } else if v4 {
+        // b is [K,N], N % 4 == 0: one vec4 of 4 consecutive n per thread.
+        "
+        {
+            let kk = lin / 16u;
+            let nq = (lin % 16u) * 4u;
+            var v = vec4<f32>(0.0);
+            let k = k0 + kk;
+            let n = n0 + nq;
+            if (k < k_hi && n < p.n) { v = b[(b_base + k * p.n + n) / 4u]; }
+            Bs[kk * 16u + nq / 4u] = v;
+        }"
+    } else if trans_b {
         // b is [N,K]: contiguous along k → thread owns (n, 4 consecutive k).
         "
         {
@@ -1346,8 +1409,8 @@ pub fn matmul_tiled_rb(trans_a: bool, trans_b: bool) -> String {
         "
 struct P {{ m: u32, n: u32, k: u32, a_bs: u32, b_bs: u32, batch: u32, chunk: u32 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> a: array<f32>;
-@group(0) @binding(1) var<storage, read> b: array<f32>;
+@group(0) @binding(0) var<storage, read> a: {a_ty};
+@group(0) @binding(1) var<storage, read> b: {b_ty};
 @group(0) @binding(2) var<storage, read_write> out: array<f32>;
 var<workgroup> As: array<vec4<f32>, 256>;
 var<workgroup> Bs: array<vec4<f32>, 256>;

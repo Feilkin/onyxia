@@ -220,6 +220,10 @@ pub fn run<S: Session + BenchProbe>(session: &mut LlmSession<S>, cfg: &BenchConf
 
     // Measured prefill: the median of several, each from a fresh state
     // (a single prefill on the larger models swings 2× run to run).
+    let prefill_misses_before = session
+        .backend_mut()
+        .take_cpu_timing()
+        .map_or(0, |c| c.bind_misses);
     let mut prefills: Vec<f64> = Vec::with_capacity(PREFILL_SAMPLES);
     for i in 0..PREFILL_SAMPLES {
         if i > 0 {
@@ -230,6 +234,7 @@ pub fn run<S: Session + BenchProbe>(session: &mut LlmSession<S>, cfg: &BenchConf
         prefills.push(start.elapsed().as_secs_f64());
     }
     let prefill_timings = session.backend_mut().take_timings()?;
+    let prefill_cpu = session.backend_mut().take_cpu_timing();
     let prefill_s = median(&prefills);
     let prefill_min = prefills.iter().copied().fold(f64::INFINITY, f64::min);
 
@@ -264,6 +269,24 @@ pub fn run<S: Session + BenchProbe>(session: &mut LlmSession<S>, cfg: &BenchConf
         prefill_min * 1e3,
         cfg.prefill_len as f64 / prefill_s,
     );
+    if let Some(cpu) = &prefill_cpu {
+        let n = PREFILL_SAMPLES as f64;
+        let per = |ns: u64| ms(ns) / n;
+        let mean = prefills.iter().sum::<f64>() / n * 1e3;
+        let accounted = per(cpu.shapes_ns + cpu.encode_ns + cpu.wait_ns + cpu.readback_ns);
+        println!(
+            "prefill breakdown (host clock, ms/prefill, mean {mean:.1}): shapes {:.2}, encode {:.2}, \
+             gpu wait {:.2}, readback {:.2}, other (inputs, logits copy) {:.2}; {} dispatches, \
+             {:.0} bind-group cache misses",
+            per(cpu.shapes_ns),
+            per(cpu.encode_ns),
+            per(cpu.wait_ns),
+            per(cpu.readback_ns),
+            (mean - accounted).max(0.0),
+            cpu.dispatches / PREFILL_SAMPLES as u64,
+            (cpu.bind_misses - prefill_misses_before) as f64 / n,
+        );
+    }
     println!(
         "decode:  {} tokens, {:.2} ms/tok mean (min {:.2}, max {:.2}, σ {:.2}) → {:.2} tok/s",
         cfg.decode_tokens,

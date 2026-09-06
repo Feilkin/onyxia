@@ -119,11 +119,14 @@ s.step([DUMMY] * P)
 for _ in range(2):
     s.step([DUMMY])
 
-# measured
-s = State()
-t0 = time.perf_counter()
-s.step([DUMMY] * P)
-prefill_s = time.perf_counter() - t0
+# measured: prefill is the median of 5, each from a fresh state
+prefills = []
+for _ in range(5):
+    s = State()
+    t0 = time.perf_counter()
+    s.step([DUMMY] * P)
+    prefills.append(time.perf_counter() - t0)
+prefill_s = st.median(prefills)
 steps = []
 for _ in range(D):
     t0 = time.perf_counter()
@@ -132,7 +135,7 @@ for _ in range(D):
 
 mean = st.mean(steps)
 print(f"onnxruntime {ort.__version__} mode={mode} providers={sess.get_providers()[0]}")
-print(f"prefill: {P} tokens in {prefill_s*1e3:.1f} ms ({P/prefill_s:.1f} tok/s)")
+print(f"prefill: {P} tokens in {prefill_s*1e3:.1f} ms median of 5 (min {min(prefills)*1e3:.1f}) ({P/prefill_s:.1f} tok/s)")
 print(f"decode:  {D} tokens, {mean*1e3:.2f} ms/tok mean (min {min(steps)*1e3:.2f}, max {max(steps)*1e3:.2f}, σ {st.pstdev(steps)*1e3:.2f}) → {1/mean:.2f} tok/s")
 print(json.dumps({"mode": mode, "prefill_tok_s": P / prefill_s, "prefill_ms": prefill_s * 1e3,
                   "decode_ms_per_tok": mean * 1e3, "decode_tok_s": 1 / mean}))

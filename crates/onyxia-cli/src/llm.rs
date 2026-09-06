@@ -29,6 +29,8 @@ pub struct LlmSession<S: Session> {
     symbols: SymbolTable,
     /// Module output names, in signature order.
     outputs: Vec<String>,
+    /// Last dim of the `logits` output when static (the vocab size).
+    vocab: Option<usize>,
     /// KV cache tensor name pairs: (present_output_name, past_input_name).
     kv_pairs: Vec<(String, String)>,
     /// Device-resident KV handles, keyed by past_key_values.* name.
@@ -62,6 +64,12 @@ impl<S: Session> LlmSession<S> {
             })
             .collect();
         let outputs: Vec<String> = module.outputs.iter().map(|(n, _)| n.clone()).collect();
+        let vocab = module
+            .outputs
+            .iter()
+            .find(|(n, _)| n == "logits")
+            .and_then(|(_, id)| module.value(*id).ty.shape.dims().last()?.as_const())
+            .map(|v| v as usize);
         let kv_pairs = discover_kv_pairs(&module);
         let symbols = module.symbols.clone();
         let session = backend
@@ -71,6 +79,7 @@ impl<S: Session> LlmSession<S> {
             session,
             inputs,
             outputs,
+            vocab,
             symbols,
             kv_pairs,
             kv_cache: HashMap::new(),
@@ -143,10 +152,16 @@ impl<S: Session> LlmSession<S> {
             .iter()
             .find(|(n, _)| n == "logits")
             .context("output 'logits' missing")?;
-        let logits = self.session.download(logits).await?;
-        let vocab = *logits.shape().last().context("scalar logits output")?;
-        let all = logits.to_f32()?;
-        Ok(all[(seq - 1) * vocab..seq * vocab].to_vec())
+        // Only the last position is needed: the [1, S, V] tensor is 64 MB
+        // at S=64 on a 262k vocab, the row is 1 MB.
+        let vocab = self
+            .vocab
+            .context("logits output has no static vocab dim")?;
+        let row = self
+            .session
+            .download_range(logits, (seq - 1) * vocab, vocab)
+            .await?;
+        Ok(row.to_f32()?)
     }
 
     /// One forward pass over `ids`. Uploads bound inputs, feeds stored KV

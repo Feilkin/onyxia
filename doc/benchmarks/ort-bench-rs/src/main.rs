@@ -128,8 +128,9 @@ impl Runner for HostKv {
         let mut outputs = self.session.run(inputs).unwrap();
         let logits = outputs.remove("logits").unwrap();
         let arr = logits.try_extract_array::<f32>().unwrap();
-        let vocab = arr.shape()[2];
-        let last: Vec<f32> = arr.as_slice().unwrap()[(s - 1) * vocab..s * vocab].to_vec();
+        // Last row of [1, rows, V]; rows == 1 for the `_last.onnx` variants.
+        let (rows, vocab) = (arr.shape()[1], arr.shape()[2]);
+        let last: Vec<f32> = arr.as_slice().unwrap()[(rows - 1) * vocab..rows * vocab].to_vec();
         let present: Vec<DynValue> = self
             .kv
             .outputs
@@ -177,8 +178,9 @@ impl Runner for DeviceKv {
         let mut outputs = self.session.run_binding(&binding).unwrap();
         let logits = outputs.remove("logits").unwrap();
         let arr = logits.try_extract_array::<f32>().unwrap();
-        let vocab = arr.shape()[2];
-        let last: Vec<f32> = arr.as_slice().unwrap()[(s - 1) * vocab..s * vocab].to_vec();
+        // Last row of [1, rows, V]; rows == 1 for the `_last.onnx` variants.
+        let (rows, vocab) = (arr.shape()[1], arr.shape()[2]);
+        let last: Vec<f32> = arr.as_slice().unwrap()[(rows - 1) * vocab..rows * vocab].to_vec();
         let present: Vec<DynValue> = self
             .kv
             .outputs
@@ -251,9 +253,19 @@ fn main() {
     runner.step(&[DUMMY]);
     runner.reset();
 
-    let t0 = Instant::now();
-    let logits = runner.step(&prompt);
-    let prefill_s = t0.elapsed().as_secs_f64();
+    // Prefill: median of 5, each from a fresh state (as `onyxia bench`).
+    let mut prefills = Vec::new();
+    let mut logits = Vec::new();
+    for i in 0..5 {
+        if i > 0 {
+            runner.reset();
+        }
+        let t0 = Instant::now();
+        logits = runner.step(&prompt);
+        prefills.push(t0.elapsed().as_secs_f64());
+    }
+    prefills.sort_by(|a, b| a.total_cmp(b));
+    let prefill_s = prefills[2];
     let argmax = logits
         .iter()
         .enumerate()
@@ -272,8 +284,9 @@ fn main() {
     let var = steps.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / d as f64;
     println!("onnxruntime (C API via ort crate) mode={mode} argmax@prefill={argmax}");
     println!(
-        "prefill: {p} tokens in {:.1} ms ({:.1} tok/s)",
+        "prefill: {p} tokens in {:.1} ms median of 5 (min {:.1}) ({:.1} tok/s)",
         prefill_s * 1e3,
+        prefills[0] * 1e3,
         p as f64 / prefill_s
     );
     println!(
