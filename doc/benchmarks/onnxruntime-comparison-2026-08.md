@@ -469,12 +469,41 @@ weight bytes in traffic, paid once per matmul).
 | 1B fp16 | 125.9 | **66.8** | 15.9 | 207 | 151 |
 | 1B q4f16 | 110.8 | **75.7** | 18.3 | 274 | 168 |
 
-Profile of the 1B fp16 prefill now: attention 30 ms (45 %), the three
-matmul groups 34 ms (50 %) at ~78 TFLOPS. The next step is the same
-MMAs inside the flash attention kernel (QKᵀ and PV), and a larger
-query block so the K/V traffic amortizes further. Short prompts: the
-64-token prefill is within noise of the rb tile (10.6 vs 9.9 ms on the
-1B fp16, 5.7 vs 4.8 on the 270m) — the 128-row tile is half empty there.
+Profile of the 1B fp16 prefill at that point: attention 30 ms (45 %),
+the three matmul groups 34 ms (50 %) at ~78 TFLOPS.
+
+### Same evening: the attention on cooperative matrices too (4b95ccf)
+
+`gqa_flash_coop`: Q·Kᵀ and P·V as f16 MMAs with f32 accumulate, K and
+V `coopLoad`ed straight from the present cache (a `[key][d]` row-major
+cache is the column-major B for the scores and the row-major B for the
+values — no transposes, no staging), the rotated 32-query block staged
+once as f16 in a per-workgroup slab of a scratch buffer. Two passes
+over the keys (row max; then exp and P·V) keep the output accumulators
+in C tiles with no per-row rescale — cooperative tiles can't be scaled
+by a per-row vector — and P is rounded to f16 for the MMA with the row
+sum taken from those same values, as ORT's fp16 attention does. Every
+subgroup computes scores over half the head dim (naga requires
+workgroup-uniform control flow around cooperative ops, so none may sit
+out) and the halves are summed from two partial tiles. 10 KB of
+workgroup memory. Attention on the 1B: 30 → 5.9 ms.
+
+The full picture, same fp16 files, 128 decode steps:
+
+| model | prefill 64 tok, Onyxia | ORT CUDA | prefill 1024 tok, Onyxia (start of day) | ORT CUDA | decode @1100 ctx, Onyxia | ORT |
+|---|---|---|---|---|---|---|
+| 270m fp16 | **4.3 ms** | 2.1 | **17.0 ms** (96.5) | 6.4 | 321 tok/s | 247 |
+| 270m q4f16 | **4.4** | 2.5 | **19.2** (98.3) | 7.1 | 397 | 258 |
+| 1B fp16 | **8.3** | 3.5 | **41.5** (197.5) | 15.9 | 207 | 151 |
+| 1B q4f16 | **9.8** | 4.5 | **53.5** (188.5) | 18.3 | 275 | 168 |
+
+At 1024 tokens Onyxia went from 15× behind onnxruntime-CUDA to
+2.6–2.9× behind, with the same ONNX file on both sides, and the
+1B fp16 prefill profile is now 34 ms of matmul (the `lm_head` alone
+11 ms at ~56 TFLOPS) + 6 ms of attention + 3 ms of the rest. The next
+matmul lever is a 128×128 tile with two accumulators per subgroup row
+(halves the A traffic) and a look at split-K on the wide `lm_head`.
+Decode at long context is ahead of ORT's plain `run()` on every file.
 
 ## Onyxia's CubeCL backend on the same GPU (270m, 2026-08-23)
 
