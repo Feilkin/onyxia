@@ -266,6 +266,55 @@ CubeCL backend after the same change: 270m fp32 prefill 79.9 → 70.1 ms,
 1B fp32 172.7 → 160.4 ms (decode 49 / 24 tok/s, unchanged) — the same
 ~10 ms of download gone, the rest is its unfused kernels.
 
+### Same day: what a *tuned* onnxruntime does (onnxruntime-genai)
+
+Every ORT row above drives the stock onnx-community export through a
+plain `run()`, and that export is a bad fit for ORT's CUDA EP: its shape
+subgraphs get 37 nodes placed on the CPU (1B) and ORT inserts **107
+Memcpy nodes** (80 device→host), 78 of which copy an activation
+(`v_proj` output, `q/k_norm` reshape) to the host mid-graph on every
+step — a stream sync each; the 270m gets 73. The KV cache also
+round-trips the host every decode step, and the Memcpy nodes rule out
+CUDA graphs. Onyxia folds those shape chains at compile time and never
+syncs mid-graph, which is most of why the tables above show it level
+with or ahead of ORT-CUDA. That is a statement about the export and
+ORT's partitioner, not about cuBLAS.
+
+For ORT's actual ceiling: `onnxruntime-genai` 0.15.2 with ORT's own
+model builder (`python -m onnxruntime_genai.models.builder -m
+google/gemma-3-{1b,270m}-it -p {int4,bf16} -e cuda --extra_options
+enable_cuda_graph=true`, `genaienv/`, transformers < 5) — a graph without
+shape subgraphs, a device-resident shared KV buffer, fused QK-norm GQA,
+CUDA graphs — driven by genai's generation loop (`genai_bench.py`, same
+protocol: 64 dummy tokens appended, 128 greedy steps, prefill = median
+of 5 fresh generators). Its fp32 CUDA export comes out invalid (packed
+`Attention` with missing `present.*` outputs; GQA on CUDA is fp16/bf16
+only), so the "full precision" row is the **bf16** build the builder
+itself recommends, and its int4 build uses **fp16 activations** — both
+move half the bytes Onyxia's fp32 activations do.
+
+| model | Onyxia wgpu decode | ORT-genai decode | Onyxia prefill | ORT-genai prefill |
+|---|---|---|---|---|
+| 270m fp32 vs bf16 | 333 tok/s (3.01 ms) | **871** (1.15 ms) | 4.1 ms | **1.5 ms** |
+| 270m q4 vs int4 | 424 (2.36) | **1192** (0.84) | 4.0 | **1.7** |
+| 1B fp32 vs bf16 | 176 (5.67) | **418** (2.39) | 8.9 | **2.8** |
+| 1B q4 vs int4 | 310 (3.23) | **690** (1.45) | 9.1 | **3.5** |
+
+Tuned ORT is **2.3–2.8× faster on decode and 2.4–3.2× on prefill**. The
+honest slide caption is therefore two-sided: against onnxruntime's CUDA
+provider on the same stock export through plain `run()`, Onyxia is level
+or ahead; against onnxruntime-genai's purpose-built export with CUDA
+graphs and 16-bit activations, it is 2–3× behind. The gap is per-step
+overhead first (a CUDA-graph replay costs ~0 launches; Onyxia issues
+~430–600 dispatches per step through Vulkan), then kernels (fused
+QK-norm GQA, cuBLAS/TF32), then bytes (bf16/fp16 vs fp32).
+
+```sh
+uv venv -p 3.12 genaienv && uv pip install -p genaienv/bin/python onnxruntime-genai-cuda onnxruntime-gpu "transformers<5" torch --extra-index-url https://download.pytorch.org/whl/cpu onnx onnx-ir onnxscript
+genaienv/bin/python -m onnxruntime_genai.models.builder -m google/gemma-3-1b-it -o models/genai/gemma-3-1b-int4 -p int4 -e cuda -c models/genai/hf-cache --extra_options enable_cuda_graph=true
+genaienv/bin/python doc/benchmarks/genai_bench.py models/genai/gemma-3-1b-int4 64 128
+```
+
 ## Onyxia's CubeCL backend on the same GPU (270m, 2026-08-23)
 
 Re-run after the July perf pass, which only touched the wgpu backend. The
