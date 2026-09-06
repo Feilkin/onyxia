@@ -937,6 +937,31 @@ impl CompositeKernel for GroupQueryAttentionKernel {
         // kernel, which fills the device better at S = 1.
         let dc = if e == "f16" { 64 } else { 32 };
         let flash = seq >= FLASH_MIN_SEQ && d % dc == 0 && d % 8 == 0 && d <= 256;
+        // f16 on tensor cores: QKᵀ and PV as cooperative-matrix MMAs, K/V
+        // read straight from the cache; needs a whole 32-key block.
+        if flash && e == "f16" && session.coop_matmul() && d % 64 == 0 && total >= 32 {
+            let label = format!(
+                "fused_gqa_flash_coop{}{}_d{d}",
+                if rope.is_some() { "_rope" } else { "" },
+                if bias.is_some() { "_bias" } else { "" },
+            );
+            // Rotated Q blocks, f16, one 32×d slab per workgroup (the MMAs
+            // read it back; workgroup memory would hold it but the
+            // scores' partial tiles want that space).
+            let nq = seq.div_ceil(FLASH_BQ);
+            let qbuf = session.acquire_scratch((nq * heads * bsz * FLASH_BQ * d * 2) as u64);
+            let mut cbufs = bufs.clone();
+            cbufs.push(&qbuf);
+            session.dispatch_grid(
+                &label,
+                || gqa_flash_coop_wgsl(rope.is_some(), bias.is_some(), d),
+                &cbufs,
+                &imm,
+                [nq as u32, heads as u32, bsz as u32],
+            )?;
+            session.release_scratch(qbuf);
+            return Ok(vec![out, present_k, present_v]);
+        }
         if flash {
             let label = format!(
                 "fused_gqa_flash{}{}_{e}_d{d}",
@@ -1339,6 +1364,245 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
 ",
         qs_n = 32 * dc,
         ks_n = 32 * dc,
+    )
+}
+
+/// [`gqa_flash_wgsl`] on cooperative matrices, f16 only: the score tile
+/// `Q·Kᵀ` (32 queries × 32 keys) and the update `P·V` (32 × d) are
+/// f16 `16×16×16` MMAs with f32 accumulate; K and V are `coopLoad`ed
+/// straight from the present cache (`[key][d]` row-major: column-major
+/// B for the scores, row-major B for the values), the rotated Q block
+/// is staged once as f16. Two passes over the keys — the row max first,
+/// then exp and P·V — so the output accumulators stay in C tiles with
+/// no per-row rescale; P is rounded to f16 for the MMA and the row sum
+/// is taken from those same f16 values. The last key block is shifted
+/// back to stay inside the cache and its duplicated columns masked.
+/// Scores are split over the two halves of the head dim across the 8
+/// subgroups (cooperative ops need workgroup-uniform control flow, so
+/// none may idle) and summed from two partial tiles. Workgroup memory
+/// 10 KB; the Q block lives in a per-workgroup slab of a scratch buffer.
+fn gqa_flash_coop_wgsl(rope: bool, bias: bool, d: usize) -> String {
+    let e = "f16";
+    let mut fields = String::new();
+    let mut bindings = String::new();
+    let mut next_binding = 4;
+    if rope {
+        fields.push_str(" half: u32,");
+        bindings.push_str(&format!(
+            "@group(0) @binding({}) var<storage, read> cosc: array<{e}>;
+@group(0) @binding({}) var<storage, read> sinc: array<{e}>;\n",
+            next_binding,
+            next_binding + 1
+        ));
+        next_binding += 2;
+    }
+    if bias {
+        fields.push_str(" bias_b: u32, bias_h: u32,");
+        bindings.push_str(&format!(
+            "@group(0) @binding({next_binding}) var<storage, read> att_bias: array<{e}>;\n",
+        ));
+        next_binding += 1;
+    }
+    let rotate_q = if rope {
+        "
+            if (dim < 2u * p.half) {
+                let pos = past_b + sqr;
+                if (dim < p.half) {
+                    v = v * f32(cosc[pos * p.half + dim])
+                        - f32(q[qbase + dim + p.half]) * f32(sinc[pos * p.half + dim]);
+                } else {
+                    let j = dim - p.half;
+                    v = v * f32(cosc[pos * p.half + j])
+                        + f32(q[qbase + dim - p.half]) * f32(sinc[pos * p.half + j]);
+                }
+            }"
+    } else {
+        ""
+    };
+    let add_bias = if bias {
+        "
+    if (live && col < p.total) {
+        sv += f32(att_bias[b * p.bias_b + h * p.bias_h + sq * p.total + col]);
+    }"
+    } else {
+        ""
+    };
+    let ksteps = d / 32; // per subgroup: half the head dim
+    // O tile 32 × d = 2 row-groups × (d/16) dim-groups over 8 subgroups:
+    // subgroup (ti = sg % 2, og = sg / 2) owns dims og*(d/4) .. +d/4,
+    // i.e. d/64 tiles of 16.
+    let otiles = d / 64;
+    let o_decl: String = (0..otiles)
+        .map(|j| format!("    var o{j} = coop_mat16x16<f32, C>();\n"))
+        .collect();
+    let o_mma: String = (0..otiles)
+        .map(|j| {
+            format!(
+                "            let v{j} = coopLoadT<coop_mat16x16<f16, B>>(&pv[kbase + (kb_c + ks * 16u) * p.d + og * {dq}u + {j}u * 16u], p.d);
+            o{j} = coopMultiplyAdd(pa, v{j}, o{j});\n",
+                dq = d / 4
+            )
+        })
+        .collect();
+    let o_store: String = (0..otiles)
+        .map(|j| {
+            format!(
+                "    coopStoreT(o{j}, &sc[sg * 256u], 16u);
+    workgroupBarrier();
+    if (sqr < p.s) {{
+        let obase = (b * p.s + sqr) * p.heads * p.d + h * p.d + og * {dq}u + {j}u * 16u + c0;
+        for (var i = 0u; i < 8u; i += 1u) {{
+            out[obase + i] = f16(sc[sg * 256u + rr * 16u + c0 + i] * inv);
+        }}
+    }}
+    workgroupBarrier();\n",
+                dq = d / 4
+            )
+        })
+        .collect();
+    format!(
+        "enable f16;
+enable wgpu_cooperative_matrix;
+struct P {{
+    heads: u32, kv: u32, group: u32,
+    s: u32, total: u32, d: u32,
+    scale: f32, window: i32,{fields}
+}}
+var<immediate> p: P;
+@group(0) @binding(0) var<storage, read> q: array<{e}>;
+@group(0) @binding(1) var<storage, read> pk: array<{e}>;
+@group(0) @binding(2) var<storage, read> pv: array<{e}>;
+@group(0) @binding(3) var<storage, read> seqlens: array<i32>;
+{bindings}@group(0) @binding({next_binding}) var<storage, read_write> out: array<{e}>;
+@group(0) @binding({q_binding}) var<storage, read_write> qs: array<f16>;
+const BQ: u32 = 32u;
+const BK: u32 = 32u;
+const D: u32 = {d}u;
+var<workgroup> sc: array<f32, 2048>;
+var<workgroup> ps: array<f16, 1024>;
+var<workgroup> lrow: array<f32, 32>;
+const NEG: f32 = -3.402823e38;
+
+// Masked, scaled score of (row r, block column kk): the two head-dim
+// halves' partial tiles summed.
+fn score(r: u32, kk: u32, kb: u32, kb_c: u32, cols: u32, row: i32, live: bool,
+         b: u32, h: u32, sq: u32) -> f32 {{
+    let col = kb_c + kk;
+    var sv = (sc[r * BK + kk] + sc[1024u + r * BK + kk]) * p.scale;{add_bias}
+    let dead = !live || col < kb || col >= cols || i32(col) > row
+        || (p.window >= 0 && i32(col) < row - p.window);
+    return select(sv, NEG, dead);
+}}
+
+@compute @workgroup_size(256)
+fn main(@builtin(workgroup_id) wg: vec3<u32>,
+        @builtin(local_invocation_id) lid: vec3<u32>) {{
+    let h = wg.y;
+    let b = wg.z;
+    let t = lid.x;
+    let sg = t / 32u;
+    let lane = t % 32u;
+    let kvh = h / p.group;
+    let kbase = (b * p.kv + kvh) * p.total * p.d;
+    let tot_b = u32(seqlens[b]) + 1u;
+    let past_b = select(tot_b - p.s, 0u, tot_b < p.s);
+    let sq0 = wg.x * BQ;
+    let r = t / 8u;
+    let kq = (t % 8u) * 4u;
+    let sq = sq0 + r;
+    let live = sq < p.s;
+    let row = i32(past_b + min(sq, p.s - 1u));
+    let last_sq = min(sq0 + BQ, p.s) - 1u;
+    let cols = min(past_b + last_sq + 1u, p.total);
+    var k_start = 0u;
+    if (p.window >= 0) {{
+        let lo = i32(past_b + sq0) - p.window;
+        if (lo > 0) {{ k_start = (u32(lo) / BK) * BK; }}
+    }}
+    // Subgroup roles: scores as (ti, tj, dh) = (sg % 2, (sg / 2) % 2,
+    // sg / 4) — row group, key group, head-dim half; values as
+    // (ti, og) = (sg % 2, sg / 2).
+    let ti = sg % 2u;
+    let tj = (sg / 2u) % 2u;
+    let dh = sg / 4u;
+    let og = sg / 2u;
+
+    // Rotated Q block, f16 row-major, zero beyond S, in this workgroup's
+    // slab of the scratch buffer.
+    let nq = (p.s + BQ - 1u) / BQ;
+    let qoff = ((b * p.heads + h) * nq + wg.x) * BQ * D;
+    for (var i = t; i < BQ * D; i += 256u) {{
+        let rr = i / D;
+        let dim = i % D;
+        let sqr = sq0 + rr;
+        var v = 0.0;
+        if (sqr < p.s) {{
+            let qbase = (b * p.s + sqr) * p.heads * p.d + h * p.d;
+            v = f32(q[qbase + dim]);{rotate_q}
+        }}
+        qs[qoff + i] = f16(v);
+    }}
+    storageBarrier();
+    workgroupBarrier();
+
+    // Pass 1: row max.
+    var m = NEG;
+    for (var kb = k_start; kb < cols; kb += BK) {{
+        let kb_c = min(kb, p.total - BK);
+        var c = coop_mat16x16<f32, C>();
+        for (var ks = 0u; ks < {ksteps}u; ks += 1u) {{
+            let dd = dh * (D / 2u) + ks * 16u;
+            let qa = coopLoadT<coop_mat16x16<f16, A>>(&qs[qoff + (ti * 16u) * D + dd], D);
+            let kb_ = coopLoad<coop_mat16x16<f16, B>>(&pk[kbase + (kb_c + tj * 16u) * p.d + dd], p.d);
+            c = coopMultiplyAdd(qa, kb_, c);
+        }}
+        coopStoreT(c, &sc[dh * 1024u + (ti * 16u) * BK + tj * 16u], BK);
+        workgroupBarrier();
+        for (var kk = 0u; kk < BK; kk += 1u) {{
+            m = max(m, score(r, kk, kb, kb_c, cols, row, live, b, h, sq));
+        }}
+        workgroupBarrier();
+    }}
+
+    // Pass 2: probabilities (f16) and P·V.
+{o_decl}    var l = 0.0;
+    for (var kb = k_start; kb < cols; kb += BK) {{
+        let kb_c = min(kb, p.total - BK);
+        var c = coop_mat16x16<f32, C>();
+        for (var ks = 0u; ks < {ksteps}u; ks += 1u) {{
+            let dd = dh * (D / 2u) + ks * 16u;
+            let qa = coopLoadT<coop_mat16x16<f16, A>>(&qs[qoff + (ti * 16u) * D + dd], D);
+            let kb_ = coopLoad<coop_mat16x16<f16, B>>(&pk[kbase + (kb_c + tj * 16u) * p.d + dd], p.d);
+            c = coopMultiplyAdd(qa, kb_, c);
+        }}
+        coopStoreT(c, &sc[dh * 1024u + (ti * 16u) * BK + tj * 16u], BK);
+        workgroupBarrier();
+        for (var j = 0u; j < 4u; j += 1u) {{
+            let kk = kq + j;
+            let sv = score(r, kk, kb, kb_c, cols, row, live, b, h, sq);
+            ps[r * BK + kk] = f16(select(exp(sv - m), 0.0, sv <= -3.0e38));
+        }}
+        workgroupBarrier();
+        for (var kk = 0u; kk < BK; kk += 1u) {{
+            l += f32(ps[r * BK + kk]);
+        }}
+        for (var ks = 0u; ks < 2u; ks += 1u) {{
+            let pa = coopLoadT<coop_mat16x16<f16, A>>(&ps[(ti * 16u) * BK + ks * 16u], BK);
+{o_mma}        }}
+        workgroupBarrier();
+    }}
+
+    if (t % 8u == 0u) {{ lrow[r] = l; }}
+    workgroupBarrier();
+    // Output: each subgroup drains its C tiles through its 16×16 slot of
+    // `sc`; lane → (row rr, 8 dims from c0) of the tile.
+    let rr = lane / 2u;
+    let c0 = (lane % 2u) * 8u;
+    let sqr = sq0 + ti * 16u + rr;
+    let inv = select(0.0, 1.0 / lrow[ti * 16u + rr], sqr < p.s);
+{o_store}}}
+",
+        q_binding = next_binding + 1,
     )
 }
 

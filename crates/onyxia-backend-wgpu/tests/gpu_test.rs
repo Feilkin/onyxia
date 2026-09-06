@@ -20,6 +20,10 @@ const RTOL: f32 = 1e-3;
 /// fallback (the web path, where WebGPU has no push constants) — so every
 /// differential test covers both dispatch modes.
 fn diff_test(module: Module, inputs: Vec<(&str, Tensor)>) {
+    diff_test_tol(module, inputs, ATOL, RTOL);
+}
+
+fn diff_test_tol(module: Module, inputs: Vec<(&str, Tensor)>, atol: f32, rtol: f32) {
     let expect = onyxia_backend_ref::run_once(module.clone(), &inputs).unwrap();
 
     for immediates in [true, false] {
@@ -52,7 +56,7 @@ fn diff_test(module: Module, inputs: Vec<(&str, Tensor)>) {
                     let (e, g) = (et.to_f32().unwrap(), gt.to_f32().unwrap());
                     for (i, (a, b)) in e.iter().zip(&g).enumerate() {
                         assert!(
-                            (a - b).abs() <= ATOL + RTOL * a.abs(),
+                            (a - b).abs() <= atol + rtol * a.abs(),
                             "[{mode}] output '{en}'[{i}]: interp {a} vs gpu {b}"
                         );
                     }
@@ -669,7 +673,20 @@ fn gqa_symbolic_with_past_and_window() {
 #[test]
 #[ignore = "requires GPU"]
 fn gqa_do_rotary_with_bias_fused_matches_decomposition() {
-    gqa_rotary_bias_case(2, 2, 2, 1, 8, 3, 3, &[4, 2]);
+    gqa_rotary_bias_case(2, 2, 2, 1, 8, 3, 3, &[4, 2], DataType::F32);
+}
+
+/// The f16 kernels: split decode, tiled prefill, and the
+/// cooperative-matrix prefill (d = 64 / 256, total ≥ 32, ragged rows,
+/// window, rotary + bias), against the decomposition in f16.
+#[test]
+#[ignore = "requires GPU"]
+fn gqa_f16_kernels_match_decomposition() {
+    gqa_rotary_bias_case(2, 40, 2, 1, 64, 5, 20, &[44, 30], DataType::F16);
+    gqa_rotary_bias_case(1, 70, 2, 1, 256, 40, -1, &[109], DataType::F16);
+    gqa_rotary_bias_case(1, 33, 4, 2, 64, 0, 100, &[32], DataType::F16);
+    gqa_rotary_bias_case(1, 2, 2, 1, 64, 600, -1, &[601], DataType::F16);
+    gqa_rotary_bias_case(2, 2, 2, 1, 256, 700, 300, &[701, 400], DataType::F16);
 }
 
 /// The tiled prefill kernel (S ≥ 16): query blocks that straddle the
@@ -681,11 +698,11 @@ fn gqa_do_rotary_with_bias_fused_matches_decomposition() {
 fn gqa_flash_prefill_matches_decomposition() {
     // Row 0: 5 past + 40 new (positions 5..44); row 1: tot 31 < S, so
     // its queries sit at 0..39 with no valid past.
-    gqa_rotary_bias_case(2, 40, 2, 1, 64, 5, 20, &[44, 30]);
+    gqa_rotary_bias_case(2, 40, 2, 1, 64, 5, 20, &[44, 30], DataType::F32);
     // No window, 70 queries over 40 past: three key blocks, d = 256.
-    gqa_rotary_bias_case(1, 70, 2, 1, 256, 40, -1, &[109]);
+    gqa_rotary_bias_case(1, 70, 2, 1, 256, 40, -1, &[109], DataType::F32);
     // Exactly one block, window wider than the context.
-    gqa_rotary_bias_case(1, 32, 4, 2, 64, 0, 100, &[31]);
+    gqa_rotary_bias_case(1, 32, 4, 2, 64, 0, 100, &[31], DataType::F32);
 }
 
 /// Decode over a long cache (S < 16, total ≥ 256): the keys are split
@@ -694,10 +711,10 @@ fn gqa_flash_prefill_matches_decomposition() {
 #[test]
 #[ignore = "requires GPU"]
 fn gqa_split_decode_matches_decomposition() {
-    gqa_rotary_bias_case(1, 2, 2, 1, 64, 600, -1, &[601]);
-    gqa_rotary_bias_case(2, 2, 2, 1, 64, 700, 300, &[701, 400]);
-    gqa_rotary_bias_case(1, 1, 4, 2, 128, 1023, -1, &[1023]);
-    gqa_rotary_bias_case(1, 3, 2, 1, 256, 270, 100, &[272]);
+    gqa_rotary_bias_case(1, 2, 2, 1, 64, 600, -1, &[601], DataType::F32);
+    gqa_rotary_bias_case(2, 2, 2, 1, 64, 700, 300, &[701, 400], DataType::F32);
+    gqa_rotary_bias_case(1, 1, 4, 2, 128, 1023, -1, &[1023], DataType::F32);
+    gqa_rotary_bias_case(1, 3, 2, 1, 256, 270, 100, &[272], DataType::F32);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -710,43 +727,37 @@ fn gqa_rotary_bias_case(
     past: usize,
     window: i64,
     seqlens: &[i32],
+    dt: DataType,
 ) {
     let (hidden, kv_hidden, total, half) = (h * d, kv * d, past + s, d / 2);
     let max_pos = total.max(16);
+    // Float tensors in `dt`; f16 data is rounded from the f32 generator.
+    let mk = |vals: &[f32], shape: &[usize]| -> Tensor {
+        match dt {
+            DataType::F16 => Tensor::new(
+                dt,
+                shape.to_vec(),
+                vals.iter()
+                    .flat_map(|v| half::f16::from_f32(*v).to_le_bytes())
+                    .collect(),
+            )
+            .unwrap(),
+            _ => Tensor::from_f32(vals, shape).unwrap(),
+        }
+    };
 
     let mut bld = GraphBuilder::new();
     let dims = |v: &[usize]| v.iter().map(|&x| x as u64).collect::<Vec<_>>();
-    let q = bld.input("q", TensorType::of(DataType::F32, &dims(&[bsz, s, hidden])));
-    let k = bld.input(
-        "k",
-        TensorType::of(DataType::F32, &dims(&[bsz, s, kv_hidden])),
-    );
-    let v = bld.input(
-        "v",
-        TensorType::of(DataType::F32, &dims(&[bsz, s, kv_hidden])),
-    );
-    let pk = bld.input(
-        "pk",
-        TensorType::of(DataType::F32, &dims(&[bsz, kv, past, d])),
-    );
-    let pv = bld.input(
-        "pv",
-        TensorType::of(DataType::F32, &dims(&[bsz, kv, past, d])),
-    );
+    let q = bld.input("q", TensorType::of(dt, &dims(&[bsz, s, hidden])));
+    let k = bld.input("k", TensorType::of(dt, &dims(&[bsz, s, kv_hidden])));
+    let v = bld.input("v", TensorType::of(dt, &dims(&[bsz, s, kv_hidden])));
+    let pk = bld.input("pk", TensorType::of(dt, &dims(&[bsz, kv, past, d])));
+    let pv = bld.input("pv", TensorType::of(dt, &dims(&[bsz, kv, past, d])));
     let sl = bld.input("seqlens", TensorType::of(DataType::I32, &dims(&[bsz])));
-    let cos = bld.input(
-        "cos",
-        TensorType::of(DataType::F32, &dims(&[max_pos, half])),
-    );
-    let sin = bld.input(
-        "sin",
-        TensorType::of(DataType::F32, &dims(&[max_pos, half])),
-    );
-    let bias = bld.input(
-        "bias",
-        TensorType::of(DataType::F32, &dims(&[bsz, 1, s, total])),
-    );
-    let present_ty = TensorType::of(DataType::F32, &dims(&[bsz, kv, total, d]));
+    let cos = bld.input("cos", TensorType::of(dt, &dims(&[max_pos, half])));
+    let sin = bld.input("sin", TensorType::of(dt, &dims(&[max_pos, half])));
+    let bias = bld.input("bias", TensorType::of(dt, &dims(&[bsz, 1, s, total])));
+    let present_ty = TensorType::of(dt, &dims(&[bsz, kv, total, d]));
     let outs = bld
         .composite(
             "com.microsoft.GroupQueryAttention",
@@ -758,59 +769,65 @@ fn gqa_rotary_bias_case(
                 .with("has_attention_bias", AttrValue::Int(1)),
             &[q, k, v, pk, pv, sl, cos, sin, bias],
             vec![
-                TensorType::of(DataType::F32, &dims(&[bsz, s, hidden])),
+                TensorType::of(dt, &dims(&[bsz, s, hidden])),
                 present_ty.clone(),
                 present_ty,
             ],
         )
         .unwrap();
-    bld.output("out", outs[0]);
-    bld.output("present_k", outs[1]);
-    bld.output("present_v", outs[2]);
+    // Compare in f32 (the harness checks f32 outputs); f16 rounds the
+    // probabilities and the cache, so the tolerance is f16-sized.
+    let (o0, o1, o2, atol, rtol) = if dt == DataType::F16 {
+        let mut c = |v| {
+            bld.prim(onyxia_ir::Prim::Cast { to: DataType::F32 }, &[v])
+                .unwrap()
+        };
+        (c(outs[0]), c(outs[1]), c(outs[2]), 2e-2f32, 2e-2f32)
+    } else {
+        (outs[0], outs[1], outs[2], ATOL, RTOL)
+    };
+    bld.output("out", o0);
+    bld.output("present_k", o1);
+    bld.output("present_v", o2);
     let m = bld.finish().unwrap();
 
-    diff_test(
+    diff_test_tol(
         m,
         vec![
             (
                 "q",
-                Tensor::from_f32(
+                mk(
                     &f32s(bsz * s * hidden, |i| (i as f32 * 0.17).sin()),
                     &[bsz, s, hidden],
-                )
-                .unwrap(),
+                ),
             ),
             (
                 "k",
-                Tensor::from_f32(
+                mk(
                     &f32s(bsz * s * kv_hidden, |i| (i as f32 * 0.29).cos()),
                     &[bsz, s, kv_hidden],
-                )
-                .unwrap(),
+                ),
             ),
             (
                 "v",
-                Tensor::from_f32(
+                mk(
                     &f32s(bsz * s * kv_hidden, |i| i as f32 * 0.25 - 0.7),
                     &[bsz, s, kv_hidden],
-                )
-                .unwrap(),
+                ),
             ),
             (
                 "pk",
-                Tensor::from_f32(
+                mk(
                     &f32s(bsz * kv * past * d, |i| (i as f32 * 0.37).sin() * 0.6),
                     &[bsz, kv, past, d],
-                )
-                .unwrap(),
+                ),
             ),
             (
                 "pv",
-                Tensor::from_f32(
+                mk(
                     &f32s(bsz * kv * past * d, |i| 1.5 - i as f32 * 0.08),
                     &[bsz, kv, past, d],
-                )
-                .unwrap(),
+                ),
             ),
             (
                 // Row 0 dense (3 past + 2 new); row 1 ragged: one valid
@@ -825,29 +842,28 @@ fn gqa_rotary_bias_case(
             ),
             (
                 "cos",
-                Tensor::from_f32(
+                mk(
                     &f32s(max_pos * half, |i| (i as f32 * 0.05).cos()),
                     &[max_pos, half],
-                )
-                .unwrap(),
+                ),
             ),
             (
                 "sin",
-                Tensor::from_f32(
+                mk(
                     &f32s(max_pos * half, |i| (i as f32 * 0.05).sin()),
                     &[max_pos, half],
-                )
-                .unwrap(),
+                ),
             ),
             (
                 "bias",
-                Tensor::from_f32(
+                mk(
                     &f32s(bsz * s * total, |i| (i as f32 * 0.6).sin() * 0.3),
                     &[bsz, 1, s, total],
-                )
-                .unwrap(),
+                ),
             ),
         ],
+        atol,
+        rtol,
     );
 }
 
