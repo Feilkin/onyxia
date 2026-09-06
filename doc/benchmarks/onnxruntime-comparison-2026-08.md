@@ -269,13 +269,17 @@ CubeCL backend after the same change: 270m fp32 prefill 79.9 → 70.1 ms,
 ### Same day: what a *tuned* onnxruntime does (onnxruntime-genai)
 
 Every ORT row above drives the stock onnx-community export through a
-plain `run()`, and that export is a bad fit for ORT's CUDA EP: its shape
-subgraphs get 37 nodes placed on the CPU (1B) and ORT inserts **107
-Memcpy nodes** (80 device→host), 78 of which copy an activation
-(`v_proj` output, `q/k_norm` reshape) to the host mid-graph on every
-step — a stream sync each; the 270m gets 73. The KV cache also
-round-trips the host every decode step, and the Memcpy nodes rule out
-CUDA graphs. Onyxia folds those shape chains at compile time and never
+plain `run()`, and that export is a bad fit for ORT's CUDA EP. ORT's
+verbose placement log for the 1B shows 37 nodes on the CPU: **all 26
+`GroupQueryAttention` nodes** (the CUDA GQA kernel is registered for
+fp16/bf16 only, so fp32 attention falls back to the CPU kernel — on the
+q4 export too, whose activations are fp32) plus 11 shape-subgraph ops.
+ORT therefore inserts **107 Memcpy nodes** (80 device→host): 78 copy the
+q, k, v activations of every layer to the host and the attention output
+back, on every step, a stream sync each; the 270m gets 73. The KV cache
+also round-trips the host every decode step, and the Memcpy nodes rule
+out CUDA graphs. So the "ORT CUDA EP" rows above are really cuBLAS
+projections on the GPU with the attention on the CPU. Onyxia folds those shape chains at compile time and never
 syncs mid-graph, which is most of why the tables above show it level
 with or ahead of ORT-CUDA. That is a statement about the export and
 ORT's partitioner, not about cuBLAS.
@@ -287,11 +291,15 @@ enable_cuda_graph=true`, `genaienv/`, transformers < 5) — a graph without
 shape subgraphs, a device-resident shared KV buffer, fused QK-norm GQA,
 CUDA graphs — driven by genai's generation loop (`genai_bench.py`, same
 protocol: 64 dummy tokens appended, 128 greedy steps, prefill = median
-of 5 fresh generators). Its fp32 CUDA export comes out invalid (packed
-`Attention` with missing `present.*` outputs; GQA on CUDA is fp16/bf16
-only), so the "full precision" row is the **bf16** build the builder
+of 5 fresh generators). Its fp32 CUDA export comes out invalid (the
+builder switches to the packed `com.microsoft.Attention` op because GQA
+on CUDA is fp16/bf16 only, and for Gemma 3 emits it stateless — no
+past/present inputs, no rotary — while still declaring `present.*`
+outputs), so the "full precision" row is the **bf16** build the builder
 itself recommends, and its int4 build uses **fp16 activations** — both
-move half the bytes Onyxia's fp32 activations do.
+move half the bytes Onyxia's fp32 activations do. There is no fp32
+CUDA attention path in ORT for this model family: a like-for-like fp32
+number does not exist on the ORT side, only the 16-bit one.
 
 | model | Onyxia wgpu decode | ORT-genai decode | Onyxia prefill | ORT-genai prefill |
 |---|---|---|---|---|
