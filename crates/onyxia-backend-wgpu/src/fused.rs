@@ -33,6 +33,12 @@ use std::sync::Arc;
 /// `Send + Sync` so the registry can be shared (`Arc`) across threads;
 /// kernels are stateless — per-dispatch state lives in the session.
 pub trait CompositeKernel: Send + Sync {
+    /// Whether the kernel reads and writes native f16 tensors itself. When
+    /// `false` the session casts f16 inputs to f32 around the call.
+    fn handles_f16(&self) -> bool {
+        false
+    }
+
     /// Execute the composite. `outs` carries `(dtype, shape)` per declared
     /// output; the kernel allocates and returns matching tensors.
     fn execute(
@@ -42,6 +48,21 @@ pub trait CompositeKernel: Send + Sync {
         inputs: &[GpuTensor],
         outs: &[(DataType, Vec<usize>)],
     ) -> Result<Vec<GpuTensor>>;
+}
+
+/// WGSL float element for a kernel over `dtype` (`f32`, or native `f16`
+/// when the device stores f16 natively — the packed layout keeps the f32
+/// cast boundary).
+fn float_elem(session: &WgpuSession, dtype: DataType) -> Result<Option<&'static str>> {
+    Ok(match dtype {
+        DataType::F32 => Some("f32"),
+        DataType::F16 if session.layout(dtype)?.needs_f16() => Some("f16"),
+        _ => None,
+    })
+}
+
+fn enable_for(e: &str) -> &'static str {
+    if e == "f16" { "enable f16;\n" } else { "" }
 }
 
 /// Shared, immutable registry of fused kernels, keyed by composite name.
@@ -488,6 +509,9 @@ impl CompositeKernel for AddRmsNormKernel {
 struct GeluMulKernel;
 
 impl CompositeKernel for GeluMulKernel {
+    fn handles_f16(&self) -> bool {
+        true
+    }
     fn execute(
         &self,
         session: &mut WgpuSession,
@@ -498,11 +522,12 @@ impl CompositeKernel for GeluMulKernel {
         let [x, u] = inputs else {
             return Err(Error::InvalidGraph("GeluMul expects 2 inputs".into()));
         };
-        if x.dtype != DataType::F32 || x.shape != u.shape {
+        let e = float_elem(session, x.dtype)?.filter(|_| u.dtype == x.dtype);
+        let Some(e) = e.filter(|_| x.shape == u.shape) else {
             return Err(Error::Unsupported(
-                "fused gelu*mul is f32-only, equal shapes".into(),
+                "fused gelu*mul needs equal shapes and f32/native-f16 operands".into(),
             ));
-        }
+        };
         let tanh_form = attrs.str("approximate").unwrap_or("none") == "tanh";
         let out = session.alloc_out(outs[0].0, outs[0].1.clone());
         let size = out.numel();
@@ -510,12 +535,8 @@ impl CompositeKernel for GeluMulKernel {
         let (_, x_stride) = crate::gpu::dispatch_size(linear);
         let imm = Imm::new().u(size as u32).u(x_stride);
         session.dispatch(
-            if tanh_form {
-                "fused_gelu_mul_tanh_f32"
-            } else {
-                "fused_gelu_mul_f32"
-            },
-            || gelu_mul_wgsl(tanh_form),
+            &format!("fused_gelu_mul{}_{e}", if tanh_form { "_tanh" } else { "" }),
+            || gelu_mul_wgsl(tanh_form, e),
             &[&x.buffer, &u.buffer, &out.buffer],
             &imm,
             size,
@@ -630,6 +651,9 @@ impl CompositeKernel for RotaryKernel {
 struct GroupQueryAttentionKernel;
 
 impl CompositeKernel for GroupQueryAttentionKernel {
+    fn handles_f16(&self) -> bool {
+        true
+    }
     fn execute(
         &self,
         session: &mut WgpuSession,
@@ -658,9 +682,41 @@ impl CompositeKernel for GroupQueryAttentionKernel {
         }
         let rope = do_rotary.then(|| (&rest[0], &rest[1]));
         let bias = has_bias.then(|| rest.last().unwrap());
-        if q.dtype != DataType::F32 {
-            return Err(Error::Unsupported("fused GQA is f32-only".into()));
+        let Some(e) = float_elem(session, q.dtype)? else {
+            return Err(Error::Unsupported(
+                "fused GQA needs f32 or native-f16 operands".into(),
+            ));
+        };
+        // Every float operand in the kernel's element type; the caches
+        // and bias of a mixed-precision export are converted on the way in.
+        let same = |t: &GpuTensor| t.dtype == q.dtype;
+        if !(same(k) && same(v) && same(past_k) && same(past_v)) {
+            return Err(Error::Unsupported(
+                "fused GQA: q/k/v/past must share one float dtype".into(),
+            ));
         }
+        let rope = match rope {
+            Some((cos, sin)) => Some((
+                if same(cos) {
+                    cos.clone()
+                } else {
+                    session.cast_to(cos, q.dtype)?
+                },
+                if same(sin) {
+                    sin.clone()
+                } else {
+                    session.cast_to(sin, q.dtype)?
+                },
+            )),
+            None => None,
+        };
+        let rope = rope.as_ref().map(|(c, s)| (c, s));
+        let bias = match bias {
+            Some(b) if !same(b) => Some(session.cast_to(b, q.dtype)?),
+            Some(b) => Some(b.clone()),
+            None => None,
+        };
+        let bias = bias.as_ref();
         let heads = attrs.int("num_heads")? as usize;
         let kv_heads = attrs.int("kv_num_heads")? as usize;
         if heads == 0 || kv_heads == 0 || heads % kv_heads != 0 {
@@ -731,8 +787,7 @@ impl CompositeKernel for GroupQueryAttentionKernel {
             )));
         }
         if let Some(bias) = bias {
-            let ok = bias.dtype == DataType::F32
-                && bias.shape.len() == 4
+            let ok = bias.shape.len() == 4
                 && (bias.shape[0] == bsz || bias.shape[0] == 1)
                 && (bias.shape[1] == heads || bias.shape[1] == 1)
                 && bias.shape[2] == seq
@@ -778,14 +833,13 @@ impl CompositeKernel for GroupQueryAttentionKernel {
             }
             bufs.push(&present_k.buffer);
             bufs.push(&present_v.buffer);
-            let label = if rope.is_some() {
-                "fused_gqa_concat_kv_rope_f32"
-            } else {
-                "fused_gqa_concat_kv_f32"
-            };
+            let label = format!(
+                "fused_gqa_concat_kv{}_{e}",
+                if rope.is_some() { "_rope" } else { "" }
+            );
             session.dispatch(
-                label,
-                || gqa_concat_wgsl(rope.is_some()),
+                &label,
+                || gqa_concat_wgsl(rope.is_some(), e),
                 &bufs,
                 &imm,
                 2 * size,
@@ -826,13 +880,13 @@ impl CompositeKernel for GroupQueryAttentionKernel {
         }
         bufs.push(&out.buffer);
         let label = format!(
-            "fused_gqa_attention{}{}_f32",
+            "fused_gqa_attention{}{}_{e}",
             if rope.is_some() { "_rope" } else { "" },
             if bias.is_some() { "_bias" } else { "" },
         );
         session.dispatch_grid(
             &label,
-            || gqa_attention_wgsl(rope.is_some(), bias.is_some()),
+            || gqa_attention_wgsl(rope.is_some(), bias.is_some(), e),
             &bufs,
             &imm,
             [seq as u32, heads as u32, bsz as u32],
@@ -853,16 +907,19 @@ impl CompositeKernel for GroupQueryAttentionKernel {
 /// The `rope` variant rotates new rows as they are written (half-split
 /// convention, position = absolute present index `t`); past rows were
 /// rotated when they were first written in earlier steps.
-fn gqa_concat_wgsl(rope: bool) -> String {
+fn gqa_concat_wgsl(rope: bool, e: &str) -> String {
+    let en = enable_for(e);
     let (half_field, rope_bindings, out_binding) = if rope {
         (
             " half: u32,",
-            "@group(0) @binding(5) var<storage, read> cosc: array<f32>;
-@group(0) @binding(6) var<storage, read> sinc: array<f32>;",
+            format!(
+                "@group(0) @binding(5) var<storage, read> cosc: array<{e}>;
+@group(0) @binding(6) var<storage, read> sinc: array<{e}>;"
+            ),
             7,
         )
     } else {
-        ("", "", 5)
+        ("", String::new(), 5)
     };
     // New K rows rotate on the way in (half-split convention, position =
     // absolute present index `t`); V copies straight through.
@@ -870,32 +927,32 @@ fn gqa_concat_wgsl(rope: bool) -> String {
         "
         if (!is_v && dd < 2u * p.half) {
             if (dd < p.half) {
-                val = val * cosc[t * p.half + dd]
-                    - new_k[nbase + dd + p.half] * sinc[t * p.half + dd];
+                val = val * f32(cosc[t * p.half + dd])
+                    - f32(new_k[nbase + dd + p.half]) * f32(sinc[t * p.half + dd]);
             } else {
                 let j = dd - p.half;
-                val = val * cosc[t * p.half + j]
-                    + new_k[nbase + dd - p.half] * sinc[t * p.half + j];
+                val = val * f32(cosc[t * p.half + j])
+                    + f32(new_k[nbase + dd - p.half]) * f32(sinc[t * p.half + j]);
             }
         }"
     } else {
         ""
     };
     format!(
-        "
+        "{en}
 struct P {{
     size: u32, x_stride: u32,
     kv: u32, past: u32, total: u32, s: u32, d: u32,{half_field}
 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> old_k: array<f32>;
-@group(0) @binding(1) var<storage, read> new_k: array<f32>;
-@group(0) @binding(2) var<storage, read> old_v: array<f32>;
-@group(0) @binding(3) var<storage, read> new_v: array<f32>;
+@group(0) @binding(0) var<storage, read> old_k: array<{e}>;
+@group(0) @binding(1) var<storage, read> new_k: array<{e}>;
+@group(0) @binding(2) var<storage, read> old_v: array<{e}>;
+@group(0) @binding(3) var<storage, read> new_v: array<{e}>;
 @group(0) @binding(4) var<storage, read> seqlens: array<i32>;
 {rope_bindings}
-@group(0) @binding({out_binding}) var<storage, read_write> present_k: array<f32>;
-@group(0) @binding({out_binding_v}) var<storage, read_write> present_v: array<f32>;
+@group(0) @binding({out_binding}) var<storage, read_write> present_k: array<{e}>;
+@group(0) @binding({out_binding_v}) var<storage, read_write> present_v: array<{e}>;
 const WG_SIZE: u32 = 256u;
 
 @compute @workgroup_size(WG_SIZE)
@@ -913,15 +970,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     var val = 0.0;
     if (t < past_b) {{
         let o = ((b * p.kv + kvh) * p.past + t) * p.d + dd;
-        val = select(old_k[o], old_v[o], is_v);
+        val = f32(select(old_k[o], old_v[o], is_v));
     }} else if (t < past_b + p.s) {{
         let nbase = (b * p.s + (t - past_b)) * p.kv * p.d + kvh * p.d;
-        val = select(new_k[nbase + dd], new_v[nbase + dd], is_v);{rotate}
+        val = f32(select(new_k[nbase + dd], new_v[nbase + dd], is_v));{rotate}
     }}
     if (is_v) {{
-        present_v[idx] = val;
+        present_v[idx] = {e}(val);
     }} else {{
-        present_k[idx] = val;
+        present_k[idx] = {e}(val);
     }}
 }}
 ",
@@ -933,15 +990,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
 /// through a shared-memory tile with an online (rescaling) softmax, so
 /// any context length fits in the fixed tile. Query lives in shared
 /// memory; each thread owns one output dim in the value phase.
-fn gqa_attention_wgsl(rope: bool, bias: bool) -> String {
+fn gqa_attention_wgsl(rope: bool, bias: bool, e: &str) -> String {
+    let en = enable_for(e);
     let mut fields = String::new();
     let mut bindings = String::new();
     let mut next_binding = 4;
     if rope {
         fields.push_str(" half: u32,");
         bindings.push_str(&format!(
-            "@group(0) @binding({}) var<storage, read> cosc: array<f32>;
-@group(0) @binding({}) var<storage, read> sinc: array<f32>;\n",
+            "@group(0) @binding({}) var<storage, read> cosc: array<{e}>;
+@group(0) @binding({}) var<storage, read> sinc: array<{e}>;\n",
             next_binding,
             next_binding + 1
         ));
@@ -950,49 +1008,49 @@ fn gqa_attention_wgsl(rope: bool, bias: bool) -> String {
     if bias {
         fields.push_str(" bias_b: u32, bias_h: u32,");
         bindings.push_str(&format!(
-            "@group(0) @binding({next_binding}) var<storage, read> att_bias: array<f32>;\n",
+            "@group(0) @binding({next_binding}) var<storage, read> att_bias: array<{e}>;\n",
         ));
         next_binding += 1;
     }
     let load_q = if rope {
         "
         let qbase = (b * p.s + sq) * p.heads * p.d + h * p.d;
-        var qv = q[qbase + lane];
+        var qv = f32(q[qbase + lane]);
         if (lane < 2u * p.half) {
             let pos = u32(row);
             if (lane < p.half) {
-                qv = qv * cosc[pos * p.half + lane]
-                    - q[qbase + lane + p.half] * sinc[pos * p.half + lane];
+                qv = qv * f32(cosc[pos * p.half + lane])
+                    - f32(q[qbase + lane + p.half]) * f32(sinc[pos * p.half + lane]);
             } else {
                 let j = lane - p.half;
-                qv = qv * cosc[pos * p.half + j]
-                    + q[qbase + lane - p.half] * sinc[pos * p.half + j];
+                qv = qv * f32(cosc[pos * p.half + j])
+                    + f32(q[qbase + lane - p.half]) * f32(sinc[pos * p.half + j]);
             }
         }
         q_s[lane] = qv;"
     } else {
         "
-        q_s[lane] = q[(b * p.s + sq) * p.heads * p.d + h * p.d + lane];"
+        q_s[lane] = f32(q[(b * p.s + sq) * p.heads * p.d + h * p.d + lane]);"
     };
     let add_bias = if bias {
         "
-            sc += att_bias[b * p.bias_b + h * p.bias_h + sq * p.total + c0 + t];"
+            sc += f32(att_bias[b * p.bias_b + h * p.bias_h + sq * p.total + c0 + t]);"
     } else {
         ""
     };
     format!(
-        "
+        "{en}
 struct P {{
     heads: u32, kv: u32, group: u32,
     s: u32, total: u32, d: u32,
     scale: f32, window: i32,{fields}
 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> q: array<f32>;
-@group(0) @binding(1) var<storage, read> pk: array<f32>;
-@group(0) @binding(2) var<storage, read> pv: array<f32>;
+@group(0) @binding(0) var<storage, read> q: array<{e}>;
+@group(0) @binding(1) var<storage, read> pk: array<{e}>;
+@group(0) @binding(2) var<storage, read> pv: array<{e}>;
 @group(0) @binding(3) var<storage, read> seqlens: array<i32>;
-{bindings}@group(0) @binding({next_binding}) var<storage, read_write> out: array<f32>;
+{bindings}@group(0) @binding({next_binding}) var<storage, read_write> out: array<{e}>;
 var<workgroup> q_s: array<f32, 256>;
 var<workgroup> tile: array<f32, 1024>;
 var<workgroup> red: array<f32, 256>;
@@ -1037,7 +1095,7 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
             var sc = 0.0;
             let kb = base + (c0 + t) * p.d;
             for (var dd = 0u; dd < p.d; dd += 1u) {{
-                sc += q_s[dd] * pk[kb + dd];
+                sc += q_s[dd] * f32(pk[kb + dd]);
             }}
             sc *= p.scale;{add_bias}
             let dead = col > row || (p.window >= 0 && col < row - p.window);
@@ -1083,7 +1141,7 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
         if (lane < p.d) {{
             acc = acc * rescale;
             for (var t = 0u; t < cn; t = t + 1u) {{
-                acc += tile[t] * pv[base + (c0 + t) * p.d + lane];
+                acc += tile[t] * f32(pv[base + (c0 + t) * p.d + lane]);
             }}
         }}
         m = m_new;
@@ -1091,7 +1149,7 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
     }}
 
     if (lane < p.d) {{
-        out[(b * p.s + sq) * p.heads * p.d + h * p.d + lane] = acc / l;
+        out[(b * p.s + sq) * p.heads * p.d + h * p.d + lane] = {e}(acc / l);
     }}
 }}
 "
@@ -1140,7 +1198,8 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
     .to_string()
 }
 
-fn gelu_mul_wgsl(tanh_form: bool) -> String {
+fn gelu_mul_wgsl(tanh_form: bool, e: &str) -> String {
+    let en = enable_for(e);
     let (erf, gelu) = if tanh_form {
         (
             "",
@@ -1150,20 +1209,20 @@ fn gelu_mul_wgsl(tanh_form: bool) -> String {
         (kernels::ERF, "0.5 * v * (1.0 + erf(v * 0.7071067812))")
     };
     format!(
-        "{erf}
+        "{en}{erf}
 struct P {{ size: u32, x_stride: u32 }}
 var<immediate> p: P;
-@group(0) @binding(0) var<storage, read> x: array<f32>;
-@group(0) @binding(1) var<storage, read> u: array<f32>;
-@group(0) @binding(2) var<storage, read_write> out: array<f32>;
+@group(0) @binding(0) var<storage, read> x: array<{e}>;
+@group(0) @binding(1) var<storage, read> u: array<{e}>;
+@group(0) @binding(2) var<storage, read_write> out: array<{e}>;
 const WG_SIZE: u32 = 256u;
 
 @compute @workgroup_size(WG_SIZE)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let idx = gid.x + gid.y * p.x_stride;
     if (idx >= p.size) {{ return; }}
-    let v = x[idx];
-    out[idx] = ({gelu}) * u[idx];
+    let v = f32(x[idx]);
+    out[idx] = {e}(({gelu}) * f32(u[idx]));
 }}
 "
     )

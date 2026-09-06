@@ -849,8 +849,9 @@ impl WgpuSession {
                     .collect();
                 // Fused kernels are written for f32; run f16 composites
                 // through them with casts at the boundary.
-                let f16 = inputs.iter().any(|t| t.dtype == DataType::F16)
-                    || outs_meta.iter().any(|(d, _)| *d == DataType::F16);
+                let f16 = !kernel.handles_f16()
+                    && (inputs.iter().any(|t| t.dtype == DataType::F16)
+                        || outs_meta.iter().any(|(d, _)| *d == DataType::F16));
                 let mut f16_outs = Vec::new();
                 if f16 {
                     for t in &mut inputs {
