@@ -392,6 +392,39 @@ ORT **1.36× / 1.19× / 1.50× / 1.04×** ahead on decode, **2.0× / 1.6× /
 2.5× / 2.0×** on prefill — and onnxruntime-genai's CUDA graphs add
 another ~2× on top of either.
 
+### Same evening: a 1024-token prompt, and a tiled attention kernel
+
+The 64-token prefill hid a scaling problem. Same fp16 files, 1024-token
+prompt (median of 5), 128 decode steps at ~1100 tokens of context
+(`benchmark-f16-2026-09-06.csv`):
+
+| model | Onyxia prefill, before | Onyxia prefill, tiled attention | ORT CUDA EP prefill | Onyxia decode @1100 ctx | ORT decode @1100 ctx |
+|---|---|---|---|---|---|
+| 270m fp16 | 96.5 ms | **44.9 ms** | 6.4 ms | 129 tok/s | 247 |
+| 270m q4f16 | 98.3 | **46.2** | 7.1 | 143 | 258 |
+| 1B fp16 | 197.5 | **125.3** | 15.9 | 87 | 151 |
+| 1B q4f16 | 188.5 | **112.0** | 18.3 | 98 | 168 |
+
+The profile of the 1B fp16 prefill at 1024 tokens was 52 % the fused
+GQA attention (one workgroup per query scanning every key, O(S²) with
+strided K reads) and 47 % the matmul tiles. Commit 7e78111 adds a
+tiled, flash-style attention for S ≥ 16: one workgroup per (batch,
+head, 32 queries), keys in blocks of 32 with an online softmax, K/V
+staged through shared memory in head-dim chunks (12 KB of workgroup
+memory, inside WebGPU's default), window skipping whole key blocks.
+Attention 102 → 30 ms on the 1B; the ONNX op's semantics are
+unchanged (differential tests vs the decomposition at S = 32/40/70,
+ragged rows, window, rotary, bias, d = 64/256).
+
+What is left at 1024 tokens is the matmul: 93 of the 125 ms on the 1B,
+~28 TFLOPS with f32 accumulation against ORT's fp16 tensor cores. The
+cooperative-matrix tile (`ONYXIA_MATMUL_TILE=coop`) is 2.4× *slower*
+here (255 vs 107 ms on the fp32 1B) — its staging, not the MMA, is the
+bottleneck — so a real tensor-core matmul is the next kernel. Decode at
+long context is the other gap: the one-query kernel has only `heads ×
+batch` workgroups to scan the cache (4 on the 270m), 4.7 ms of the
+7.7 ms step at 1100 tokens.
+
 ## Onyxia's CubeCL backend on the same GPU (270m, 2026-08-23)
 
 Re-run after the July perf pass, which only touched the wgpu backend. The
