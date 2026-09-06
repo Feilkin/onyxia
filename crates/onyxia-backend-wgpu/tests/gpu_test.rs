@@ -669,8 +669,38 @@ fn gqa_symbolic_with_past_and_window() {
 #[test]
 #[ignore = "requires GPU"]
 fn gqa_do_rotary_with_bias_fused_matches_decomposition() {
-    let (bsz, s, h, kv, d, past) = (2usize, 2usize, 2usize, 1usize, 8usize, 3usize);
-    let (hidden, kv_hidden, total, max_pos, half) = (h * d, kv * d, past + s, 16usize, d / 2);
+    gqa_rotary_bias_case(2, 2, 2, 1, 8, 3, 3, &[4, 2]);
+}
+
+/// The tiled prefill kernel (S ≥ 16): query blocks that straddle the
+/// 32-row tile, several key blocks, a window that skips leading blocks,
+/// a ragged row whose past is shorter than S, and both head-dim
+/// chunkings (d = 64 → 2 chunks of 32, d = 256 → 8).
+#[test]
+#[ignore = "requires GPU"]
+fn gqa_flash_prefill_matches_decomposition() {
+    // Row 0: 5 past + 40 new (positions 5..44); row 1: tot 31 < S, so
+    // its queries sit at 0..39 with no valid past.
+    gqa_rotary_bias_case(2, 40, 2, 1, 64, 5, 20, &[44, 30]);
+    // No window, 70 queries over 40 past: three key blocks, d = 256.
+    gqa_rotary_bias_case(1, 70, 2, 1, 256, 40, -1, &[109]);
+    // Exactly one block, window wider than the context.
+    gqa_rotary_bias_case(1, 32, 4, 2, 64, 0, 100, &[31]);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn gqa_rotary_bias_case(
+    bsz: usize,
+    s: usize,
+    h: usize,
+    kv: usize,
+    d: usize,
+    past: usize,
+    window: i64,
+    seqlens: &[i32],
+) {
+    let (hidden, kv_hidden, total, half) = (h * d, kv * d, past + s, d / 2);
+    let max_pos = total.max(16);
 
     let mut bld = GraphBuilder::new();
     let dims = |v: &[usize]| v.iter().map(|&x| x as u64).collect::<Vec<_>>();
@@ -711,7 +741,7 @@ fn gqa_do_rotary_with_bias_fused_matches_decomposition() {
             Attrs::new()
                 .with("num_heads", AttrValue::Int(h as i64))
                 .with("kv_num_heads", AttrValue::Int(kv as i64))
-                .with("local_window_size", AttrValue::Int(3))
+                .with("local_window_size", AttrValue::Int(window))
                 .with("do_rotary", AttrValue::Int(1))
                 .with("has_attention_bias", AttrValue::Int(1)),
             &[q, k, v, pk, pv, sl, cos, sin, bias],
@@ -777,7 +807,7 @@ fn gqa_do_rotary_with_bias_fused_matches_decomposition() {
                 Tensor::new(
                     DataType::I32,
                     vec![bsz],
-                    [4i32, 2].iter().flat_map(|v| v.to_le_bytes()).collect(),
+                    seqlens.iter().flat_map(|v| v.to_le_bytes()).collect(),
                 )
                 .unwrap(),
             ),

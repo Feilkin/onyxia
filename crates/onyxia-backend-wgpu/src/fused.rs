@@ -913,6 +913,27 @@ impl CompositeKernel for GroupQueryAttentionKernel {
             bufs.push(&bias.buffer);
         }
         bufs.push(&out.buffer);
+        // Prefill-shaped calls take the tiled (flash-style) kernel: 32
+        // queries × 32 keys per workgroup, K/V read once per query
+        // block. Decode (short S) keeps the one-query-per-workgroup
+        // kernel, which fills the device better at S = 1.
+        let dc = if e == "f16" { 64 } else { 32 };
+        let flash = seq >= FLASH_MIN_SEQ && d % dc == 0 && d % 8 == 0 && d <= 256;
+        if flash {
+            let label = format!(
+                "fused_gqa_flash{}{}_{e}_d{d}",
+                if rope.is_some() { "_rope" } else { "" },
+                if bias.is_some() { "_bias" } else { "" },
+            );
+            session.dispatch_grid(
+                &label,
+                || gqa_flash_wgsl(rope.is_some(), bias.is_some(), e, d, dc),
+                &bufs,
+                &imm,
+                [seq.div_ceil(FLASH_BQ) as u32, heads as u32, bsz as u32],
+            )?;
+            return Ok(vec![out, present_k, present_v]);
+        }
         let label = format!(
             "fused_gqa_attention{}{}_{e}",
             if rope.is_some() { "_rope" } else { "" },
@@ -1017,6 +1038,235 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
 }}
 ",
         out_binding_v = out_binding + 1,
+    )
+}
+
+/// Queries per workgroup in the tiled attention kernel.
+const FLASH_BQ: usize = 32;
+/// Sequence length from which the tiled kernel replaces the
+/// one-query-per-workgroup one.
+const FLASH_MIN_SEQ: usize = 16;
+
+/// Tiled ("flash") attention for prefill: one workgroup per `(batch,
+/// head, block of 32 queries)`, keys in blocks of 32 with an online
+/// softmax, so K and V are read once per 32 queries instead of once per
+/// query and the score tile is a shared-memory matmul rather than a
+/// per-thread dot product over strided global reads. Both operands are
+/// staged in `dc`-wide chunks of the head dim (`d % dc == 0`), which
+/// keeps workgroup memory at 12 KB — inside WebGPU's 16 KB default.
+///
+/// Thread `t` owns score-tile row `t / 8` and keys `(t % 8) * 4 .. + 4`
+/// in the score phase, and the same row with `dc / 8` dims of every
+/// chunk in the value phase; the running max and sum are recomputed
+/// redundantly by the 8 threads of a row (32 shared reads each) rather
+/// than reduced. Masking, window, rotary, bias and `seqlens_k` follow
+/// [`gqa_attention_wgsl`] exactly.
+fn gqa_flash_wgsl(rope: bool, bias: bool, e: &str, d: usize, dc: usize) -> String {
+    let en = enable_for(e);
+    let mut fields = String::new();
+    let mut bindings = String::new();
+    let mut next_binding = 4;
+    if rope {
+        fields.push_str(" half: u32,");
+        bindings.push_str(&format!(
+            "@group(0) @binding({}) var<storage, read> cosc: array<{e}>;
+@group(0) @binding({}) var<storage, read> sinc: array<{e}>;\n",
+            next_binding,
+            next_binding + 1
+        ));
+        next_binding += 2;
+    }
+    if bias {
+        fields.push_str(" bias_b: u32, bias_h: u32,");
+        bindings.push_str(&format!(
+            "@group(0) @binding({next_binding}) var<storage, read> att_bias: array<{e}>;\n",
+        ));
+        next_binding += 1;
+    }
+    let rotate_q = if rope {
+        "
+                if (dim < 2u * p.half) {
+                    let pos = past_b + sqr;
+                    if (dim < p.half) {
+                        v = v * f32(cosc[pos * p.half + dim])
+                            - f32(q[qbase + dim + p.half]) * f32(sinc[pos * p.half + dim]);
+                    } else {
+                        let j = dim - p.half;
+                        v = v * f32(cosc[pos * p.half + j])
+                            + f32(q[qbase + dim - p.half]) * f32(sinc[pos * p.half + j]);
+                    }
+                }"
+    } else {
+        ""
+    };
+    let add_bias = if bias {
+        "
+            if (live && col < p.total) {
+                sv += f32(att_bias[b * p.bias_b + h * p.bias_h + sq * p.total + col]);
+            }"
+    } else {
+        ""
+    };
+    let dpt = dc / 8;
+    let nch = d / dc;
+    let acc_n = d / 8;
+    format!(
+        "{en}
+struct P {{
+    heads: u32, kv: u32, group: u32,
+    s: u32, total: u32, d: u32,
+    scale: f32, window: i32,{fields}
+}}
+var<immediate> p: P;
+@group(0) @binding(0) var<storage, read> q: array<{e}>;
+@group(0) @binding(1) var<storage, read> pk: array<{e}>;
+@group(0) @binding(2) var<storage, read> pv: array<{e}>;
+@group(0) @binding(3) var<storage, read> seqlens: array<i32>;
+{bindings}@group(0) @binding({next_binding}) var<storage, read_write> out: array<{e}>;
+const BQ: u32 = 32u;
+const BK: u32 = 32u;
+const DC: u32 = {dc}u;
+const DPT: u32 = {dpt}u;
+const NCH: u32 = {nch}u;
+// Q chunk, transposed: qs[dd * BQ + row]. K chunk, transposed:
+// ks[dd * BK + key]; the same buffer holds the V chunk row-major
+// (ks[key * DC + dd]) in the value phase.
+var<workgroup> qs: array<{e}, {qs_n}>;
+var<workgroup> ks: array<{e}, {ks_n}>;
+var<workgroup> sc: array<f32, 1024>;
+const NEG: f32 = -3.402823e38;
+
+@compute @workgroup_size(256)
+fn main(@builtin(workgroup_id) wg: vec3<u32>,
+        @builtin(local_invocation_id) lid: vec3<u32>) {{
+    let h = wg.y;
+    let b = wg.z;
+    let t = lid.x;
+    let kvh = h / p.group;
+    let kbase = (b * p.kv + kvh) * p.total * p.d;
+    let tot_b = u32(seqlens[b]) + 1u;
+    let past_b = select(tot_b - p.s, 0u, tot_b < p.s);
+    let sq0 = wg.x * BQ;
+    let r = t / 8u;
+    let kq = (t % 8u) * 4u;
+    let dg = (t % 8u) * DPT;
+    let sq = sq0 + r;
+    let live = sq < p.s;
+    let row = i32(past_b + min(sq, p.s - 1u));
+    // Keys this block can see: causal bound from its last live row,
+    // window bound from its first.
+    let last_sq = min(sq0 + BQ, p.s) - 1u;
+    let cols = min(past_b + last_sq + 1u, p.total);
+    var k_start = 0u;
+    if (p.window >= 0) {{
+        let lo = i32(past_b + sq0) - p.window;
+        if (lo > 0) {{ k_start = (u32(lo) / BK) * BK; }}
+    }}
+    var m = NEG;
+    var l = 0.0;
+    var acc: array<f32, {acc_n}>;
+    for (var i = 0u; i < {acc_n}u; i += 1u) {{ acc[i] = 0.0; }}
+
+    for (var kb = k_start; kb < cols; kb += BK) {{
+        // Scores for this thread's (row, 4 keys), chunked over the head dim.
+        var s0 = 0.0;
+        var s1 = 0.0;
+        var s2 = 0.0;
+        var s3 = 0.0;
+        for (var c = 0u; c < NCH; c += 1u) {{
+            for (var i = t; i < BQ * DC; i += 256u) {{
+                let rr = i / DC;
+                let dd = i % DC;
+                let dim = c * DC + dd;
+                let sqr = sq0 + rr;
+                var v = 0.0;
+                if (sqr < p.s) {{
+                    let qbase = (b * p.s + sqr) * p.heads * p.d + h * p.d;
+                    v = f32(q[qbase + dim]);{rotate_q}
+                }}
+                qs[dd * BQ + rr] = {e}(v);
+            }}
+            for (var i = t; i < BK * DC; i += 256u) {{
+                let kk = i / DC;
+                let dd = i % DC;
+                let col = kb + kk;
+                var v = 0.0;
+                if (col < cols) {{ v = f32(pk[kbase + col * p.d + c * DC + dd]); }}
+                ks[dd * BK + kk] = {e}(v);
+            }}
+            workgroupBarrier();
+            for (var dd = 0u; dd < DC; dd += 1u) {{
+                let qv = f32(qs[dd * BQ + r]);
+                let kb0 = dd * BK + kq;
+                s0 += qv * f32(ks[kb0]);
+                s1 += qv * f32(ks[kb0 + 1u]);
+                s2 += qv * f32(ks[kb0 + 2u]);
+                s3 += qv * f32(ks[kb0 + 3u]);
+            }}
+            workgroupBarrier();
+        }}
+        // Scale, bias, causal/window mask; dead rows and keys get NEG.
+        var sv4 = array<f32, 4>(s0, s1, s2, s3);
+        for (var j = 0u; j < 4u; j += 1u) {{
+            let col = kb + kq + j;
+            var sv = sv4[j] * p.scale;{add_bias}
+            let dead = !live || col >= cols || i32(col) > row
+                || (p.window >= 0 && i32(col) < row - p.window);
+            sc[r * BK + kq + j] = select(sv, NEG, dead);
+        }}
+        workgroupBarrier();
+        // Online softmax per row; every thread of the row recomputes the
+        // row statistics from the shared tile.
+        var bm = NEG;
+        for (var kk = 0u; kk < BK; kk += 1u) {{ bm = max(bm, sc[r * BK + kk]); }}
+        let m_new = max(m, bm);
+        for (var j = 0u; j < 4u; j += 1u) {{
+            let idx = r * BK + kq + j;
+            let x = sc[idx];
+            sc[idx] = select(exp(x - m_new), 0.0, x <= -3.0e38);
+        }}
+        workgroupBarrier();
+        var rs = 0.0;
+        for (var kk = 0u; kk < BK; kk += 1u) {{ rs += sc[r * BK + kk]; }}
+        let alpha = select(exp(m - m_new), 0.0, m <= -3.0e38);
+        l = l * alpha + rs;
+        m = m_new;
+        for (var i = 0u; i < {acc_n}u; i += 1u) {{ acc[i] *= alpha; }}
+        // Value phase: this thread's DPT dims of each chunk.
+        for (var c = 0u; c < NCH; c += 1u) {{
+            for (var i = t; i < BK * DC; i += 256u) {{
+                let kk = i / DC;
+                let dd = i % DC;
+                let col = kb + kk;
+                var v = 0.0;
+                if (col < cols) {{ v = f32(pv[kbase + col * p.d + c * DC + dd]); }}
+                ks[kk * DC + dd] = {e}(v);
+            }}
+            workgroupBarrier();
+            for (var kk = 0u; kk < BK; kk += 1u) {{
+                let pw = sc[r * BK + kk];
+                let vb = kk * DC + dg;
+                for (var j = 0u; j < DPT; j += 1u) {{
+                    acc[c * DPT + j] += pw * f32(ks[vb + j]);
+                }}
+            }}
+            workgroupBarrier();
+        }}
+    }}
+
+    if (live) {{
+        let inv = 1.0 / l;
+        let obase = (b * p.s + sq) * p.heads * p.d + h * p.d;
+        for (var c = 0u; c < NCH; c += 1u) {{
+            for (var j = 0u; j < DPT; j += 1u) {{
+                out[obase + c * DC + dg + j] = {e}(acc[c * DPT + j] * inv);
+            }}
+        }}
+    }}
+}}
+",
+        qs_n = 32 * dc,
+        ks_n = 32 * dc,
     )
 }
 
