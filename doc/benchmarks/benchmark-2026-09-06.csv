@@ -1,0 +1,13 @@
+model,runtime,precision,decode_tok_per_s,decode_ms_per_tok,prefill64_ms,prefill_tok_per_s,embed_forward64_ms,embed_passes_per_s,notes
+gemma-3-1b,ORT CPU,fp32,13.3,74.9,96.0,667,,,"onnxruntime 1.29 CPU EP, 16 cores, stock onnx-community export, last-row logits graph"
+gemma-3-1b,ORT CUDA,fp32,165,6.05,8.8,7311,,,"onnxruntime 1.29 CUDA EP via C API, stock export, plain run() (host KV, 107 Memcpy nodes), last-row logits graph for prefill"
+gemma-3-1b,Onyxia wgpu,fp32,176,5.67,8.9,7222,,,"Vulkan on RTX 5090, fused GQA/RMSNorm, device KV, 3.9 GiB VRAM"
+gemma-3-1b,ORT genai,bf16,418,2.39,2.8,23172,,,"onnxruntime-genai 0.15.2, ORT model-builder export, CUDA graphs, shared device KV; bf16 weights+activations"
+gemma-3-1b-q4,ORT CPU,int4 weights / fp32,66.7,15.0,56.3,1137,,,"stock model_q4 export (MatMulNBits), last-row logits graph"
+gemma-3-1b-q4,ORT CUDA,int4 weights / fp32,231,4.33,16.1,3978,,,"stock model_q4 export, plain run(), last-row logits graph for prefill"
+gemma-3-1b-q4,Onyxia wgpu,int4 weights / fp32,310,3.23,9.1,7030,,,"fused 4-bit matvec, 0.92 GiB VRAM"
+gemma-3-1b-q4,ORT genai,int4 weights / fp16,690,1.45,3.5,18438,,,"onnxruntime-genai builder int4 (block 32), fp16 activations, CUDA graphs"
+embeddinggemma-300m,ORT CPU,fp32,,,,,19.6,51,"onnx-community/embeddinggemma-300m-ONNX, one 64-token pass, mean of 32"
+embeddinggemma-300m,ORT CUDA,fp32,,,,,2.04,490,"CUDA EP via C API, no CPU fallbacks in this graph"
+embeddinggemma-300m,Onyxia wgpu,fp32,,,,,6.24,160,"1.16 GiB VRAM; output matches ORT to 2e-7"
+embeddinggemma-300m,ORT genai,,,,,,,,"not applicable: genai runs generative (decoder) models only"
