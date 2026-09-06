@@ -23,7 +23,7 @@ pub const MAX_RANK: usize = 8;
 /// Immediates byte builder. Fields are packed in declaration order; all
 /// fields are 4-byte scalars or `array<u32, 8>`, so layout is trivially
 /// sequential.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Imm(Vec<u8>);
 
 impl Imm {

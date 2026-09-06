@@ -934,6 +934,49 @@ impl CompositeKernel for GroupQueryAttentionKernel {
             )?;
             return Ok(vec![out, present_k, present_v]);
         }
+        // Decode over a long cache: `seq × heads × batch` workgroups can't
+        // fill the device, so the keys are split across workgroups that
+        // each produce an (m, l, acc) partial, folded by a second pass.
+        let base_wg = seq * heads * bsz;
+        let nsplit = if base_wg < SPLIT_TARGET_WG && total >= SPLIT_MIN_TOTAL {
+            SPLIT_TARGET_WG
+                .div_ceil(base_wg)
+                .min(total.div_ceil(SPLIT_MIN_CHUNK))
+                .max(1)
+        } else {
+            1
+        };
+        if nsplit > 1 {
+            let chunk = total.div_ceil(nsplit).div_ceil(64) * 64;
+            let nsplit = total.div_ceil(chunk).max(1);
+            let stride = d + 2;
+            let partials = session.acquire_scratch((nsplit * base_wg * stride * 4) as u64);
+            let split_imm = imm.clone().u(chunk as u32).u(nsplit as u32);
+            let mut split_bufs = bufs.clone();
+            *split_bufs.last_mut().unwrap() = &partials;
+            let label = format!(
+                "fused_gqa_attention_split{}{}_{e}",
+                if rope.is_some() { "_rope" } else { "" },
+                if bias.is_some() { "_bias" } else { "" },
+            );
+            session.dispatch_grid(
+                &label,
+                || gqa_attention_split_wgsl(rope.is_some(), bias.is_some(), e),
+                &split_bufs,
+                &split_imm,
+                [seq as u32, heads as u32, (bsz * nsplit) as u32],
+            )?;
+            let combine_imm = Imm::new().u(d as u32).u(nsplit as u32).u(stride as u32);
+            session.dispatch_grid(
+                &format!("fused_gqa_combine_{e}"),
+                || gqa_combine_wgsl(e),
+                &[&partials, &out.buffer],
+                &combine_imm,
+                [base_wg as u32, 1, 1],
+            )?;
+            session.release_scratch(partials);
+            return Ok(vec![out, present_k, present_v]);
+        }
         let label = format!(
             "fused_gqa_attention{}{}_{e}",
             if rope.is_some() { "_rope" } else { "" },
@@ -1040,6 +1083,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {{
         out_binding_v = out_binding + 1,
     )
 }
+
+/// Workgroups the split decode kernel aims for, the cache length from
+/// which splitting is worth its combine pass, and the smallest key
+/// chunk per split.
+const SPLIT_TARGET_WG: usize = 128;
+const SPLIT_MIN_TOTAL: usize = 256;
+const SPLIT_MIN_CHUNK: usize = 128;
 
 /// Queries per workgroup in the tiled attention kernel.
 const FLASH_BQ: usize = 32;
@@ -1275,6 +1325,59 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
 /// any context length fits in the fixed tile. Query lives in shared
 /// memory; each thread owns one output dim in the value phase.
 fn gqa_attention_wgsl(rope: bool, bias: bool, e: &str) -> String {
+    gqa_attention_impl(rope, bias, e, false)
+}
+
+/// [`gqa_attention_wgsl`] over one key chunk per workgroup (`wg.z` =
+/// `batch * nsplit + split`), writing an `(m, l, acc[d])` partial per
+/// `(batch, head, query, split)` instead of the output; folded by
+/// [`gqa_combine_wgsl`]. Used for decode over long caches, where
+/// `seq × heads × batch` workgroups alone starve the device.
+fn gqa_attention_split_wgsl(rope: bool, bias: bool, e: &str) -> String {
+    gqa_attention_impl(rope, bias, e, true)
+}
+
+/// Fold the split partials: `M = max m_i`, `L = Σ l_i·e^(m_i−M)`,
+/// `out = Σ acc_i·e^(m_i−M) / L`. One workgroup per `(batch, head,
+/// query)`, one thread per output dim. Bindings: 0 = partials, 1 = out.
+fn gqa_combine_wgsl(e: &str) -> String {
+    let en = enable_for(e);
+    format!(
+        "{en}
+struct P {{ d: u32, nsplit: u32, stride: u32 }}
+var<immediate> p: P;
+@group(0) @binding(0) var<storage, read> partials: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<{e}>;
+const NEG: f32 = -3.402823e38;
+
+@compute @workgroup_size(256)
+fn main(@builtin(workgroup_id) wg: vec3<u32>,
+        @builtin(local_invocation_id) lid: vec3<u32>) {{
+    let lane = lid.x;
+    let row = wg.x;
+    let base = row * p.nsplit * p.stride;
+    var m = NEG;
+    for (var i = 0u; i < p.nsplit; i += 1u) {{
+        m = max(m, partials[base + i * p.stride]);
+    }}
+    var l = 0.0;
+    var acc = 0.0;
+    for (var i = 0u; i < p.nsplit; i += 1u) {{
+        let pb = base + i * p.stride;
+        let mi = partials[pb];
+        let w = select(exp(mi - m), 0.0, mi <= -3.0e38);
+        l += partials[pb + 1u] * w;
+        if (lane < p.d) {{ acc += partials[pb + 2u + lane] * w; }}
+    }}
+    if (lane < p.d) {{
+        out[row * p.d + lane] = {e}(acc / l);
+    }}
+}}
+"
+    )
+}
+
+fn gqa_attention_impl(rope: bool, bias: bool, e: &str, split: bool) -> String {
     let en = enable_for(e);
     let mut fields = String::new();
     let mut bindings = String::new();
@@ -1322,19 +1425,61 @@ fn gqa_attention_wgsl(rope: bool, bias: bool, e: &str) -> String {
     } else {
         ""
     };
+    // These snippets are substituted as values, so they use plain WGSL
+    // braces (only the outer template doubles them).
+    let (split_fields, out_decl, z_decode, key_range, epilogue) = if split {
+        (
+            " chunk: u32, nsplit: u32,",
+            format!(
+                "@group(0) @binding({next_binding}) var<storage, read_write> partials: array<f32>;"
+            ),
+            "
+    let split = wg.z % p.nsplit;
+    let b = wg.z / p.nsplit;",
+            "
+    // This split's key range, trimmed to the window's lower bound.
+    var c_lo = split * p.chunk;
+    if (p.window >= 0 && row - p.window > 0) { c_lo = max(c_lo, u32(row - p.window)); }
+    let c_hi = min(cols, (split + 1u) * p.chunk);",
+            "
+    // Partial (m, l, acc) for the combine pass; an empty range leaves
+    // m = NEG and l = 0, which the combine weights to zero.
+    // Rows in output order, (batch, query, head), as the combine walks them.
+    let pbase = (((b * p.s + sq) * p.heads + h) * p.nsplit + split) * (p.d + 2u);
+    if (lane == 0u) { partials[pbase] = m; partials[pbase + 1u] = l; }
+    if (lane < p.d) { partials[pbase + 2u + lane] = acc; }"
+                .to_string(),
+        )
+    } else {
+        (
+            "",
+            format!("@group(0) @binding({next_binding}) var<storage, read_write> out: array<{e}>;"),
+            "
+    let b = wg.z;",
+            "
+    let c_lo = 0u;
+    let c_hi = cols;",
+            format!(
+                "
+    if (lane < p.d) {{
+        out[(b * p.s + sq) * p.heads * p.d + h * p.d + lane] = {e}(acc / l);
+    }}"
+            ),
+        )
+    };
     format!(
         "{en}
 struct P {{
     heads: u32, kv: u32, group: u32,
     s: u32, total: u32, d: u32,
-    scale: f32, window: i32,{fields}
+    scale: f32, window: i32,{fields}{split_fields}
 }}
 var<immediate> p: P;
 @group(0) @binding(0) var<storage, read> q: array<{e}>;
 @group(0) @binding(1) var<storage, read> pk: array<{e}>;
 @group(0) @binding(2) var<storage, read> pv: array<{e}>;
 @group(0) @binding(3) var<storage, read> seqlens: array<i32>;
-{bindings}@group(0) @binding({next_binding}) var<storage, read_write> out: array<{e}>;
+{bindings}{out_decl}
 var<workgroup> q_s: array<f32, 256>;
 var<workgroup> tile: array<f32, 1024>;
 var<workgroup> red: array<f32, 256>;
@@ -1344,8 +1489,7 @@ const NEG: f32 = -3.402823e38;
 fn main(@builtin(workgroup_id) wg: vec3<u32>,
         @builtin(local_invocation_id) lid: vec3<u32>) {{
     let sq = wg.x;
-    let h = wg.y;
-    let b = wg.z;
+    let h = wg.y;{z_decode}
     let lane = lid.x;
     let kvh = h / p.group;
     let base = (b * p.kv + kvh) * p.total * p.d;
@@ -1356,7 +1500,7 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
     let row = i32(past_b + sq);
     // Causal upper bound: keys beyond `row` (including the zeroed tail
     // of the present cache) are never attended.
-    let cols = min(u32(row) + 1u, p.total);
+    let cols = min(u32(row) + 1u, p.total);{key_range}
 
     if (lane < p.d) {{{load_q}
     }}
@@ -1368,8 +1512,8 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
     var m = NEG;
     var l = 0.0;
     var acc = 0.0;
-    for (var c0 = 0u; c0 < cols; c0 += 1024u) {{
-        let cn = min(1024u, cols - c0);
+    for (var c0 = c_lo; c0 < c_hi; c0 += 1024u) {{
+        let cn = min(1024u, c_hi - c0);
 
         // Masked, scaled scores for this chunk of keys. The window
         // counts *previous* tokens (onnxruntime convention): a query
@@ -1431,10 +1575,7 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>,
         m = m_new;
         workgroupBarrier(); // tile and red are rewritten next chunk
     }}
-
-    if (lane < p.d) {{
-        out[(b * p.s + sq) * p.heads * p.d + h * p.d + lane] = {e}(acc / l);
-    }}
+{epilogue}
 }}
 "
     )

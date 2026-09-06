@@ -688,6 +688,18 @@ fn gqa_flash_prefill_matches_decomposition() {
     gqa_rotary_bias_case(1, 32, 4, 2, 64, 0, 100, &[31]);
 }
 
+/// Decode over a long cache (S < 16, total ≥ 256): the keys are split
+/// across workgroups and the partials combined. Ragged rows, a window
+/// that trims leading splits, and a cache that doesn't divide evenly.
+#[test]
+#[ignore = "requires GPU"]
+fn gqa_split_decode_matches_decomposition() {
+    gqa_rotary_bias_case(1, 2, 2, 1, 64, 600, -1, &[601]);
+    gqa_rotary_bias_case(2, 2, 2, 1, 64, 700, 300, &[701, 400]);
+    gqa_rotary_bias_case(1, 1, 4, 2, 128, 1023, -1, &[1023]);
+    gqa_rotary_bias_case(1, 3, 2, 1, 256, 270, 100, &[272]);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn gqa_rotary_bias_case(
     bsz: usize,
