@@ -1204,3 +1204,117 @@ fn fused_matmul_nbits_matches_decomposition() {
         }
     }
 }
+
+fn imported_f32_buffer(device: &wgpu::Device, queue: &wgpu::Queue, values: &[f32]) -> wgpu::Buffer {
+    let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("application input"),
+        size: bytes.len() as u64,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&buffer, 0, &bytes);
+    buffer
+}
+
+/// Reads a buffer back the way an application would, without `download`.
+fn read_f32s(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    buffer: &wgpu::Buffer,
+    numel: usize,
+) -> Vec<f32> {
+    let size = (numel * 4) as u64;
+    let staging = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("application readback"),
+        size,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut encoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    encoder.copy_buffer_to_buffer(buffer, 0, &staging, 0, size);
+    let submission = queue.submit([encoder.finish()]);
+    staging
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, |result| result.expect("map"));
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: None,
+        })
+        .expect("poll");
+    let values = staging
+        .slice(..)
+        .get_mapped_range()
+        .chunks_exact(4)
+        .map(|word| f32::from_le_bytes(word.try_into().unwrap()))
+        .collect();
+    staging.unmap();
+    values
+}
+
+/// A buffer the application filled on its own device goes in without an
+/// upload, and the output buffer is readable in the application's passes.
+#[test]
+#[ignore = "requires GPU"]
+fn imported_buffer_runs_and_output_buffer_reads_back() {
+    let mut b = GraphBuilder::new();
+    let x = b.input("x", TensorType::of(DataType::F32, &[2, 3]));
+    let doubled = b.add(x, x).unwrap();
+    let t = b.unary(UnaryOp::Tanh, doubled).unwrap();
+    b.output("out", t);
+    let module = b.finish().unwrap();
+    let values = f32s(6, |i| i as f32 * 0.3 - 1.0);
+    let input = Tensor::from_f32(&values, &[2, 3]).unwrap();
+    let expect = onyxia_backend_ref::run_once(module.clone(), &[("x", input)]).unwrap()[0]
+        .1
+        .to_f32()
+        .unwrap();
+
+    let got = pollster::block_on(async {
+        let application = GpuContext::new().await.expect("GPU available");
+        let (device, queue) = (application.device, application.queue);
+        let ctx = GpuContext::from_device(device.clone(), queue.clone());
+        let mut session = WgpuBackend::new(ctx).prepare(module).expect("prepare");
+        let buffer = imported_f32_buffer(&device, &queue, &values);
+        let x = session
+            .import(buffer, DataType::F32, &[2, 3])
+            .expect("import");
+        let outs = session.run(&[("x", x)]).await.expect("run");
+        read_f32s(&device, &queue, outs[0].1.buffer(), expect.len())
+    });
+    for (i, (a, b)) in expect.iter().zip(&got).enumerate() {
+        assert!(
+            (a - b).abs() <= ATOL + RTOL * a.abs(),
+            "out[{i}]: interp {a} vs gpu {b}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires GPU"]
+fn import_rejects_a_short_or_unbindable_buffer() {
+    let mut b = GraphBuilder::new();
+    let x = b.input("x", TensorType::of(DataType::F32, &[4]));
+    b.output("out", x);
+    let module = b.finish().unwrap();
+    pollster::block_on(async {
+        let application = GpuContext::new().await.expect("GPU available");
+        let (device, queue) = (application.device, application.queue);
+        let session = WgpuBackend::new(GpuContext::from_device(device.clone(), queue.clone()))
+            .prepare(module)
+            .expect("prepare");
+        let short = imported_f32_buffer(&device, &queue, &[1.0, 2.0]);
+        assert!(session.import(short, DataType::F32, &[4]).is_err());
+        let unbindable = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 16,
+            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        assert!(session.import(unbindable, DataType::F32, &[4]).is_err());
+    });
+}

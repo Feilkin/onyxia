@@ -67,6 +67,28 @@ pub enum MatmulTile {
     Coop,
 }
 
+fn submit_chunk_from_env() -> usize {
+    std::env::var("ONYXIA_SUBMIT_CHUNK")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_SUBMIT_CHUNK)
+}
+
+fn matmul_tile_from_env(coop: bool) -> MatmulTile {
+    match std::env::var("ONYXIA_MATMUL_TILE").as_deref() {
+        Ok("classic") => MatmulTile::Classic,
+        Ok("rb") => MatmulTile::Rb,
+        Ok("coop") if coop => MatmulTile::Coop,
+        Ok("coop") => {
+            eprintln!(
+                "onyxia: ONYXIA_MATMUL_TILE=coop but the adapter lacks cooperative matrices; using rb"
+            );
+            MatmulTile::Rb
+        }
+        _ => MatmulTile::Rb,
+    }
+}
+
 /// Default [`GpuContext::submit_chunk`]: measured on an RTX 5090 with the
 /// 1B q4 — 64 and 32 tie, 16 loses to submit overhead.
 pub const DEFAULT_SUBMIT_CHUNK: usize = 64;
@@ -166,31 +188,41 @@ impl GpuContext {
             })
             .await
             .map_err(|e| Error::Runtime(format!("device request failed: {e}")))?;
-        let matmul_tile = match std::env::var("ONYXIA_MATMUL_TILE").as_deref() {
-            Ok("classic") => MatmulTile::Classic,
-            Ok("rb") => MatmulTile::Rb,
-            Ok("coop") if coop => MatmulTile::Coop,
-            Ok("coop") => {
-                eprintln!(
-                    "onyxia: ONYXIA_MATMUL_TILE=coop but the adapter lacks cooperative matrices; using rb"
-                );
-                MatmulTile::Rb
-            }
-            _ => MatmulTile::Rb,
-        };
-        let submit_chunk = std::env::var("ONYXIA_SUBMIT_CHUNK")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_SUBMIT_CHUNK);
         Ok(Self {
             device: Arc::new(device),
             queue: Arc::new(queue),
             adapter_info,
             use_immediates,
             caps,
-            submit_chunk,
-            matmul_tile,
+            submit_chunk: submit_chunk_from_env(),
+            matmul_tile: matmul_tile_from_env(coop),
         })
+    }
+
+    /// Run on a device the application already created, so tensors can
+    /// share buffers with its other GPU work (see
+    /// [`WgpuSession::import`](crate::WgpuSession::import)). Uses the
+    /// shader features the device was created with; the cooperative-matrix
+    /// tile stays off, since checking its shape needs the adapter.
+    pub fn from_device(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
+        let env_off = |name: &str| std::env::var(name).is_ok_and(|v| v != "0");
+        let features = device.features();
+        let use_immediates = features.contains(wgpu::Features::IMMEDIATES)
+            && device.limits().max_immediate_size >= IMMEDIATE_SIZE
+            && !env_off("ONYXIA_NO_IMMEDIATES");
+        let caps = crate::layout::Caps {
+            f16: features.contains(wgpu::Features::SHADER_F16) && !env_off("ONYXIA_NO_F16"),
+            int64: features.contains(wgpu::Features::SHADER_INT64) && !env_off("ONYXIA_NO_INT64"),
+        };
+        Self {
+            adapter_info: device.adapter_info(),
+            device,
+            queue,
+            use_immediates,
+            caps,
+            submit_chunk: submit_chunk_from_env(),
+            matmul_tile: matmul_tile_from_env(false),
+        }
     }
 
     /// Blocking wrapper for native callers.

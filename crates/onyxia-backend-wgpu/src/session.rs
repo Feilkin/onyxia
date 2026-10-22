@@ -34,6 +34,16 @@ impl GpuTensor {
     pub fn numel(&self) -> usize {
         self.shape.iter().product()
     }
+
+    /// The device buffer, for binding in the application's own passes.
+    /// [`run`](onyxia_ir::Session::run) submits all its work before it
+    /// returns, so passes submitted to the same queue afterwards see the
+    /// outputs. The buffer can be larger than the tensor (pooled buffers
+    /// round up); the tensor's bytes come first, in the host layout for
+    /// every dtype [`WgpuSession::import`] accepts.
+    pub fn buffer(&self) -> &wgpu::Buffer {
+        &self.buffer
+    }
 }
 
 /// Convert host bytes (logical layout) to device bytes (physical layout).
@@ -290,6 +300,47 @@ pub struct WgpuSession {
 }
 
 impl WgpuSession {
+    /// Use a buffer the application filled on this session's device as a
+    /// tensor, without a copy (the context must come from
+    /// [`GpuContext::from_device`](crate::GpuContext::from_device) on that
+    /// device). The bytes are in the host layout. Work the application
+    /// submitted to the same queue before [`run`](onyxia_ir::Session::run)
+    /// completes before the model reads the buffer. Imported buffers never
+    /// enter the session's pool or its [`resident_bytes`](Self::resident_bytes).
+    pub fn import(
+        &self,
+        buffer: wgpu::Buffer,
+        dtype: DataType,
+        shape: &[usize],
+    ) -> Result<GpuTensor> {
+        let layout = Layout::of(dtype, self.caps)?;
+        if !layout.is_host_identical() {
+            return Err(Error::Unsupported(format!(
+                "cannot import a {dtype:?} buffer: this device stores {dtype:?} in a different layout than the host"
+            )));
+        }
+        let numel: usize = shape.iter().product();
+        let needed = layout.buffer_bytes(numel);
+        if buffer.size() < needed {
+            return Err(Error::Shape(format!(
+                "a {dtype:?} tensor of shape {shape:?} needs {needed} bytes, the buffer has {}",
+                buffer.size()
+            )));
+        }
+        let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC;
+        if !buffer.usage().contains(usage) {
+            return Err(Error::Runtime(format!(
+                "an imported buffer needs usage {usage:?}, it has {:?}",
+                buffer.usage()
+            )));
+        }
+        Ok(GpuTensor {
+            buffer: Arc::new(TrackedBuffer::new(buffer, &Arc::default())),
+            dtype,
+            shape: shape.to_vec(),
+        })
+    }
+
     /// Buffer-pool statistics `(fresh_allocations, reuses)`.
     pub fn pool_stats(&self) -> (usize, usize) {
         (self.pool.allocations, self.pool.reuses)
